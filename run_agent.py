@@ -150,6 +150,7 @@ from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.memu_client import MemuClientError, MemuHttpClient
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
     _deterministic_call_id as _codex_deterministic_call_id,
@@ -945,6 +946,13 @@ class AIAgent:
         chat_type: str = None,
         thread_id: str = None,
         gateway_session_key: str = None,
+        soul_mode_enabled: bool = False,
+        soul_mode_role: str = "standard",
+        soul_mode_soul_id: str = "",
+        soul_mode_user_id: str = "",
+        soul_mode_memu_base_url: str = "http://127.0.0.1:8099",
+        soul_mode_use_memu_turn: bool = True,
+        soul_mode_timeout_seconds: float = 20.0,
         skip_context_files: bool = False,
         load_soul_identity: bool = False,
         skip_memory: bool = False,
@@ -1022,6 +1030,23 @@ class AIAgent:
         self._chat_type = chat_type
         self._thread_id = thread_id
         self._gateway_session_key = gateway_session_key  # Stable per-chat key (e.g. agent:main:telegram:dm:123)
+        self._soul_mode_enabled = False
+        self._soul_mode_role = "standard"
+        self._soul_mode_soul_id = ""
+        self._soul_mode_user_id = ""
+        self._soul_mode_memu_base_url = "http://127.0.0.1:8099"
+        self._soul_mode_use_memu_turn = True
+        self._soul_mode_timeout_seconds = 20.0
+        self._soul_mode_client: MemuHttpClient | None = None
+        self.configure_soul_mode(
+            enabled=soul_mode_enabled,
+            role=soul_mode_role,
+            soul_id=soul_mode_soul_id,
+            user_id=soul_mode_user_id,
+            memu_base_url=soul_mode_memu_base_url,
+            use_memu_turn=soul_mode_use_memu_turn,
+            timeout_seconds=soul_mode_timeout_seconds,
+        )
         # Pluggable print function — CLI replaces this with _cprint so that
         # raw ANSI status lines are routed through prompt_toolkit's renderer
         # instead of going directly to stdout where patch_stdout's StdoutProxy
@@ -5434,6 +5459,101 @@ class AIAgent:
             f"thread={self._thread_identity()} provider={provider} "
             f"base_url={base_url} model={model}"
         )
+
+    def configure_soul_mode(
+        self,
+        *,
+        enabled: bool,
+        role: str,
+        soul_id: str,
+        user_id: str,
+        memu_base_url: str,
+        use_memu_turn: bool = True,
+        timeout_seconds: float = 20.0,
+    ) -> None:
+        """Set soul-mode config for this agent instance."""
+        role_norm = str(role or "standard").strip().lower()
+        self._soul_mode_role = "soul" if role_norm == "soul" else "standard"
+        self._soul_mode_enabled = bool(enabled)
+        self._soul_mode_soul_id = str(soul_id or "").strip()
+        self._soul_mode_user_id = str(user_id or "").strip()
+        self._soul_mode_memu_base_url = str(memu_base_url or "http://127.0.0.1:8099").strip()
+        self._soul_mode_use_memu_turn = bool(use_memu_turn)
+        try:
+            self._soul_mode_timeout_seconds = float(timeout_seconds)
+        except (TypeError, ValueError):
+            self._soul_mode_timeout_seconds = 20.0
+        self._soul_mode_client = None
+
+    def _is_soul_mode_active(self) -> bool:
+        return (
+            self._soul_mode_enabled
+            and self._soul_mode_role == "soul"
+            and bool(self._soul_mode_soul_id)
+            and bool(self._soul_mode_user_id)
+            and self._soul_mode_use_memu_turn
+        )
+
+    def _get_memu_client(self) -> MemuHttpClient:
+        if self._soul_mode_client is None:
+            self._soul_mode_client = MemuHttpClient(
+                base_url=self._soul_mode_memu_base_url,
+                timeout_seconds=self._soul_mode_timeout_seconds,
+            )
+        return self._soul_mode_client
+
+    def _build_memu_conversation_id(self) -> str:
+        platform = str(self.platform or "unknown").strip().lower() or "unknown"
+        chat_id = str(self._chat_id or "").strip()
+        if platform == "cron":
+            if chat_id:
+                return f"cron:{chat_id}"
+            if self._gateway_session_key:
+                return f"cron:{self._gateway_session_key}"
+            return f"cron:{self.session_id}"
+        if chat_id:
+            return f"{platform}:{chat_id}"
+        if self._gateway_session_key:
+            return str(self._gateway_session_key)
+        return f"{platform}:{self.session_id}"
+
+    def _history_for_memu(self, conversation_history: List[Dict[str, Any]] | None) -> list[dict[str, Any]]:
+        db = getattr(self, "_session_db", None)
+        if db and self.session_id:
+            try:
+                db_history = db.get_messages(self.session_id)
+                if isinstance(db_history, list) and db_history:
+                    return db_history
+            except Exception:
+                logger.debug("memU: failed to load SessionDB history for %s", self.session_id, exc_info=True)
+        return list(conversation_history or [])
+
+    def _run_soul_turn(
+        self,
+        *,
+        user_message: str,
+        conversation_history: List[Dict[str, Any]] | None,
+    ) -> tuple[str, dict[str, Any]]:
+        memu_client = self._get_memu_client()
+        conversation_id = self._build_memu_conversation_id()
+        history = self._history_for_memu(conversation_history)
+        turn_out = memu_client.memu_turn(
+            conversation_id=conversation_id,
+            user_id=self._soul_mode_user_id,
+            soul_id=self._soul_mode_soul_id,
+            message=str(user_message or ""),
+            history=history,
+            run_apimw=True,
+            apply_turn_maintenance=True,
+            debug=False,
+        )
+        response_text = str(turn_out.get("response") or "").strip()
+        if not response_text:
+            raise MemuClientError(
+                "memU turn returned empty response",
+                response_body=json.dumps(turn_out, default=str),
+            )
+        return response_text, turn_out
 
     def _openai_client_lock(self) -> threading.RLock:
         lock = getattr(self, "_client_lock", None)
@@ -10538,6 +10658,151 @@ class AIAgent:
         messages.append(user_msg)
         current_turn_user_idx = len(messages) - 1
         self._persist_user_message_idx = current_turn_user_idx
+
+        if self._is_soul_mode_active():
+            try:
+                final_response, memu_payload = self._run_soul_turn(
+                    user_message=user_message,
+                    conversation_history=conversation_history,
+                )
+            except MemuClientError as exc:
+                logger.error(
+                    "Soul-mode memU turn failed: session=%s status=%s error=%s",
+                    self.session_id or "none",
+                    getattr(exc, "status_code", None),
+                    exc,
+                )
+                self._save_trajectory(messages, _summarize_user_message_for_log(user_message), False)
+                self._cleanup_task_resources(effective_task_id)
+                self._persist_session(messages, conversation_history)
+                self.clear_interrupt()
+                try:
+                    from hermes_cli.plugins import invoke_hook as _invoke_hook
+                    _invoke_hook(
+                        "on_session_end",
+                        session_id=self.session_id,
+                        completed=False,
+                        interrupted=False,
+                        model=self.model,
+                        platform=getattr(self, "platform", None) or "",
+                    )
+                except Exception as hook_exc:
+                    logger.warning("on_session_end hook failed: %s", hook_exc)
+                self._stream_callback = None
+                return {
+                    "final_response": (
+                        f"memU turn failed: {exc}"
+                        if getattr(exc, "status_code", None) is None
+                        else f"memU turn failed (HTTP {exc.status_code}): {exc}"
+                    ),
+                    "last_reasoning": None,
+                    "messages": messages,
+                    "api_calls": 0,
+                    "completed": False,
+                    "turn_exit_reason": "soul_mode_error",
+                    "partial": False,
+                    "interrupted": False,
+                    "response_previewed": False,
+                    "model": self.model,
+                    "provider": self.provider,
+                    "base_url": self.base_url,
+                    "failed": True,
+                    "error": str(exc),
+                }
+            except Exception as exc:
+                logger.exception("Soul-mode memU turn crashed for session=%s", self.session_id or "none")
+                self._save_trajectory(messages, _summarize_user_message_for_log(user_message), False)
+                self._cleanup_task_resources(effective_task_id)
+                self._persist_session(messages, conversation_history)
+                self.clear_interrupt()
+                try:
+                    from hermes_cli.plugins import invoke_hook as _invoke_hook
+                    _invoke_hook(
+                        "on_session_end",
+                        session_id=self.session_id,
+                        completed=False,
+                        interrupted=False,
+                        model=self.model,
+                        platform=getattr(self, "platform", None) or "",
+                    )
+                except Exception as hook_exc:
+                    logger.warning("on_session_end hook failed: %s", hook_exc)
+                self._stream_callback = None
+                return {
+                    "final_response": f"memU turn failed: {type(exc).__name__}: {exc}",
+                    "last_reasoning": None,
+                    "messages": messages,
+                    "api_calls": 0,
+                    "completed": False,
+                    "turn_exit_reason": "soul_mode_error",
+                    "partial": False,
+                    "interrupted": False,
+                    "response_previewed": False,
+                    "model": self.model,
+                    "provider": self.provider,
+                    "base_url": self.base_url,
+                    "failed": True,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+
+            messages.append({"role": "assistant", "content": final_response})
+            self._save_trajectory(messages, _summarize_user_message_for_log(user_message), True)
+            self._cleanup_task_resources(effective_task_id)
+            self._persist_session(messages, conversation_history)
+            self.clear_interrupt()
+            self._stream_callback = None
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "post_llm_call",
+                    session_id=self.session_id,
+                    user_message=original_user_message,
+                    assistant_response=final_response,
+                    conversation_history=list(messages),
+                    model=self.model,
+                    platform=getattr(self, "platform", None) or "",
+                )
+            except Exception as exc:
+                logger.warning("post_llm_call hook failed: %s", exc)
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "on_session_end",
+                    session_id=self.session_id,
+                    completed=True,
+                    interrupted=False,
+                    model=self.model,
+                    platform=getattr(self, "platform", None) or "",
+                )
+            except Exception as exc:
+                logger.warning("on_session_end hook failed: %s", exc)
+            return {
+                "final_response": final_response,
+                "last_reasoning": None,
+                "messages": messages,
+                "api_calls": 0,
+                "completed": True,
+                "turn_exit_reason": "soul_mode_memu_turn",
+                "partial": False,
+                "interrupted": False,
+                "response_previewed": False,
+                "model": self.model,
+                "provider": self.provider,
+                "base_url": self.base_url,
+                "input_tokens": self.session_input_tokens,
+                "output_tokens": self.session_output_tokens,
+                "cache_read_tokens": self.session_cache_read_tokens,
+                "cache_write_tokens": self.session_cache_write_tokens,
+                "reasoning_tokens": self.session_reasoning_tokens,
+                "prompt_tokens": self.session_prompt_tokens,
+                "completion_tokens": self.session_completion_tokens,
+                "total_tokens": self.session_total_tokens,
+                "last_prompt_tokens": getattr(self.context_compressor, "last_prompt_tokens", 0) or 0,
+                "estimated_cost_usd": self.session_estimated_cost_usd,
+                "cost_status": self.session_cost_status,
+                "cost_source": self.session_cost_source,
+                "memu": memu_payload,
+            }
         
         if not self.quiet_mode:
             _print_preview = _summarize_user_message_for_log(user_message)

@@ -1529,6 +1529,70 @@ class GatewayRunner:
         route["request_overrides"] = overrides or {}
         return route
 
+    @staticmethod
+    def _resolve_soul_mode_agent_config(user_config: dict | None, session_key: str) -> dict[str, Any]:
+        """Resolve per-agent soul-mode config for the current session key.
+
+        Config shape (all optional):
+            soul_mode:
+              agents:
+                main:
+                  enabled: true
+                  role: soul
+                  soul_id: Echo
+                  user_id: marcos
+                  memu_base_url: http://127.0.0.1:8099
+                  use_memu_turn: true
+                  timeout_seconds: 20
+        """
+        default_cfg = {
+            "enabled": False,
+            "role": "standard",
+            "soul_id": "",
+            "user_id": "",
+            "memu_base_url": "http://127.0.0.1:8099",
+            "use_memu_turn": True,
+            "timeout_seconds": 20.0,
+        }
+        cfg = user_config if isinstance(user_config, dict) else {}
+        soul_mode = cfg.get("soul_mode")
+        if not isinstance(soul_mode, dict):
+            return default_cfg
+        agents_cfg = soul_mode.get("agents")
+        if not isinstance(agents_cfg, dict):
+            return default_cfg
+
+        agent_name = "main"
+        if isinstance(session_key, str) and session_key.startswith("agent:"):
+            parts = session_key.split(":")
+            if len(parts) >= 2 and parts[1]:
+                agent_name = parts[1]
+        agent_cfg = agents_cfg.get(agent_name)
+        if not isinstance(agent_cfg, dict):
+            return default_cfg
+
+        role_raw = str(agent_cfg.get("role", "") or "").strip().lower()
+        role = "soul" if role_raw == "soul" else "standard"
+        has_enabled_key = "enabled" in agent_cfg
+        enabled = is_truthy_value(agent_cfg.get("enabled"), default=False) if has_enabled_key else (role == "soul")
+        if role == "standard":
+            enabled = False
+
+        out = dict(default_cfg)
+        out["enabled"] = bool(enabled)
+        out["role"] = role
+        out["soul_id"] = str(agent_cfg.get("soul_id") or "").strip()
+        out["user_id"] = str(agent_cfg.get("user_id") or "").strip()
+        memu_base_url = str(agent_cfg.get("memu_base_url") or "").strip()
+        if memu_base_url:
+            out["memu_base_url"] = memu_base_url
+        out["use_memu_turn"] = is_truthy_value(agent_cfg.get("use_memu_turn"), default=True)
+        try:
+            out["timeout_seconds"] = float(agent_cfg.get("timeout_seconds", 20.0))
+        except (TypeError, ValueError):
+            out["timeout_seconds"] = 20.0
+        return out
+
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to an adapter failure after startup.
 
@@ -12380,6 +12444,7 @@ class GatewayRunner:
                     logger.debug("interim_assistant_callback error: %s", _e)
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            soul_mode_cfg = self._resolve_soul_mode_agent_config(user_config, session_key or "")
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -12439,6 +12504,13 @@ class GatewayRunner:
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
+                    soul_mode_enabled=bool(soul_mode_cfg.get("enabled")),
+                    soul_mode_role=str(soul_mode_cfg.get("role") or "standard"),
+                    soul_mode_soul_id=str(soul_mode_cfg.get("soul_id") or ""),
+                    soul_mode_user_id=str(soul_mode_cfg.get("user_id") or ""),
+                    soul_mode_memu_base_url=str(soul_mode_cfg.get("memu_base_url") or "http://127.0.0.1:8099"),
+                    soul_mode_use_memu_turn=bool(soul_mode_cfg.get("use_memu_turn", True)),
+                    soul_mode_timeout_seconds=float(soul_mode_cfg.get("timeout_seconds", 20.0)),
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
@@ -12458,6 +12530,16 @@ class GatewayRunner:
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
+            if hasattr(agent, "configure_soul_mode"):
+                agent.configure_soul_mode(
+                    enabled=bool(soul_mode_cfg.get("enabled")),
+                    role=str(soul_mode_cfg.get("role") or "standard"),
+                    soul_id=str(soul_mode_cfg.get("soul_id") or ""),
+                    user_id=str(soul_mode_cfg.get("user_id") or ""),
+                    memu_base_url=str(soul_mode_cfg.get("memu_base_url") or "http://127.0.0.1:8099"),
+                    use_memu_turn=bool(soul_mode_cfg.get("use_memu_turn", True)),
+                    timeout_seconds=float(soul_mode_cfg.get("timeout_seconds", 20.0)),
+                )
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []
