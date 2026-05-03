@@ -1543,7 +1543,7 @@ class GatewayRunner:
                   user_id: marcos
                   memu_base_url: http://127.0.0.1:8099
                   use_memu_turn: true
-                  timeout_seconds: 20
+                  timeout_seconds: 45
         """
         default_cfg = {
             "enabled": False,
@@ -1552,7 +1552,7 @@ class GatewayRunner:
             "user_id": "",
             "memu_base_url": "http://127.0.0.1:8099",
             "use_memu_turn": True,
-            "timeout_seconds": 20.0,
+            "timeout_seconds": 45.0,
         }
         cfg = user_config if isinstance(user_config, dict) else {}
         soul_mode = cfg.get("soul_mode")
@@ -1588,9 +1588,9 @@ class GatewayRunner:
             out["memu_base_url"] = memu_base_url
         out["use_memu_turn"] = is_truthy_value(agent_cfg.get("use_memu_turn"), default=True)
         try:
-            out["timeout_seconds"] = float(agent_cfg.get("timeout_seconds", 20.0))
+            out["timeout_seconds"] = float(agent_cfg.get("timeout_seconds", 45.0))
         except (TypeError, ValueError):
-            out["timeout_seconds"] = 20.0
+            out["timeout_seconds"] = 45.0
         return out
 
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
@@ -12510,7 +12510,7 @@ class GatewayRunner:
                     soul_mode_user_id=str(soul_mode_cfg.get("user_id") or ""),
                     soul_mode_memu_base_url=str(soul_mode_cfg.get("memu_base_url") or "http://127.0.0.1:8099"),
                     soul_mode_use_memu_turn=bool(soul_mode_cfg.get("use_memu_turn", True)),
-                    soul_mode_timeout_seconds=float(soul_mode_cfg.get("timeout_seconds", 20.0)),
+                    soul_mode_timeout_seconds=float(soul_mode_cfg.get("timeout_seconds", 45.0)),
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
@@ -12538,7 +12538,7 @@ class GatewayRunner:
                     user_id=str(soul_mode_cfg.get("user_id") or ""),
                     memu_base_url=str(soul_mode_cfg.get("memu_base_url") or "http://127.0.0.1:8099"),
                     use_memu_turn=bool(soul_mode_cfg.get("use_memu_turn", True)),
-                    timeout_seconds=float(soul_mode_cfg.get("timeout_seconds", 20.0)),
+                    timeout_seconds=float(soul_mode_cfg.get("timeout_seconds", 45.0)),
                 )
 
             _bg_review_release = threading.Event()

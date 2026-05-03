@@ -952,7 +952,7 @@ class AIAgent:
         soul_mode_user_id: str = "",
         soul_mode_memu_base_url: str = "http://127.0.0.1:8099",
         soul_mode_use_memu_turn: bool = True,
-        soul_mode_timeout_seconds: float = 20.0,
+        soul_mode_timeout_seconds: float = 45.0,
         skip_context_files: bool = False,
         load_soul_identity: bool = False,
         skip_memory: bool = False,
@@ -1036,7 +1036,7 @@ class AIAgent:
         self._soul_mode_user_id = ""
         self._soul_mode_memu_base_url = "http://127.0.0.1:8099"
         self._soul_mode_use_memu_turn = True
-        self._soul_mode_timeout_seconds = 20.0
+        self._soul_mode_timeout_seconds = 45.0
         self._soul_mode_client: MemuHttpClient | None = None
         self.configure_soul_mode(
             enabled=soul_mode_enabled,
@@ -5469,7 +5469,7 @@ class AIAgent:
         user_id: str,
         memu_base_url: str,
         use_memu_turn: bool = True,
-        timeout_seconds: float = 20.0,
+        timeout_seconds: float = 45.0,
     ) -> None:
         """Set soul-mode config for this agent instance."""
         role_norm = str(role or "standard").strip().lower()
@@ -5482,7 +5482,7 @@ class AIAgent:
         try:
             self._soul_mode_timeout_seconds = float(timeout_seconds)
         except (TypeError, ValueError):
-            self._soul_mode_timeout_seconds = 20.0
+            self._soul_mode_timeout_seconds = 45.0
         self._soul_mode_client = None
 
     def _is_soul_mode_active(self) -> bool:

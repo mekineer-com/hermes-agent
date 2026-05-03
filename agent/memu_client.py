@@ -106,7 +106,7 @@ class MemuHttpClient:
         self,
         *,
         base_url: str,
-        timeout_seconds: float = 20.0,
+        timeout_seconds: float = 45.0,
     ) -> None:
         raw = str(base_url or "").strip()
         if not raw:
