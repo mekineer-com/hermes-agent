@@ -104,6 +104,13 @@ def test_build_memu_conversation_id_readable_defaults(soul_agent):
     assert soul_agent._build_memu_conversation_id() == "cron:daily-reminder"
 
 
+def test_build_memu_conversation_id_includes_thread_when_present(soul_agent):
+    soul_agent.platform = "telegram"
+    soul_agent._chat_id = "-1002285219667"
+    soul_agent._thread_id = "17585"
+    assert soul_agent._build_memu_conversation_id() == "telegram:-1002285219667:17585"
+
+
 def test_run_soul_turn_uses_text_from_multimodal_parts(soul_agent):
     mock_client = MagicMock()
     mock_client.memu_turn.return_value = {"ok": True, "response": "hello from memu"}

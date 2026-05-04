@@ -5506,6 +5506,7 @@ class AIAgent:
     def _build_memu_conversation_id(self) -> str:
         platform = str(self.platform or "unknown").strip().lower() or "unknown"
         chat_id = str(self._chat_id or "").strip()
+        thread_id = str(self._thread_id or "").strip()
         if platform == "cron":
             if chat_id:
                 return f"cron:{chat_id}"
@@ -5513,6 +5514,8 @@ class AIAgent:
                 return f"cron:{self._gateway_session_key}"
             return f"cron:{self.session_id}"
         if chat_id:
+            if thread_id:
+                return f"{platform}:{chat_id}:{thread_id}"
             return f"{platform}:{chat_id}"
         if self._gateway_session_key:
             return str(self._gateway_session_key)
