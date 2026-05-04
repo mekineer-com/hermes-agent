@@ -207,3 +207,85 @@ def test_handle_turn_raises_on_ok_false(soul_agent):
 
     assert result["completed"] is False
     assert result["failed"] is True
+
+
+# --- Phase 2: conversation routing ---
+
+
+def test_conversation_id_stable_across_calls():
+    """Same inputs must produce the same conversation ID every time."""
+    kwargs = dict(platform="telegram", chat_id="12345", thread_id="17585")
+    first = soul_mode.build_conversation_id(**kwargs)
+    second = soul_mode.build_conversation_id(**kwargs)
+    third = soul_mode.build_conversation_id(**kwargs)
+    assert first == second == third
+
+
+def test_conversation_id_different_contacts_different_ids():
+    """Two WhatsApp contacts must get distinct conversation IDs."""
+    id_alice = soul_mode.build_conversation_id(
+        platform="whatsapp",
+        chat_id="alice@lid",
+        chat_type="dm",
+        gateway_session_key="agent:main:whatsapp:dm:15550001111",
+    )
+    id_bob = soul_mode.build_conversation_id(
+        platform="whatsapp",
+        chat_id="bob@lid",
+        chat_type="dm",
+        gateway_session_key="agent:main:whatsapp:dm:15550002222",
+    )
+    assert id_alice != id_bob
+    assert id_alice == "whatsapp:dm:15550001111"
+    assert id_bob == "whatsapp:dm:15550002222"
+
+
+def test_conversation_id_cron_uses_job_name():
+    """Cron platform should use chat_id as the job name in the ID."""
+    result = soul_mode.build_conversation_id(
+        platform="cron",
+        chat_id="nightly-digest",
+    )
+    assert result == "cron:nightly-digest"
+
+    # Fallback to gateway_session_key when chat_id is empty
+    result_fallback = soul_mode.build_conversation_id(
+        platform="cron",
+        chat_id="",
+        gateway_session_key="cron-session-abc",
+    )
+    assert result_fallback == "cron:cron-session-abc"
+
+
+# --- Phase 3: history handoff to memU ---
+
+
+def test_handle_turn_passes_history_to_memu(soul_agent):
+    """SessionDB history must be forwarded to memu_turn so memU can detect sleep gaps."""
+    db_history = [
+        {"role": "user", "content": "good night", "ts_ms": 1714600000000},
+        {"role": "assistant", "content": "sleep well", "ts_ms": 1714600001000},
+        {"role": "user", "content": "good morning", "ts_ms": 1714632000000},
+    ]
+
+    mock_db = MagicMock()
+    mock_db.get_messages.return_value = db_history
+    soul_agent._session_db = mock_db
+
+    mock_client = MagicMock()
+    mock_client.memu_turn.return_value = {"ok": True, "response": "morning!"}
+    soul_agent._soul_config._client = mock_client
+
+    soul_mode.handle_turn(
+        soul_agent, soul_agent._soul_config,
+        user_message="good morning",
+        conversation_history=[],
+        messages=[{"role": "user", "content": "good morning"}],
+        task_id="test-task",
+        original_user_message="good morning",
+        summarize_for_log=lambda x: str(x)[:50],
+    )
+
+    mock_client.memu_turn.assert_called_once()
+    call_kwargs = mock_client.memu_turn.call_args[1]
+    assert call_kwargs["history"] == db_history
