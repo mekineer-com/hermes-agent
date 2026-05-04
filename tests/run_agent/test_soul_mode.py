@@ -102,3 +102,44 @@ def test_build_memu_conversation_id_readable_defaults(soul_agent):
     soul_agent.platform = "cron"
     soul_agent._chat_id = "daily-reminder"
     assert soul_agent._build_memu_conversation_id() == "cron:daily-reminder"
+
+
+def test_run_soul_turn_uses_text_from_multimodal_parts(soul_agent):
+    mock_client = MagicMock()
+    mock_client.memu_turn.return_value = {"ok": True, "response": "hello from memu"}
+    with patch.object(soul_agent, "_get_memu_client", return_value=mock_client):
+        response_text, _ = soul_agent._run_soul_turn(
+            user_message=[
+                {"type": "text", "text": "Look at this"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+            ],
+            conversation_history=[],
+        )
+
+    assert response_text == "hello from memu"
+    assert mock_client.memu_turn.call_args.kwargs["message"] == "Look at this"
+
+
+def test_run_soul_turn_raises_when_memu_ok_false(soul_agent):
+    mock_client = MagicMock()
+    mock_client.memu_turn.return_value = {"ok": False, "response": "should not pass"}
+    with patch.object(soul_agent, "_get_memu_client", return_value=mock_client):
+        with pytest.raises(MemuClientError, match="ok=false"):
+            soul_agent._run_soul_turn(user_message="hi", conversation_history=[])
+
+
+def test_run_conversation_soul_mode_emits_session_start_hook_once(soul_agent):
+    history = []
+    with (
+        patch.object(soul_agent, "_ensure_db_session", return_value=None),
+        patch.object(soul_agent, "_restore_primary_runtime", return_value=None),
+        patch.object(soul_agent, "_run_soul_turn", return_value=("hello from memu", {"ok": True})),
+        patch.object(soul_agent, "_save_trajectory", return_value=None),
+        patch.object(soul_agent, "_cleanup_task_resources", return_value=None),
+        patch.object(soul_agent, "_persist_session", return_value=None),
+        patch("hermes_cli.plugins.invoke_hook") as invoke_hook,
+    ):
+        soul_agent.run_conversation("hi", conversation_history=history)
+
+    started_calls = [c for c in invoke_hook.call_args_list if c.args and c.args[0] == "on_session_start"]
+    assert len(started_calls) == 1

@@ -1038,6 +1038,7 @@ class AIAgent:
         self._soul_mode_use_memu_turn = True
         self._soul_mode_timeout_seconds = 45.0
         self._soul_mode_client: MemuHttpClient | None = None
+        self._soul_mode_session_started = False
         self.configure_soul_mode(
             enabled=soul_mode_enabled,
             role=soul_mode_role,
@@ -5528,25 +5529,85 @@ class AIAgent:
                 logger.debug("memU: failed to load SessionDB history for %s", self.session_id, exc_info=True)
         return list(conversation_history or [])
 
+    @staticmethod
+    def _coerce_user_message_text_for_memu(user_message: Any) -> str:
+        if isinstance(user_message, str):
+            return user_message.strip()
+        if isinstance(user_message, list):
+            text_parts: list[str] = []
+            image_count = 0
+            for part in user_message:
+                if not isinstance(part, dict):
+                    continue
+                part_type = str(part.get("type") or "").strip().lower()
+                if part_type == "text":
+                    text_value = part.get("text")
+                    if isinstance(text_value, str):
+                        text_stripped = text_value.strip()
+                        if text_stripped:
+                            text_parts.append(text_stripped)
+                elif part_type == "image_url":
+                    image_count += 1
+            if text_parts:
+                return "\n".join(text_parts)
+            if image_count:
+                suffix = "s" if image_count != 1 else ""
+                return f"[User sent {image_count} image{suffix}]"
+            return ""
+        return str(user_message or "").strip()
+
+    def _emit_soul_session_start_if_needed(
+        self,
+        *,
+        conversation_history: List[Dict[str, Any]] | None,
+    ) -> None:
+        if self._soul_mode_session_started:
+            return
+        if conversation_history:
+            self._soul_mode_session_started = True
+            return
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "on_session_start",
+                session_id=self.session_id,
+                model=self.model,
+                platform=getattr(self, "platform", None) or "",
+            )
+        except Exception as exc:
+            logger.warning("on_session_start hook failed: %s", exc)
+        self._soul_mode_session_started = True
+
     def _run_soul_turn(
         self,
         *,
-        user_message: str,
+        user_message: Any,
         conversation_history: List[Dict[str, Any]] | None,
     ) -> tuple[str, dict[str, Any]]:
         memu_client = self._get_memu_client()
         conversation_id = self._build_memu_conversation_id()
         history = self._history_for_memu(conversation_history)
+        memu_message = self._coerce_user_message_text_for_memu(user_message)
+        if not memu_message:
+            raise MemuClientError("memU turn requires non-empty user message")
         turn_out = memu_client.memu_turn(
             conversation_id=conversation_id,
             user_id=self._soul_mode_user_id,
             soul_id=self._soul_mode_soul_id,
-            message=str(user_message or ""),
+            message=memu_message,
             history=history,
             run_apimw=True,
             apply_turn_maintenance=True,
             debug=False,
         )
+        turn_ok = turn_out.get("ok", True)
+        if isinstance(turn_ok, str):
+            turn_ok = turn_ok.strip().lower() not in {"false", "0", "no", "off"}
+        if not bool(turn_ok):
+            raise MemuClientError(
+                "memU turn returned ok=false",
+                response_body=json.dumps(turn_out, default=str),
+            )
         response_text = str(turn_out.get("response") or "").strip()
         if not response_text:
             raise MemuClientError(
@@ -10660,6 +10721,7 @@ class AIAgent:
         self._persist_user_message_idx = current_turn_user_idx
 
         if self._is_soul_mode_active():
+            self._emit_soul_session_start_if_needed(conversation_history=conversation_history)
             try:
                 final_response, memu_payload = self._run_soul_turn(
                     user_message=user_message,
