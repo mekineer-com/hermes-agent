@@ -111,6 +111,25 @@ def test_build_memu_conversation_id_includes_thread_when_present(soul_agent):
     assert soul_agent._build_memu_conversation_id() == "telegram:-1002285219667:17585"
 
 
+def test_build_memu_conversation_id_uses_whatsapp_gateway_key_for_dm_alias_stability(soul_agent):
+    soul_agent.platform = "whatsapp"
+    soul_agent._chat_type = "dm"
+    soul_agent._chat_id = "999999999999999@lid"
+    soul_agent._gateway_session_key = "agent:main:whatsapp:dm:15551234567"
+    assert soul_agent._build_memu_conversation_id() == "whatsapp:dm:15551234567"
+
+
+def test_build_memu_conversation_id_uses_whatsapp_gateway_key_for_group_per_user_isolation(soul_agent):
+    soul_agent.platform = "whatsapp"
+    soul_agent._chat_type = "group"
+    soul_agent._chat_id = "120363000000000000@g.us"
+    soul_agent._gateway_session_key = "agent:main:whatsapp:group:120363000000000000@g.us:15551234567"
+    assert (
+        soul_agent._build_memu_conversation_id()
+        == "whatsapp:group:120363000000000000@g.us:15551234567"
+    )
+
+
 def test_run_soul_turn_uses_text_from_multimodal_parts(soul_agent):
     mock_client = MagicMock()
     mock_client.memu_turn.return_value = {"ok": True, "response": "hello from memu"}

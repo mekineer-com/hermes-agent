@@ -151,6 +151,7 @@ from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.memu_client import MemuClientError, MemuHttpClient
+from gateway.whatsapp_identity import canonical_whatsapp_identifier
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
     _deterministic_call_id as _codex_deterministic_call_id,
@@ -5507,12 +5508,23 @@ class AIAgent:
         platform = str(self.platform or "unknown").strip().lower() or "unknown"
         chat_id = str(self._chat_id or "").strip()
         thread_id = str(self._thread_id or "").strip()
+        chat_type = str(self._chat_type or "").strip().lower()
         if platform == "cron":
             if chat_id:
                 return f"cron:{chat_id}"
             if self._gateway_session_key:
                 return f"cron:{self._gateway_session_key}"
             return f"cron:{self.session_id}"
+        if platform == "whatsapp":
+            session_key = str(self._gateway_session_key or "").strip()
+            if session_key:
+                parts = session_key.split(":")
+                if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main" and parts[2] == "whatsapp":
+                    return "whatsapp:" + ":".join(parts[3:])
+            if chat_id and chat_type == "dm":
+                canonical_chat_id = canonical_whatsapp_identifier(chat_id)
+                if canonical_chat_id:
+                    chat_id = canonical_chat_id
         if chat_id:
             if thread_id:
                 return f"{platform}:{chat_id}:{thread_id}"
