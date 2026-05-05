@@ -58,10 +58,21 @@ def _parse_iso_datetime(value: str) -> datetime | None:
         return None
 
 
-def normalize_history_for_memu(history: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+def normalize_history_for_memu(
+    history: list[dict[str, Any]] | None,
+    *,
+    user_name: str = "",
+    soul_name: str = "",
+) -> list[dict[str, Any]]:
     """Normalize Hermes conversation history into memU-compatible messages."""
     if not isinstance(history, list):
         return []
+
+    role_to_name = {}
+    if user_name:
+        role_to_name["user"] = user_name
+    if soul_name:
+        role_to_name["assistant"] = soul_name
 
     normalized: list[dict[str, Any]] = []
     for msg in history:
@@ -79,6 +90,9 @@ def normalize_history_for_memu(history: list[dict[str, Any]] | None) -> list[dic
             "role": role,
             "content": text,
         }
+        name = str(msg.get("name") or "").strip() or role_to_name.get(role, "")
+        if name:
+            out["name"] = name
 
         ts_ms = msg.get("ts_ms")
         if isinstance(ts_ms, int):
@@ -169,13 +183,14 @@ class MemuHttpClient:
         apply_turn_maintenance: bool = True,
         debug: bool = False,
         temperature: float | None = None,
+        channel_mode: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "conversation_id": str(conversation_id or "").strip(),
             "user_id": str(user_id or "").strip(),
             "soul_id": str(soul_id or "").strip(),
             "message": str(message or "").strip(),
-            "history": normalize_history_for_memu(history),
+            "history": normalize_history_for_memu(history, user_name=str(user_id or ""), soul_name=str(soul_id or "")),
             "run_apimw": bool(run_apimw),
             "apply_turn_maintenance": bool(apply_turn_maintenance),
             "debug": bool(debug),
@@ -184,6 +199,8 @@ class MemuHttpClient:
             payload["soul_card"] = str(soul_card)
         if temperature is not None:
             payload["temperature"] = float(temperature)
+        if channel_mode:
+            payload["channel_mode"] = str(channel_mode)
 
         return self._post("/integration/memu/turn", payload)
 

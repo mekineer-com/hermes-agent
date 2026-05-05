@@ -234,6 +234,10 @@ def handle_turn(
         if not memu_message:
             raise MemuClientError("memU turn requires non-empty user message")
 
+        platform = str(getattr(agent, "platform", "") or "").strip().lower()
+        chat_type = str(getattr(agent, "_chat_type", "") or "").strip().lower()
+        channel_mode = "group" if (platform == "whatsapp" and chat_type != "dm") else "direct"
+
         turn_out = client.memu_turn(
             conversation_id=conversation_id,
             user_id=config.user_id,
@@ -243,6 +247,7 @@ def handle_turn(
             run_apimw=True,
             apply_turn_maintenance=True,
             debug=False,
+            channel_mode=channel_mode,
         )
 
         turn_ok = turn_out.get("ok", True)
@@ -253,6 +258,30 @@ def handle_turn(
                 "memU turn returned ok=false",
                 response_body=json.dumps(turn_out, default=str),
             )
+
+        if not turn_out.get("should_respond", True):
+            logger.info("Soul chose LISTEN for %s (channel_mode=%s)", conversation_id, channel_mode)
+            messages.append({"role": "assistant", "content": ""})
+            agent._save_trajectory(messages, summarize_for_log(user_message), True)
+            agent._cleanup_task_resources(task_id)
+            agent._persist_session(messages, conversation_history)
+            agent.clear_interrupt()
+            agent._stream_callback = None
+            _invoke_hook_safe("on_session_end", session_id=agent.session_id, completed=True, interrupted=False, model=agent.model, platform=platform)
+            return {
+                "final_response": "",
+                "last_reasoning": None,
+                "messages": messages,
+                "api_calls": 0,
+                "completed": True,
+                "turn_exit_reason": "soul_mode_listen",
+                "partial": False,
+                "interrupted": False,
+                "response_previewed": False,
+                "model": agent.model,
+                "provider": agent.provider,
+                "base_url": agent.base_url,
+            }
 
         final_response = str(turn_out.get("response") or "").strip()
         if not final_response:
