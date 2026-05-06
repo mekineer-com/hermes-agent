@@ -237,6 +237,8 @@ def handle_turn(
         platform = str(getattr(agent, "platform", "") or "").strip().lower()
         chat_type = str(getattr(agent, "_chat_type", "") or "").strip().lower()
         channel_mode = "group" if (platform == "whatsapp" and chat_type != "dm") else "direct"
+        sender_name = str(getattr(agent, "_user_name", "") or "").strip() or config.user_id
+        chat_name = str(getattr(agent, "_chat_name", "") or "").strip() or None
 
         turn_out = client.memu_turn(
             conversation_id=conversation_id,
@@ -248,6 +250,8 @@ def handle_turn(
             apply_turn_maintenance=True,
             debug=False,
             channel_mode=channel_mode,
+            sender_name=sender_name,
+            chat_name=chat_name,
         )
 
         turn_ok = turn_out.get("ok", True)

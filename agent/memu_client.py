@@ -184,6 +184,8 @@ class MemuHttpClient:
         debug: bool = False,
         temperature: float | None = None,
         channel_mode: str | None = None,
+        sender_name: str | None = None,
+        chat_name: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "conversation_id": str(conversation_id or "").strip(),
@@ -195,6 +197,10 @@ class MemuHttpClient:
             "apply_turn_maintenance": bool(apply_turn_maintenance),
             "debug": bool(debug),
         }
+        if sender_name:
+            payload["sender_name"] = str(sender_name)
+        if chat_name:
+            payload["chat_name"] = str(chat_name)
         if soul_card:
             payload["soul_card"] = str(soul_card)
         if temperature is not None:
