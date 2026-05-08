@@ -10561,7 +10561,7 @@ class AIAgent:
         current_turn_user_idx = len(messages) - 1
         self._persist_user_message_idx = current_turn_user_idx
 
-        if self._soul_config.is_active() and not (isinstance(user_message, str) and user_message.strip().startswith("/")):
+        if self._soul_config.is_active():
             return _soul_mode.handle_turn(
                 self, self._soul_config,
                 user_message=user_message,

@@ -87,7 +87,6 @@ _HOME_TARGET_ENV_VARS = {
     "telegram": "TELEGRAM_HOME_CHANNEL",
     "discord": "DISCORD_HOME_CHANNEL",
     "slack": "SLACK_HOME_CHANNEL",
-    "whatsapp": "WHATSAPP_HOME_CHANNEL",
     "signal": "SIGNAL_HOME_CHANNEL",
     "mattermost": "MATTERMOST_HOME_CHANNEL",
     "sms": "SMS_HOME_CHANNEL",
