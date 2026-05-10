@@ -41,6 +41,15 @@ const WHATSAPP_DEBUG =
   typeof process.env.WHATSAPP_DEBUG === 'string' &&
   ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_DEBUG.toLowerCase());
 
+function envEnabled(name, defaultValue = true) {
+  const raw = process.env?.[name];
+  if (raw === undefined) return defaultValue;
+  const value = String(raw).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(value)) return true;
+  if (['0', 'false', 'no', 'off'].includes(value)) return false;
+  return defaultValue;
+}
+
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
 const IMAGE_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'image_cache');
@@ -49,6 +58,9 @@ const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cac
 const PAIR_ONLY = args.includes('--pair-only');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
+const PRESERVE_UNREAD_ON_SEND = envEnabled('WHATSAPP_PRESERVE_UNREAD_ON_SEND', true);
+const SEND_UNAVAILABLE_AFTER_ACTIVITY = envEnabled('WHATSAPP_SEND_UNAVAILABLE_AFTER_ACTIVITY', true);
+const ENABLE_TYPING_INDICATOR = envEnabled('WHATSAPP_ENABLE_TYPING_INDICATOR', true);
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
@@ -120,9 +132,97 @@ const MAX_RECENT_IDS = 50;
 // for the same WhatsApp message (observed with LID/JID alias flips).
 const recentlySeenInboundIds = new Set();
 const MAX_RECENT_INBOUND_IDS = 500;
+const chatUnreadCounts = new Map();
+const lastInboundMessageByChat = new Map();
 
 let sock = null;
 let connectionState = 'disconnected';
+
+function updateUnreadCountSnapshot(chats) {
+  if (!Array.isArray(chats)) return;
+  for (const chat of chats) {
+    const chatId = normalizeWhatsAppId(chat?.id || chat?.jid || '');
+    if (!chatId) continue;
+    if (chat?.unreadCount === undefined || chat?.unreadCount === null) continue;
+    const unreadCount = Number(chat.unreadCount);
+    if (Number.isFinite(unreadCount) && unreadCount >= 0) {
+      chatUnreadCounts.set(chatId, unreadCount);
+    }
+  }
+}
+
+function rememberInboundLastMessage(msg) {
+  const chatId = normalizeWhatsAppId(msg?.key?.remoteJid || '');
+  if (!chatId) return;
+  if (msg?.key?.fromMe) return;
+  const messageId = String(msg?.key?.id || '');
+  if (!messageId) return;
+  const ts = Number(msg?.messageTimestamp);
+  if (!Number.isFinite(ts) || ts <= 0) return;
+
+  const key = {
+    remoteJid: chatId,
+    id: messageId,
+    fromMe: false,
+  };
+  if (msg.key.participant) {
+    key.participant = normalizeWhatsAppId(msg.key.participant);
+  }
+
+  lastInboundMessageByChat.set(chatId, {
+    key,
+    messageTimestamp: ts,
+  });
+}
+
+function chatHasUnreadMessages(chatId) {
+  const unread = Number(chatUnreadCounts.get(normalizeWhatsAppId(chatId)));
+  return Number.isFinite(unread) && unread > 0;
+}
+
+async function postSendPresenceAndUnreadRestore(chatId, hadUnreadBeforeSend) {
+  if (!sock || connectionState !== 'connected') return;
+
+  if (SEND_UNAVAILABLE_AFTER_ACTIVITY) {
+    try {
+      await sock.sendPresenceUpdate('unavailable');
+    } catch (err) {
+      if (WHATSAPP_DEBUG) {
+        try {
+          console.log(JSON.stringify({
+            event: 'warn',
+            reason: 'set_unavailable_failed',
+            chatId,
+            error: err?.message || String(err),
+          }));
+        } catch {}
+      }
+    }
+  }
+
+  if (!PRESERVE_UNREAD_ON_SEND || !hadUnreadBeforeSend) return;
+  const normalizedChatId = normalizeWhatsAppId(chatId);
+  const lastInbound = lastInboundMessageByChat.get(normalizedChatId);
+  if (!lastInbound?.key?.id || !lastInbound?.messageTimestamp) return;
+
+  try {
+    await sock.chatModify(
+      { markRead: false, lastMessages: [lastInbound] },
+      normalizedChatId,
+    );
+  } catch (err) {
+    if (WHATSAPP_DEBUG) {
+      try {
+        console.log(JSON.stringify({
+          event: 'warn',
+          reason: 'preserve_unread_failed',
+          chatId: normalizedChatId,
+          error: err?.message || String(err),
+        }));
+      } catch {}
+    }
+  }
+}
 
 async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
@@ -146,6 +246,8 @@ async function startSocket() {
   });
 
   sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
+  sock.ev.on('chats.upsert', updateUnreadCountSnapshot);
+  sock.ev.on('chats.update', updateUnreadCountSnapshot);
 
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -232,6 +334,7 @@ async function startSocket() {
         }
         continue;
       }
+      rememberInboundLastMessage(msg);
       if (WHATSAPP_DEBUG) {
         try {
           console.log(JSON.stringify({
@@ -460,6 +563,7 @@ app.post('/send', async (req, res) => {
   }
 
   try {
+    const hadUnreadBeforeSend = chatHasUnreadMessages(chatId);
     const sent = await sock.sendMessage(chatId, { text: formatOutgoingMessage(message) });
 
     // Track sent message ID to prevent echo-back loops
@@ -469,6 +573,8 @@ app.post('/send', async (req, res) => {
         recentlySentIds.delete(recentlySentIds.values().next().value);
       }
     }
+
+    await postSendPresenceAndUnreadRestore(chatId, hadUnreadBeforeSend);
 
     res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {
@@ -488,8 +594,10 @@ app.post('/edit', async (req, res) => {
   }
 
   try {
+    const hadUnreadBeforeSend = chatHasUnreadMessages(chatId);
     const key = { id: messageId, fromMe: true, remoteJid: chatId };
     await sock.sendMessage(chatId, { text: formatOutgoingMessage(message), edit: key });
+    await postSendPresenceAndUnreadRestore(chatId, hadUnreadBeforeSend);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -527,6 +635,7 @@ app.post('/send-media', async (req, res) => {
   }
 
   try {
+    const hadUnreadBeforeSend = chatHasUnreadMessages(chatId);
     if (!existsSync(filePath)) {
       return res.status(404).json({ error: `File not found: ${filePath}` });
     }
@@ -569,6 +678,8 @@ app.post('/send-media', async (req, res) => {
       }
     }
 
+    await postSendPresenceAndUnreadRestore(chatId, hadUnreadBeforeSend);
+
     res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -583,6 +694,9 @@ app.post('/typing', async (req, res) => {
 
   const { chatId } = req.body;
   if (!chatId) return res.status(400).json({ error: 'chatId required' });
+  if (!ENABLE_TYPING_INDICATOR) {
+    return res.json({ success: true, skipped: true });
+  }
 
   try {
     await sock.sendPresenceUpdate('composing', chatId);
