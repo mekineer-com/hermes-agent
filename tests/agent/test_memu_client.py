@@ -50,7 +50,7 @@ def test_memu_turn_builds_expected_payload(monkeypatch):
     assert payload["history"][0]["ts_ms"] == 1700000000000
 
 
-def test_memu_turn_uses_history_user_name_override(monkeypatch):
+def test_memu_turn_does_not_force_fill_user_name_from_history_user_name(monkeypatch):
     client = MemuHttpClient(base_url="http://127.0.0.1:8099")
     captured = {}
 
@@ -72,4 +72,12 @@ def test_memu_turn_uses_history_user_name_override(monkeypatch):
 
     assert out["ok"] is True
     payload = captured["payload"]
-    assert payload["history"][0]["name"] == "Liz Kalverda"
+    assert "name" not in payload["history"][0]
+
+
+def test_normalize_history_for_memu_still_fills_assistant_name_from_soul_name():
+    out = normalize_history_for_memu(
+        [{"role": "assistant", "content": "hi"}],
+        soul_name="Echo",
+    )
+    assert out == [{"role": "assistant", "content": "hi", "name": "Echo"}]
