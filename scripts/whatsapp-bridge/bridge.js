@@ -218,6 +218,20 @@ async function startSocket() {
       }
 
       const chatId = msg.key.remoteJid;
+      const isStatusUpdate = typeof chatId === 'string' && chatId.toLowerCase() === 'status@broadcast';
+      if (isStatusUpdate) {
+        if (WHATSAPP_DEBUG) {
+          try {
+            console.log(JSON.stringify({
+              event: 'ignored',
+              reason: 'status_update',
+              chatId,
+              messageId: msg.key.id || '',
+            }));
+          } catch {}
+        }
+        continue;
+      }
       if (WHATSAPP_DEBUG) {
         try {
           console.log(JSON.stringify({
