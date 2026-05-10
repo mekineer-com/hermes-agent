@@ -16,7 +16,7 @@ Public helpers:
 - :func:`normalize_whatsapp_identifier` — strip JID/LID/device/plus syntax
   down to the bare numeric identifier.
 - :func:`canonical_whatsapp_identifier` — walk the bridge's
-  ``lid-mapping-*.json`` files and return a stable canonical identity
+  ``lid-mapping-*.json`` files (and ``creds.json`` self aliases) and return a stable canonical identity
   across phone/LID variants.
 - :func:`expand_whatsapp_aliases` — return the full alias set for an
   identifier. Used by authorisation code that needs to match any known
@@ -33,7 +33,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Set
+from typing import Dict, Set
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,7 @@ def expand_whatsapp_aliases(identifier: str) -> Set[str]:
         return set()
 
     session_dir = get_hermes_home() / "whatsapp" / "session"
+    creds_alias_map = _load_creds_alias_map(session_dir)
     resolved: Set[str] = set()
     queue = [normalized]
 
@@ -116,7 +117,43 @@ def expand_whatsapp_aliases(identifier: str) -> Set[str]:
             if mapped and mapped not in resolved:
                 queue.append(mapped)
 
+        # Self-chat fallback: Baileys stores our own phone/LID pair in creds.json
+        # even when lid-mapping-*.json files are missing.
+        mapped_from_creds = creds_alias_map.get(current, "")
+        if mapped_from_creds and mapped_from_creds not in resolved:
+            queue.append(mapped_from_creds)
+
     return resolved
+
+
+def _load_creds_alias_map(session_dir) -> Dict[str, str]:
+    """Read phone<->LID aliases from the bridge creds.json self profile.
+
+    Returns a bidirectional map (id->lid, lid->id) using normalized numeric IDs.
+    Empty map means no usable alias pair was found.
+    """
+    creds_path = session_dir / "creds.json"
+    if not creds_path.exists():
+        return {}
+    try:
+        parsed = json.loads(creds_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.debug("whatsapp_identity: failed to read %s: %s", creds_path, exc)
+        return {}
+
+    me = parsed.get("me") if isinstance(parsed, dict) else None
+    if not isinstance(me, dict):
+        return {}
+
+    phone_id = normalize_whatsapp_identifier(me.get("id"))
+    lid_id = normalize_whatsapp_identifier(me.get("lid"))
+    if not phone_id or not lid_id or phone_id == lid_id:
+        return {}
+
+    return {
+        phone_id: lid_id,
+        lid_id: phone_id,
+    }
 
 
 def canonical_whatsapp_identifier(identifier: str) -> str:
@@ -129,7 +166,8 @@ def canonical_whatsapp_identifier(identifier: str) -> str:
     bridge may flip between the two for the same human.
 
     This helper reads the bridge's ``whatsapp/session/lid-mapping-*.json``
-    files, walks the mapping transitively, and picks the shortest
+    files (plus the self ``me.id``/``me.lid`` pair in ``creds.json``),
+    walks the mapping transitively, and picks the shortest
     (numeric-preferred) alias as the canonical identity.
     :func:`gateway.session.build_session_key` uses this for both WhatsApp
     DM chat_ids and WhatsApp group participant_ids, so callers get the
@@ -141,8 +179,7 @@ def canonical_whatsapp_identifier(identifier: str) -> str:
     the bridge reshuffles aliases.
 
     Returns an empty string if ``identifier`` normalizes to empty. If no
-    mapping files exist yet (fresh bridge install), returns the
-    normalized input unchanged.
+    mapping data exists yet, returns the normalized input unchanged.
     """
     normalized = normalize_whatsapp_identifier(identifier)
     if not normalized:
@@ -150,6 +187,6 @@ def canonical_whatsapp_identifier(identifier: str) -> str:
 
     # expand_whatsapp_aliases always includes `normalized` itself in the
     # returned set, so the min() below degrades gracefully to `normalized`
-    # when no lid-mapping files are present.
+    # when no alias mapping data is present.
     aliases = expand_whatsapp_aliases(normalized)
     return min(aliases, key=lambda candidate: (len(candidate), candidate))

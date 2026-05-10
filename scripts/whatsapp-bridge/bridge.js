@@ -116,6 +116,10 @@ const MAX_QUEUE_SIZE = 100;
 // Track recently sent message IDs to prevent echo-back loops with media
 const recentlySentIds = new Set();
 const MAX_RECENT_IDS = 50;
+// Track recently seen inbound message IDs to suppress duplicate upserts
+// for the same WhatsApp message (observed with LID/JID alias flips).
+const recentlySeenInboundIds = new Set();
+const MAX_RECENT_INBOUND_IDS = 500;
 
 let sock = null;
 let connectionState = 'disconnected';
@@ -191,6 +195,27 @@ async function startSocket() {
 
     for (const msg of messages) {
       if (!msg.message) continue;
+      const inboundMessageId = String(msg.key.id || '');
+      if (inboundMessageId && recentlySeenInboundIds.has(inboundMessageId)) {
+        if (WHATSAPP_DEBUG) {
+          try {
+            console.log(JSON.stringify({
+              event: 'ignored',
+              reason: 'duplicate_message_id',
+              messageId: inboundMessageId,
+              chatId: msg.key.remoteJid,
+            }));
+          } catch {}
+        }
+        continue;
+      }
+      if (inboundMessageId) {
+        recentlySeenInboundIds.add(inboundMessageId);
+        if (recentlySeenInboundIds.size > MAX_RECENT_INBOUND_IDS) {
+          const oldest = recentlySeenInboundIds.values().next().value;
+          if (oldest) recentlySeenInboundIds.delete(oldest);
+        }
+      }
 
       const chatId = msg.key.remoteJid;
       if (WHATSAPP_DEBUG) {

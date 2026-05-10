@@ -1016,6 +1016,26 @@ class TestWhatsAppIdentifierPublicHelpers:
         assert canonical == "15551234567"
         assert canonical_whatsapp_identifier("15551234567@s.whatsapp.net") == "15551234567"
 
+    def test_canonical_uses_creds_me_alias_without_lid_mapping_files(self, tmp_path, monkeypatch):
+        """Self-chat aliasing should still work when lid-mapping files are absent."""
+        session_dir = tmp_path / "whatsapp" / "session"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        (session_dir / "creds.json").write_text(
+            json.dumps(
+                {
+                    "me": {
+                        "id": "15133278228:13@s.whatsapp.net",
+                        "lid": "114628432556258:13@lid",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        assert canonical_whatsapp_identifier("114628432556258@lid") == "15133278228"
+        assert canonical_whatsapp_identifier("15133278228@s.whatsapp.net") == "15133278228"
+
     def test_canonical_empty_input(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         assert canonical_whatsapp_identifier("") == ""
