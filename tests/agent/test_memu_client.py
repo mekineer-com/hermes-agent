@@ -81,3 +81,45 @@ def test_normalize_history_for_memu_still_fills_assistant_name_from_soul_name():
         soul_name="Echo",
     )
     assert out == [{"role": "assistant", "content": "hi", "name": "Echo"}]
+
+
+def test_memu_turn_passes_user_name_for_current_message_speaker(monkeypatch):
+    client = MemuHttpClient(base_url="http://127.0.0.1:8099")
+    captured = {}
+
+    def _fake_post(path, payload):
+        captured["payload"] = payload
+        return {"ok": True, "response": "ok"}
+
+    monkeypatch.setattr(client, "_post", _fake_post)
+
+    client.memu_turn(
+        conversation_id="whatsapp:dm:247789598601266",
+        user_id="Marcos",
+        soul_id="Echo",
+        message="hi",
+        user_name="Liz Kalverda",
+    )
+
+    assert captured["payload"]["user_name"] == "Liz Kalverda"
+
+
+def test_memu_turn_falls_back_to_history_user_name_when_user_name_missing(monkeypatch):
+    client = MemuHttpClient(base_url="http://127.0.0.1:8099")
+    captured = {}
+
+    def _fake_post(path, payload):
+        captured["payload"] = payload
+        return {"ok": True, "response": "ok"}
+
+    monkeypatch.setattr(client, "_post", _fake_post)
+
+    client.memu_turn(
+        conversation_id="whatsapp:dm:247789598601266",
+        user_id="Marcos",
+        soul_id="Echo",
+        message="hi",
+        history_user_name="Marcos",
+    )
+
+    assert captured["payload"]["user_name"] == "Marcos"

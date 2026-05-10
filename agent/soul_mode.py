@@ -238,13 +238,15 @@ def handle_turn(
         chat_type = str(getattr(agent, "_chat_type", "") or "").strip().lower()
         channel_mode = "group" if (platform == "whatsapp" and chat_type != "dm") else "direct"
 
+        sender_display_name = str(getattr(agent, "_user_name", "") or "")
         turn_out = client.memu_turn(
             conversation_id=conversation_id,
             user_id=config.user_id,
             soul_id=config.soul_id,
             message=memu_message,
             history=history,
-            history_user_name=str(getattr(agent, "_user_name", "") or ""),
+            history_user_name=sender_display_name,
+            user_name=sender_display_name,
             run_apimw=True,
             apply_turn_maintenance=True,
             debug=False,

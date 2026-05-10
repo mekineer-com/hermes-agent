@@ -182,6 +182,7 @@ class MemuHttpClient:
         message: str,
         history: list[dict[str, Any]] | None = None,
         history_user_name: str | None = None,
+        user_name: str | None = None,
         soul_card: str | None = None,
         run_apimw: bool = True,
         apply_turn_maintenance: bool = True,
@@ -189,6 +190,7 @@ class MemuHttpClient:
         temperature: float | None = None,
         channel_mode: str | None = None,
     ) -> dict[str, Any]:
+        speaker_name = str(user_name or "").strip() or str(history_user_name or "").strip()
         payload: dict[str, Any] = {
             "conversation_id": str(conversation_id or "").strip(),
             "user_id": str(user_id or "").strip(),
@@ -203,6 +205,8 @@ class MemuHttpClient:
             "apply_turn_maintenance": bool(apply_turn_maintenance),
             "debug": bool(debug),
         }
+        if speaker_name:
+            payload["user_name"] = speaker_name
         if soul_card:
             payload["soul_card"] = str(soul_card)
         if temperature is not None:
