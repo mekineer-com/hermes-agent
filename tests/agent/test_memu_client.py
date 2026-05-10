@@ -48,24 +48,3 @@ def test_memu_turn_builds_expected_payload(monkeypatch):
     assert payload["message"] == "hello"
     assert payload["history"][0]["content"] == "prior"
     assert payload["history"][0]["ts_ms"] == 1700000000000
-
-
-def test_normalize_history_parses_shared_group_sender_prefix_for_user_messages():
-    history = [{"role": "user", "content": "[Raquel] Going to the gym now."}]
-
-    out = normalize_history_for_memu(history, user_name="Marcos")
-
-    assert len(out) == 1
-    assert out[0]["role"] == "user"
-    assert out[0]["name"] == "Raquel"
-    assert out[0]["content"] == "Going to the gym now."
-
-
-def test_normalize_history_explicit_name_wins_over_parsed_sender_prefix():
-    history = [{"role": "user", "name": "Marcos", "content": "[Raquel] Going to the gym now."}]
-
-    out = normalize_history_for_memu(history)
-
-    assert len(out) == 1
-    assert out[0]["name"] == "Marcos"
-    assert out[0]["content"] == "[Raquel] Going to the gym now."

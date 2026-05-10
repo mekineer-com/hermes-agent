@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -17,7 +16,6 @@ from datetime import datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
-_SHARED_GROUP_PREFIX_RE = re.compile(r"^\[([^\]]+)\]\s+(.+)$")
 
 
 class MemuClientError(RuntimeError):
@@ -60,17 +58,6 @@ def _parse_iso_datetime(value: str) -> datetime | None:
         return None
 
 
-def _parse_shared_group_sender_prefix(text: str) -> tuple[str, str] | None:
-    match = _SHARED_GROUP_PREFIX_RE.match(text)
-    if not match:
-        return None
-    sender = match.group(1).strip()
-    message = match.group(2).strip()
-    if not sender or not message:
-        return None
-    return sender, message
-
-
 def normalize_history_for_memu(
     history: list[dict[str, Any]] | None,
     *,
@@ -99,19 +86,11 @@ def normalize_history_for_memu(
         if not text:
             continue
 
-        explicit_name = str(msg.get("name") or "").strip()
-        if role == "user" and not explicit_name:
-            parsed_sender = _parse_shared_group_sender_prefix(text)
-            if parsed_sender is not None:
-                parsed_name, parsed_text = parsed_sender
-                text = parsed_text
-                explicit_name = parsed_name
-
         out: dict[str, Any] = {
             "role": role,
             "content": text,
         }
-        name = explicit_name or role_to_name.get(role, "")
+        name = str(msg.get("name") or "").strip() or role_to_name.get(role, "")
         if name:
             out["name"] = name
 
