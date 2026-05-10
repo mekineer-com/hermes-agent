@@ -244,6 +244,7 @@ def handle_turn(
             soul_id=config.soul_id,
             message=memu_message,
             history=history,
+            history_user_name=str(getattr(agent, "_user_name", "") or ""),
             run_apimw=True,
             apply_turn_maintenance=True,
             debug=False,

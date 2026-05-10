@@ -48,3 +48,28 @@ def test_memu_turn_builds_expected_payload(monkeypatch):
     assert payload["message"] == "hello"
     assert payload["history"][0]["content"] == "prior"
     assert payload["history"][0]["ts_ms"] == 1700000000000
+
+
+def test_memu_turn_uses_history_user_name_override(monkeypatch):
+    client = MemuHttpClient(base_url="http://127.0.0.1:8099")
+    captured = {}
+
+    def _fake_post(path, payload):
+        captured["path"] = path
+        captured["payload"] = payload
+        return {"ok": True, "response": "ok"}
+
+    monkeypatch.setattr(client, "_post", _fake_post)
+
+    out = client.memu_turn(
+        conversation_id="whatsapp:dm:247789598601266",
+        user_id="Marcos",
+        soul_id="Echo",
+        message="hello",
+        history=[{"role": "user", "content": "prior"}],
+        history_user_name="Liz Kalverda",
+    )
+
+    assert out["ok"] is True
+    payload = captured["payload"]
+    assert payload["history"][0]["name"] == "Liz Kalverda"
