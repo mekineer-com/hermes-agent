@@ -200,6 +200,53 @@ def _make_failed_result(agent: Any, error_msg: str, error_detail: str, messages:
     }
 
 
+def _silent_listen_result(
+    agent: Any,
+    config: SoulModeConfig,
+    messages: list,
+    conversation_history: List[Dict[str, Any]] | None,
+    user_message: Any,
+    task_id: str,
+    summarize_for_log: Any,
+    platform: str,
+    *,
+    exit_reason: str = "soul_mode_listen",
+) -> dict:
+    """Shared exit for any turn where the soul should not respond.
+
+    Used by the natural SPEAK/LISTEN gate and by memu.json channel-policy
+    branches (``excluded``, ``listen_only``).
+    """
+    messages.append({"role": "assistant", "content": ""})
+    agent._save_trajectory(messages, summarize_for_log(user_message), True)
+    agent._cleanup_task_resources(task_id)
+    agent._persist_session(messages, conversation_history)
+    agent.clear_interrupt()
+    agent._stream_callback = None
+    _invoke_hook_safe(
+        "on_session_end",
+        session_id=agent.session_id,
+        completed=True,
+        interrupted=False,
+        model=agent.model,
+        platform=platform,
+    )
+    return {
+        "final_response": "",
+        "last_reasoning": None,
+        "messages": messages,
+        "api_calls": 0,
+        "completed": True,
+        "turn_exit_reason": exit_reason,
+        "partial": False,
+        "interrupted": False,
+        "response_previewed": False,
+        "model": agent.model,
+        "provider": agent.provider,
+        "base_url": agent.base_url,
+    }
+
+
 def handle_turn(
     agent: Any,
     config: SoulModeConfig,
@@ -237,8 +284,37 @@ def handle_turn(
         platform = str(getattr(agent, "platform", "") or "").strip().lower()
         chat_type = str(getattr(agent, "_chat_type", "") or "").strip().lower()
         channel_mode = "group" if (platform == "whatsapp" and chat_type != "dm") else "direct"
-
         sender_display_name = str(getattr(agent, "_user_name", "") or "")
+
+        # WhatsApp channel policy (memu.json): "excluded" → drop silently, no
+        # ingestion. "listen_only" → ingest into memU's messages table for memorize
+        # + cross-chat context, but skip the soul turn entirely.
+        if platform == "whatsapp":
+            from gateway.memu_policy import whatsapp_channel_policy
+            policy = whatsapp_channel_policy(str(getattr(agent, "_chat_id", "") or ""))
+            if policy == "excluded":
+                logger.info("Soul excluded for %s (memu.json policy)", conversation_id)
+                return _silent_listen_result(
+                    agent, config, messages, conversation_history, user_message,
+                    task_id, summarize_for_log, platform, exit_reason="soul_mode_excluded",
+                )
+            if policy == "listen_only":
+                try:
+                    client.append_message_only(
+                        conversation_id=conversation_id,
+                        user_id=config.user_id,
+                        soul_id=config.soul_id,
+                        message=memu_message,
+                        user_name=sender_display_name,
+                    )
+                except Exception as exc:
+                    logger.warning("Soul listen_only append failed for %s: %s", conversation_id, exc)
+                logger.info("Soul listen_only for %s (memu.json policy)", conversation_id)
+                return _silent_listen_result(
+                    agent, config, messages, conversation_history, user_message,
+                    task_id, summarize_for_log, platform, exit_reason="soul_mode_listen_only",
+                )
+
         turn_out = client.memu_turn(
             conversation_id=conversation_id,
             user_id=config.user_id,
@@ -264,27 +340,10 @@ def handle_turn(
 
         if not turn_out.get("should_respond", True):
             logger.info("Soul chose LISTEN for %s (channel_mode=%s)", conversation_id, channel_mode)
-            messages.append({"role": "assistant", "content": ""})
-            agent._save_trajectory(messages, summarize_for_log(user_message), True)
-            agent._cleanup_task_resources(task_id)
-            agent._persist_session(messages, conversation_history)
-            agent.clear_interrupt()
-            agent._stream_callback = None
-            _invoke_hook_safe("on_session_end", session_id=agent.session_id, completed=True, interrupted=False, model=agent.model, platform=platform)
-            return {
-                "final_response": "",
-                "last_reasoning": None,
-                "messages": messages,
-                "api_calls": 0,
-                "completed": True,
-                "turn_exit_reason": "soul_mode_listen",
-                "partial": False,
-                "interrupted": False,
-                "response_previewed": False,
-                "model": agent.model,
-                "provider": agent.provider,
-                "base_url": agent.base_url,
-            }
+            return _silent_listen_result(
+                agent, config, messages, conversation_history, user_message,
+                task_id, summarize_for_log, platform,
+            )
 
         final_response = str(turn_out.get("response") or "").strip()
         if not final_response:
