@@ -209,6 +209,99 @@ def test_handle_turn_raises_on_ok_false(soul_agent):
     assert result["failed"] is True
 
 
+def test_handle_turn_listens_when_response_target_listen(soul_agent):
+    """response_target=listen means the soul ran the turn but chose silence."""
+    mock_client = MagicMock()
+    mock_client.memu_turn.return_value = {
+        "ok": True,
+        "response": "",
+        "response_target": "listen",
+        "response_peer": "",
+    }
+    soul_agent._soul_config._client = mock_client
+
+    result = soul_mode.handle_turn(
+        soul_agent, soul_agent._soul_config,
+        user_message="hi",
+        conversation_history=[],
+        messages=[{"role": "user", "content": "hi"}],
+        task_id="test-task",
+        original_user_message="hi",
+        summarize_for_log=lambda x: str(x)[:50],
+    )
+
+    assert result["completed"] is True
+    assert result["final_response"] == ""
+
+
+def test_handle_turn_silent_when_peer_mismatch_dropped_response(soul_agent):
+    """memu drops response_text to "" when the soul names the wrong peer.
+    soul_mode must treat that as a silent exit, not an error."""
+    mock_client = MagicMock()
+    mock_client.memu_turn.return_value = {
+        "ok": True,
+        "response": "",  # memu's peer-mismatch guard cleared it
+        "response_target": "respond",
+        "response_peer": "Alice",
+    }
+    soul_agent._soul_config._client = mock_client
+
+    result = soul_mode.handle_turn(
+        soul_agent, soul_agent._soul_config,
+        user_message="hi",
+        conversation_history=[],
+        messages=[{"role": "user", "content": "hi"}],
+        task_id="test-task",
+        original_user_message="hi",
+        summarize_for_log=lambda x: str(x)[:50],
+    )
+
+    assert result["completed"] is True
+    assert result["final_response"] == ""
+
+
+def test_handle_turn_routes_private_to_self_dm_on_whatsapp(soul_agent, monkeypatch):
+    """response_target=private on WhatsApp routes the reply to the human's
+    self-DM via the bridge, and the agent path exits silently so the
+    gateway does NOT also send to the originating chat."""
+    soul_agent.platform = "whatsapp"
+    soul_agent._chat_id = "247789598601266@lid"
+    soul_agent._chat_type = "dm"
+    soul_agent._chat_name = "Alice"
+
+    mock_client = MagicMock()
+    mock_client.memu_turn.return_value = {
+        "ok": True,
+        "response": "aside for you",
+        "response_target": "private",
+        "response_peer": "",
+    }
+    soul_agent._soul_config._client = mock_client
+
+    from agent import whatsapp_bridge_client
+    monkeypatch.setattr(whatsapp_bridge_client, "read_self_dm_jid", lambda: "15133278228@s.whatsapp.net")
+    sent = []
+    monkeypatch.setattr(
+        whatsapp_bridge_client,
+        "send_text",
+        lambda chat_id, text, **_kw: (sent.append((chat_id, text)) or True),
+    )
+
+    result = soul_mode.handle_turn(
+        soul_agent, soul_agent._soul_config,
+        user_message="hi",
+        conversation_history=[],
+        messages=[{"role": "user", "content": "hi"}],
+        task_id="test-task",
+        original_user_message="hi",
+        summarize_for_log=lambda x: str(x)[:50],
+    )
+
+    assert sent == [("15133278228@s.whatsapp.net", "aside for you")]
+    assert result["completed"] is True
+    assert result["final_response"] == ""  # gateway's default send path stays quiet
+
+
 # --- Phase 2: conversation routing ---
 
 

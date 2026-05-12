@@ -348,7 +348,55 @@ def handle_turn(
                 task_id, summarize_for_log, platform,
             )
 
-        final_response = str(turn_out.get("response") or "").strip()
+        response_target = str(turn_out.get("response_target") or "respond").strip().lower()
+        response_peer = str(turn_out.get("response_peer") or "").strip()
+        response_text = str(turn_out.get("response") or "").strip()
+
+        # Post-turn LISTEN: the soul ran the turn and chose silence.
+        if response_target == "listen":
+            logger.info("Soul chose response_target=listen for %s", conversation_id)
+            return _silent_listen_result(
+                agent, config, messages, conversation_history, user_message,
+                task_id, summarize_for_log, platform,
+            )
+
+        # memu drops response_text to "" when respond is targeted at a peer
+        # name that doesn't match the originating chat (peer-mismatch guard
+        # in conversation_turn). Refusing to send is the correct outcome —
+        # the soul named the wrong chat.
+        if response_target == "respond" and not response_text:
+            logger.info(
+                "Soul response dropped (response_peer=%r did not match chat) for %s",
+                response_peer, conversation_id,
+            )
+            return _silent_listen_result(
+                agent, config, messages, conversation_history, user_message,
+                task_id, summarize_for_log, platform,
+            )
+
+        # PRIVATE on WhatsApp: route to the human's self-DM (their own
+        # number's chat-with-self) instead of the originating chat. Other
+        # platforms have no self-DM concept and fall through to the default
+        # respond path below.
+        if response_target == "private" and platform == "whatsapp" and response_text:
+            from agent.whatsapp_bridge_client import read_self_dm_jid, send_text
+            self_dm = read_self_dm_jid()
+            if self_dm and send_text(self_dm, response_text):
+                logger.info(
+                    "Soul routed PRIVATE to self-DM %s (from %s)",
+                    self_dm, conversation_id,
+                )
+            else:
+                logger.warning(
+                    "Soul PRIVATE not routed (self_dm=%r); silent exit for %s",
+                    self_dm, conversation_id,
+                )
+            return _silent_listen_result(
+                agent, config, messages, conversation_history, user_message,
+                task_id, summarize_for_log, platform,
+            )
+
+        final_response = response_text
         if not final_response:
             raise MemuClientError(
                 "memU turn returned empty response",
