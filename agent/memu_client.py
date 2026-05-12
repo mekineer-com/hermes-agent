@@ -189,6 +189,8 @@ class MemuHttpClient:
         debug: bool = False,
         temperature: float | None = None,
         channel_mode: str | None = None,
+        chat_name: str | None = None,
+        chat_type: str | None = None,
     ) -> dict[str, Any]:
         speaker_name = str(user_name or "").strip() or str(history_user_name or "").strip()
         payload: dict[str, Any] = {
@@ -213,6 +215,15 @@ class MemuHttpClient:
             payload["temperature"] = float(temperature)
         if channel_mode:
             payload["channel_mode"] = str(channel_mode)
+        # chat_name / chat_type identify the originating chat (e.g. "Alice" / "dm").
+        # memu uses them to render "Current chat:" in the turn prompt and to
+        # validate the soul's response_peer against the actual chat.
+        chat_name_clean = str(chat_name or "").strip()
+        if chat_name_clean:
+            payload["chat_name"] = chat_name_clean
+        chat_type_clean = str(chat_type or "").strip()
+        if chat_type_clean:
+            payload["chat_type"] = chat_type_clean
 
         return self._post("/integration/memu/turn", payload)
 

@@ -48,6 +48,38 @@ def test_memu_turn_builds_expected_payload(monkeypatch):
     assert payload["message"] == "hello"
     assert payload["history"][0]["content"] == "prior"
     assert payload["history"][0]["ts_ms"] == 1700000000000
+    # When the caller omits chat_name / chat_type the keys must be absent
+    # (legacy callers + tests should keep working).
+    assert "chat_name" not in payload
+    assert "chat_type" not in payload
+
+
+def test_memu_turn_forwards_chat_name_and_chat_type(monkeypatch):
+    """chat_name and chat_type must flow through to memu's payload so the
+    server can render `Current chat:` in the turn prompt and validate the
+    soul's response_peer against the actual originating chat.
+    """
+    client = MemuHttpClient(base_url="http://127.0.0.1:8099")
+    captured = {}
+
+    def _fake_post(path, payload):
+        captured["payload"] = payload
+        return {"ok": True, "response": "hi"}
+
+    monkeypatch.setattr(client, "_post", _fake_post)
+
+    client.memu_turn(
+        conversation_id="whatsapp:dm:19999999999",
+        user_id="Marcos",
+        soul_id="Echo",
+        message="hi",
+        chat_name="Alice",
+        chat_type="dm",
+    )
+
+    payload = captured["payload"]
+    assert payload["chat_name"] == "Alice"
+    assert payload["chat_type"] == "dm"
 
 
 def test_memu_turn_does_not_force_fill_user_name_from_history_user_name(monkeypatch):
