@@ -191,6 +191,7 @@ class MemuHttpClient:
         channel_mode: str | None = None,
         chat_name: str | None = None,
         chat_type: str | None = None,
+        memorize_chat: bool | None = None,
     ) -> dict[str, Any]:
         speaker_name = str(user_name or "").strip() or str(history_user_name or "").strip()
         payload: dict[str, Any] = {
@@ -224,6 +225,8 @@ class MemuHttpClient:
         chat_type_clean = str(chat_type or "").strip()
         if chat_type_clean:
             payload["chat_type"] = chat_type_clean
+        if isinstance(memorize_chat, bool):
+            payload["memorize_chat"] = memorize_chat
 
         return self._post("/integration/memu/turn", payload)
 
@@ -236,6 +239,7 @@ class MemuHttpClient:
         message: str,
         user_name: str | None = None,
         role: str = "user",
+        memorize_chat: bool | None = None,
     ) -> dict[str, Any]:
         """Ingest one message into memU's messages table without engaging the soul.
 
@@ -254,6 +258,8 @@ class MemuHttpClient:
         speaker_name = str(user_name or "").strip()
         if speaker_name:
             payload["user_name"] = speaker_name
+        if isinstance(memorize_chat, bool):
+            payload["memorize_chat"] = memorize_chat
         path = f"/conversation/{urllib.parse.quote(cid, safe='')}/messages/append"
         return self._post(path, payload)
 

@@ -36,16 +36,14 @@ def _read_memu_config() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def whatsapp_channel_policy(chat_id: str) -> WhatsAppChannelPolicy:
-    """Return the configured policy for a WhatsApp chat. Default is ``full``.
+def _default_memorize_for_policy(policy: WhatsAppChannelPolicy) -> bool:
+    return policy != "excluded"
 
-    Looks up the chat under ``whatsapp.channels.<chat_id>.policy`` using the
-    canonical form of the identifier (collapses phone/LID variants). Returns
-    ``full`` if the chat isn't listed or the file is missing/malformed.
-    """
+
+def _read_whatsapp_channel_entry(chat_id: str) -> dict | None:
     raw = str(chat_id or "").strip()
     if not raw:
-        return "full"
+        return None
     config = _read_memu_config()
     channels = (
         config.get("whatsapp", {}).get("channels", {})
@@ -53,9 +51,8 @@ def whatsapp_channel_policy(chat_id: str) -> WhatsAppChannelPolicy:
         else {}
     )
     if not isinstance(channels, dict) or not channels:
-        return "full"
+        return None
 
-    # Try several identifier shapes: exact, canonical, and normalized.
     canonical = canonical_whatsapp_identifier(raw) or ""
     normalized = normalize_whatsapp_identifier(raw) or ""
     for candidate in (raw, canonical, normalized):
@@ -63,7 +60,48 @@ def whatsapp_channel_policy(chat_id: str) -> WhatsAppChannelPolicy:
             continue
         entry = channels.get(candidate)
         if isinstance(entry, dict):
-            policy = str(entry.get("policy") or "").strip().lower()
-            if policy in {"full", "listen_only", "excluded"}:
-                return policy  # type: ignore[return-value]
+            return entry
+    return None
+
+
+def whatsapp_channel_policy(chat_id: str) -> WhatsAppChannelPolicy:
+    """Return the configured policy for a WhatsApp chat. Default is ``full``.
+
+    Looks up the chat under ``whatsapp.channels.<chat_id>.policy`` using the
+    canonical form of the identifier (collapses phone/LID variants). Returns
+    ``full`` if the chat isn't listed or the file is missing/malformed.
+    """
+    entry = _read_whatsapp_channel_entry(chat_id)
+    if isinstance(entry, dict):
+        policy = str(entry.get("policy") or "").strip().lower()
+        if policy in {"full", "listen_only", "excluded"}:
+            return policy  # type: ignore[return-value]
     return "full"
+
+
+def whatsapp_channel_memorize(chat_id: str) -> bool:
+    """Return whether this chat should be extracted during memorize."""
+    policy = whatsapp_channel_policy(chat_id)
+    if policy == "excluded":
+        return False
+    entry = _read_whatsapp_channel_entry(chat_id)
+    if isinstance(entry, dict):
+        raw_memorize = entry.get("memorize")
+        if isinstance(raw_memorize, bool):
+            return raw_memorize
+    return _default_memorize_for_policy(policy)
+
+
+def whatsapp_channel_settings(chat_id: str) -> tuple[WhatsAppChannelPolicy, bool]:
+    """Return (policy, memorize) for a WhatsApp chat from ``~/.hermes/memu.json``."""
+    entry = _read_whatsapp_channel_entry(chat_id)
+    policy: WhatsAppChannelPolicy = "full"
+    if isinstance(entry, dict):
+        raw_policy = str(entry.get("policy") or "").strip().lower()
+        if raw_policy in {"full", "listen_only", "excluded"}:
+            policy = raw_policy  # type: ignore[assignment]
+    if policy == "excluded":
+        return policy, False
+    if isinstance(entry, dict) and isinstance(entry.get("memorize"), bool):
+        return policy, bool(entry.get("memorize"))
+    return policy, _default_memorize_for_policy(policy)

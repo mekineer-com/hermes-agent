@@ -286,13 +286,14 @@ def handle_turn(
         chat_name = str(getattr(agent, "_chat_name", "") or "").strip()
         channel_mode = "group" if (platform == "whatsapp" and chat_type != "dm") else "direct"
         sender_display_name = str(getattr(agent, "_user_name", "") or "")
+        memorize_chat: bool | None = None
 
         # WhatsApp channel policy (memu.json): "excluded" → drop silently, no
         # ingestion. "listen_only" → ingest into memU's messages table for memorize
         # + cross-chat context, but skip the soul turn entirely.
         if platform == "whatsapp":
-            from gateway.memu_policy import whatsapp_channel_policy
-            policy = whatsapp_channel_policy(str(getattr(agent, "_chat_id", "") or ""))
+            from gateway.memu_policy import whatsapp_channel_settings
+            policy, memorize_chat = whatsapp_channel_settings(str(getattr(agent, "_chat_id", "") or ""))
             if policy == "excluded":
                 logger.info("Soul excluded for %s (memu.json policy)", conversation_id)
                 return _silent_listen_result(
@@ -307,6 +308,7 @@ def handle_turn(
                         soul_id=config.soul_id,
                         message=memu_message,
                         user_name=sender_display_name,
+                        memorize_chat=memorize_chat,
                     )
                 except Exception as exc:
                     logger.warning("Soul listen_only append failed for %s: %s", conversation_id, exc)
@@ -330,6 +332,7 @@ def handle_turn(
             channel_mode=channel_mode,
             chat_name=chat_name,
             chat_type=chat_type,
+            memorize_chat=memorize_chat,
         )
 
         turn_ok = turn_out.get("ok", True)
