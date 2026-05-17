@@ -1939,6 +1939,11 @@ class GatewayRunner:
         route["request_overrides"] = overrides or {}
         return route
 
+    @staticmethod
+    def _resolve_soul_mode_agent_config(user_config: dict | None, session_key: str) -> dict[str, Any]:
+        from agent.soul_mode import resolve_agent_config
+        return resolve_agent_config(user_config, session_key)
+
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to an adapter failure after startup.
 
@@ -15250,6 +15255,7 @@ class GatewayRunner:
                 )
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            soul_mode_cfg = self._resolve_soul_mode_agent_config(user_config, session_key or "")
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -15309,6 +15315,7 @@ class GatewayRunner:
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
+                    soul_mode_cfg=soul_mode_cfg,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
@@ -15328,6 +15335,8 @@ class GatewayRunner:
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
+            if hasattr(agent, "configure_soul_mode"):
+                agent.configure_soul_mode(**soul_mode_cfg)
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []

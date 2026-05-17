@@ -460,40 +460,40 @@ class TestSenderPrefixWithBackfill:
             user_name="Alice",
         )
 
-    @pytest.mark.asyncio
-    async def test_plain_message_gets_prefix(self, runner, source):
+    def test_plain_message_gets_prefix(self, runner, source):
         """Normal message without backfill gets [sender] prefix."""
+        import asyncio
         event = MessageEvent(text="hello world", source=source)
-        result = await runner._prepare_inbound_message_text(
+        result = asyncio.run(runner._prepare_inbound_message_text(
             event=event, source=source, history=[],
-        )
+        ))
         assert result == "[Alice] hello world"
 
-    @pytest.mark.asyncio
-    async def test_backfill_prefix_only_on_trigger(self, runner, source):
+    def test_backfill_prefix_only_on_trigger(self, runner, source):
         """Backfill context must NOT get the sender prefix."""
+        import asyncio
         event = MessageEvent(
             text="hello world",
             source=source,
             channel_context="[Recent channel messages]\n[Bob] some context",
         )
-        result = await runner._prepare_inbound_message_text(
+        result = asyncio.run(runner._prepare_inbound_message_text(
             event=event, source=source, history=[],
-        )
+        ))
         assert result.startswith("[Recent channel messages]")
         assert "[Alice] [Recent channel messages]" not in result
         assert "[New message]\n[Alice] hello world" in result
 
-    @pytest.mark.asyncio
-    async def test_backfill_preserves_context_block(self, runner, source):
+    def test_backfill_preserves_context_block(self, runner, source):
         """The backfill block should pass through unchanged — no double-prefixing."""
+        import asyncio
         context = "[Recent channel messages]\n[Bob] first\n[Charlie [bot]] second"
         event = MessageEvent(
             text="hey everyone", source=source, channel_context=context,
         )
-        result = await runner._prepare_inbound_message_text(
+        result = asyncio.run(runner._prepare_inbound_message_text(
             event=event, source=source, history=[],
-        )
+        ))
         assert result.startswith(context)
         assert "[Alice] hey everyone" in result
         assert "[Alice] [Bob]" not in result
@@ -1086,6 +1086,26 @@ class TestWhatsAppIdentifierPublicHelpers:
         canonical = canonical_whatsapp_identifier("999999999999999@lid")
         assert canonical == "15551234567"
         assert canonical_whatsapp_identifier("15551234567@s.whatsapp.net") == "15551234567"
+
+    def test_canonical_uses_creds_me_alias_without_lid_mapping_files(self, tmp_path, monkeypatch):
+        """Self-chat aliasing should still work when lid-mapping files are absent."""
+        session_dir = tmp_path / "whatsapp" / "session"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        (session_dir / "creds.json").write_text(
+            json.dumps(
+                {
+                    "me": {
+                        "id": "15133278228:13@s.whatsapp.net",
+                        "lid": "114628432556258:13@lid",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        assert canonical_whatsapp_identifier("114628432556258@lid") == "15133278228"
+        assert canonical_whatsapp_identifier("15133278228@s.whatsapp.net") == "15133278228"
 
     def test_canonical_empty_input(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

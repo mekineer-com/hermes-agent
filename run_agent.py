@@ -162,6 +162,7 @@ from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent import soul_mode as _soul_mode
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
     _deterministic_call_id as _codex_deterministic_call_id,
@@ -1225,6 +1226,7 @@ class AIAgent:
         chat_type: str = None,
         thread_id: str = None,
         gateway_session_key: str = None,
+        soul_mode_cfg: dict = None,
         skip_context_files: bool = False,
         load_soul_identity: bool = False,
         skip_memory: bool = False,
@@ -1307,6 +1309,7 @@ class AIAgent:
         self._chat_type = chat_type
         self._thread_id = thread_id
         self._gateway_session_key = gateway_session_key  # Stable per-chat key (e.g. agent:main:telegram:dm:123)
+        self._soul_config = _soul_mode.configure(**(soul_mode_cfg or {}))
         # Pluggable print function — CLI replaces this with _cprint so that
         # raw ANSI status lines are routed through prompt_toolkit's renderer
         # instead of going directly to stdout where patch_stdout's StdoutProxy
@@ -6685,6 +6688,10 @@ class AIAgent:
             f"thread={self._thread_identity()} provider={provider} "
             f"base_url={base_url} model={model}"
         )
+
+    def configure_soul_mode(self, **kwargs) -> None:
+        """Reconfigure soul-mode settings. Delegates to agent.soul_mode."""
+        self._soul_config = _soul_mode.configure(**kwargs)
 
     def _openai_client_lock(self) -> threading.RLock:
         lock = getattr(self, "_client_lock", None)
@@ -12349,6 +12356,17 @@ class AIAgent:
         messages.append(user_msg)
         current_turn_user_idx = len(messages) - 1
         self._persist_user_message_idx = current_turn_user_idx
+
+        if self._soul_config.is_active():
+            return _soul_mode.handle_turn(
+                self, self._soul_config,
+                user_message=user_message,
+                conversation_history=conversation_history,
+                messages=messages,
+                task_id=effective_task_id,
+                original_user_message=original_user_message,
+                summarize_for_log=_summarize_user_message_for_log,
+            )
         
         if not self.quiet_mode:
             _print_preview = _summarize_user_message_for_log(user_message)
