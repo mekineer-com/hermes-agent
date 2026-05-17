@@ -1939,6 +1939,11 @@ class GatewayRunner:
         route["request_overrides"] = overrides or {}
         return route
 
+    @staticmethod
+    def _resolve_soul_mode_agent_config(user_config: dict | None, session_key: str) -> dict[str, Any]:
+        from agent.soul_mode import resolve_agent_config
+        return resolve_agent_config(user_config, session_key)
+
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to an adapter failure after startup.
 
@@ -15250,6 +15255,7 @@ class GatewayRunner:
                 )
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            soul_mode_cfg = self._resolve_soul_mode_agent_config(user_config, session_key or "")
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -15309,6 +15315,13 @@ class GatewayRunner:
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
+                    soul_mode_enabled=bool(soul_mode_cfg.get("enabled")),
+                    soul_mode_role=str(soul_mode_cfg.get("role") or "standard"),
+                    soul_mode_soul_id=str(soul_mode_cfg.get("soul_id") or ""),
+                    soul_mode_user_id=str(soul_mode_cfg.get("user_id") or ""),
+                    soul_mode_memu_base_url=str(soul_mode_cfg.get("memu_base_url") or "http://127.0.0.1:8099"),
+                    soul_mode_use_memu_turn=bool(soul_mode_cfg.get("use_memu_turn", True)),
+                    soul_mode_timeout_seconds=float(soul_mode_cfg.get("timeout_seconds", 45.0)),
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
@@ -15328,6 +15341,16 @@ class GatewayRunner:
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
+            if hasattr(agent, "configure_soul_mode"):
+                agent.configure_soul_mode(
+                    enabled=bool(soul_mode_cfg.get("enabled")),
+                    role=str(soul_mode_cfg.get("role") or "standard"),
+                    soul_id=str(soul_mode_cfg.get("soul_id") or ""),
+                    user_id=str(soul_mode_cfg.get("user_id") or ""),
+                    memu_base_url=str(soul_mode_cfg.get("memu_base_url") or "http://127.0.0.1:8099"),
+                    use_memu_turn=bool(soul_mode_cfg.get("use_memu_turn", True)),
+                    timeout_seconds=float(soul_mode_cfg.get("timeout_seconds", 45.0)),
+                )
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []
