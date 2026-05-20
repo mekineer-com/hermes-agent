@@ -20,6 +20,7 @@ import pytest
 
 from gateway.config import Platform
 from gateway.platforms.base import ProcessingOutcome
+from gateway.platforms.whatsapp_wal import WhatsAppGatewayWal
 
 
 # ---------------------------------------------------------------------------
@@ -919,3 +920,119 @@ class TestGatewayWalHooking:
 
         with pytest.raises(ValueError, match="Invalid WhatsApp WAL row payload"):
             await adapter._replay_gateway_wal()
+
+
+class TestGatewayWalCrashWindows:
+    @pytest.mark.asyncio
+    async def test_ack_then_dispatch_crash_replays_after_restart(self, tmp_path):
+        wal_path = tmp_path / "gateway_wal.jsonl"
+        offset_path = tmp_path / "gateway_wal.offset"
+        wal1 = WhatsAppGatewayWal(
+            wal_path=wal_path,
+            offset_path=offset_path,
+            compact_every=100,
+        )
+
+        adapter1 = _make_adapter()
+        adapter1._gateway_wal = wal1
+        adapter1._running = True
+        adapter1._check_managed_bridge_exit = AsyncMock(return_value=None)
+        adapter1._build_message_event = AsyncMock(side_effect=RuntimeError("boom-before-dispatch"))
+        adapter1.handle_message = AsyncMock()
+
+        first_resp = MagicMock()
+        first_resp.status = 200
+        first_resp.json = AsyncMock(return_value=[{"seq": 501, "chatId": "a@lid", "body": "one"}])
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=_AsyncCM(first_resp))
+        mock_session.post = MagicMock(return_value=_AsyncCM(MagicMock(status=200)))
+        adapter1._http_session = mock_session
+
+        async def _sleep_once(*_args, **_kwargs):
+            adapter1._running = False
+
+        with patch("gateway.platforms.whatsapp.asyncio.sleep", new=AsyncMock(side_effect=_sleep_once)):
+            await adapter1._poll_messages()
+
+        assert [row["bridge_seq"] for row in wal1.pending()] == [501]
+
+        wal2 = WhatsAppGatewayWal(
+            wal_path=wal_path,
+            offset_path=offset_path,
+            compact_every=100,
+        )
+        adapter2 = _make_adapter()
+        adapter2._gateway_wal = wal2
+        adapter2.handle_message = AsyncMock()
+        replay_event = MagicMock()
+        replay_event.raw_message = {}
+        adapter2._build_message_event = AsyncMock(return_value=replay_event)
+
+        await adapter2._replay_gateway_wal()
+
+        adapter2.handle_message.assert_awaited_once()
+        assert replay_event.raw_message["bridge_seq"] == 501
+        assert replay_event.raw_message["wal_seq"] == 1
+
+        await adapter2.on_processing_complete(replay_event, ProcessingOutcome.SUCCESS)
+        assert wal2.pending() == []
+
+    @pytest.mark.asyncio
+    async def test_mid_turn_crash_before_completion_replays_after_restart(self, tmp_path):
+        wal_path = tmp_path / "gateway_wal.jsonl"
+        offset_path = tmp_path / "gateway_wal.offset"
+        wal1 = WhatsAppGatewayWal(
+            wal_path=wal_path,
+            offset_path=offset_path,
+            compact_every=100,
+        )
+
+        adapter1 = _make_adapter()
+        adapter1._gateway_wal = wal1
+        adapter1._running = True
+        adapter1._check_managed_bridge_exit = AsyncMock(return_value=None)
+        polled_event = MagicMock()
+        polled_event.raw_message = {"chatId": "a@lid"}
+        adapter1._build_message_event = AsyncMock(return_value=polled_event)
+        # Emulates async dispatch return; completion hook is intentionally not invoked.
+        adapter1.handle_message = AsyncMock(return_value=None)
+
+        first_resp = MagicMock()
+        first_resp.status = 200
+        first_resp.json = AsyncMock(return_value=[{"seq": 777, "chatId": "a@lid", "body": "hello"}])
+        second_resp = MagicMock()
+        second_resp.status = 200
+        second_resp.json = AsyncMock(return_value=[])
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(side_effect=[_AsyncCM(first_resp), _AsyncCM(second_resp)])
+        mock_session.post = MagicMock(return_value=_AsyncCM(MagicMock(status=200)))
+        adapter1._http_session = mock_session
+
+        async def _sleep_once(*_args, **_kwargs):
+            adapter1._running = False
+
+        with patch("gateway.platforms.whatsapp.asyncio.sleep", new=AsyncMock(side_effect=_sleep_once)):
+            await adapter1._poll_messages()
+
+        adapter1.handle_message.assert_awaited_once()
+        assert [row["bridge_seq"] for row in wal1.pending()] == [777]
+
+        wal2 = WhatsAppGatewayWal(
+            wal_path=wal_path,
+            offset_path=offset_path,
+            compact_every=100,
+        )
+        adapter2 = _make_adapter()
+        adapter2._gateway_wal = wal2
+        adapter2.handle_message = AsyncMock()
+        replay_event = MagicMock()
+        replay_event.raw_message = {}
+        adapter2._build_message_event = AsyncMock(return_value=replay_event)
+
+        await adapter2._replay_gateway_wal()
+        adapter2.handle_message.assert_awaited_once()
+        assert replay_event.raw_message["bridge_seq"] == 777
+        assert replay_event.raw_message["wal_seq"] == 1
+
+        await adapter2.on_processing_complete(replay_event, ProcessingOutcome.SUCCESS)
+        assert wal2.pending() == []
