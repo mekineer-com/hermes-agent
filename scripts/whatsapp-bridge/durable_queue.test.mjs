@@ -1,0 +1,145 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import os from 'node:os';
+import path from 'node:path';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+
+import { DurableQueue } from './durable_queue.js';
+
+function mkQueueDir() {
+  return mkdtempSync(path.join(os.tmpdir(), 'hermes-wa-queue-'));
+}
+
+function readLines(filePath) {
+  const raw = readFileSync(filePath, 'utf8');
+  return raw.split('\n').map((line) => line.trim()).filter(Boolean);
+}
+
+test('durable queue preserves unacked messages across restart and ack', () => {
+  const queueDir = mkQueueDir();
+  try {
+    const queue = new DurableQueue({ queueDir, compactionEveryAcks: 1000 });
+    const one = queue.enqueue({
+      messageId: 'm1',
+      chatId: '247789598601266@lid',
+      senderId: '247789598601266@lid',
+      senderName: 'Liz',
+      isGroup: false,
+      body: 'hello',
+      hasMedia: false,
+      mediaType: '',
+      mediaUrls: [],
+      mentionedIds: [],
+      quotedMessageId: null,
+      quotedParticipant: null,
+      quotedRemoteJid: null,
+      hasQuotedMessage: false,
+      botIds: [],
+      timestamp: 1,
+    });
+    const two = queue.enqueue({
+      messageId: 'm2',
+      chatId: '247789598601266@lid',
+      senderId: '247789598601266@lid',
+      senderName: 'Liz',
+      isGroup: false,
+      body: 'world',
+      hasMedia: false,
+      mediaType: '',
+      mediaUrls: [],
+      mentionedIds: [],
+      quotedMessageId: null,
+      quotedParticipant: null,
+      quotedRemoteJid: null,
+      hasQuotedMessage: false,
+      botIds: [],
+      timestamp: 2,
+    });
+    assert.equal(one.seq, 1);
+    assert.equal(two.seq, 2);
+
+    const duplicate = queue.enqueue({
+      messageId: 'm2',
+      chatId: '247789598601266@lid',
+      senderId: '247789598601266@lid',
+      senderName: 'Liz',
+      isGroup: false,
+      body: 'world duplicate',
+      hasMedia: false,
+      mediaType: '',
+      mediaUrls: [],
+      mentionedIds: [],
+      quotedMessageId: null,
+      quotedParticipant: null,
+      quotedRemoteJid: null,
+      hasQuotedMessage: false,
+      botIds: [],
+      timestamp: 3,
+    });
+    assert.equal(duplicate, null);
+
+    assert.deepEqual(queue.readUnacked(10).map((item) => item.seq), [1, 2]);
+
+    const ack1 = queue.ackThrough(1);
+    assert.equal(ack1.ackedUpToSeq, 1);
+    assert.deepEqual(queue.readUnacked(10).map((item) => item.seq), [2]);
+
+    const reloaded = new DurableQueue({ queueDir, compactionEveryAcks: 1000 });
+    assert.equal(reloaded.getStats().ackedUpToSeq, 1);
+    assert.deepEqual(reloaded.readUnacked(10).map((item) => item.seq), [2]);
+    assert.equal(reloaded.getStats().nextSeq, 3);
+  } finally {
+    rmSync(queueDir, { recursive: true, force: true });
+  }
+});
+
+test('durable queue compacts on ack threshold', () => {
+  const queueDir = mkQueueDir();
+  try {
+    const queue = new DurableQueue({ queueDir, compactionEveryAcks: 1 });
+    queue.enqueue({
+      messageId: 'g1',
+      chatId: '18322935409-1579788049@g.us',
+      senderId: 'raquel@lid',
+      senderName: 'Raquel',
+      isGroup: true,
+      body: 'first',
+      hasMedia: false,
+      mediaType: '',
+      mediaUrls: [],
+      mentionedIds: [],
+      quotedMessageId: null,
+      quotedParticipant: null,
+      quotedRemoteJid: null,
+      hasQuotedMessage: false,
+      botIds: [],
+      timestamp: 1,
+    });
+    queue.enqueue({
+      messageId: 'g2',
+      chatId: '18322935409-1579788049@g.us',
+      senderId: 'marcos@lid',
+      senderName: 'Marcos',
+      isGroup: true,
+      body: 'second',
+      hasMedia: false,
+      mediaType: '',
+      mediaUrls: [],
+      mentionedIds: [],
+      quotedMessageId: null,
+      quotedParticipant: null,
+      quotedRemoteJid: null,
+      hasQuotedMessage: false,
+      botIds: [],
+      timestamp: 2,
+    });
+
+    queue.ackThrough(1);
+    const queueLines = readLines(path.join(queueDir, 'queue.jsonl'));
+    assert.equal(queueLines.length, 1);
+    const remaining = JSON.parse(queueLines[0]);
+    assert.equal(remaining.seq, 2);
+  } finally {
+    rmSync(queueDir, { recursive: true, force: true });
+  }
+});

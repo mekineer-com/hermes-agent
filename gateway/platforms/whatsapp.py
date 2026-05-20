@@ -1130,16 +1130,25 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 print(f"[{self.name}] {bridge_exit}")
                 break
             try:
-                async with self._http_session.get(
-                    f"http://127.0.0.1:{self._bridge_port}/messages",
-                    timeout=aiohttp.ClientTimeout(total=30)
-                ) as resp:
-                    if resp.status == 200:
+                drained = False
+                while self._running and not drained:
+                    async with self._http_session.get(
+                        f"http://127.0.0.1:{self._bridge_port}/messages",
+                        params={"limit": 100},
+                        timeout=aiohttp.ClientTimeout(total=30),
+                    ) as resp:
+                        if resp.status != 200:
+                            break
                         messages = await resp.json()
+                        if not messages:
+                            drained = True
+                            break
                         for msg_data in messages:
                             event = await self._build_message_event(msg_data)
                             if event:
                                 await self.handle_message(event)
+                            seq = msg_data.get("seq")
+                            await self._ack_bridge_message(seq)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -1151,6 +1160,29 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 await asyncio.sleep(5)
             
             await asyncio.sleep(1)  # Poll interval
+
+    async def _ack_bridge_message(self, seq: Any) -> None:
+        if not self._http_session:
+            return
+        try:
+            seq_int = int(seq)
+        except (TypeError, ValueError):
+            logger.warning("[whatsapp] Skipping ack: invalid seq %r", seq)
+            return
+        if seq_int < 0:
+            logger.warning("[whatsapp] Skipping ack: invalid seq %r", seq)
+            return
+        import aiohttp
+        try:
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/ack",
+                json={"up_to_seq": seq_int},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status >= 400:
+                    logger.warning("[whatsapp] Bridge ack failed for seq=%s status=%s", seq_int, resp.status)
+        except Exception as e:
+            logger.warning("[whatsapp] Bridge ack request failed for seq=%s: %s", seq_int, e)
     
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""

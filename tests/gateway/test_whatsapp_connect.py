@@ -701,3 +701,99 @@ class TestNoCredsPreflight:
         # but the fatal-error code is NOT the "not paired" one.
         assert result is False
         assert adapter._fatal_error_code != "whatsapp_not_paired"
+
+
+class TestDurableBridgeAck:
+    """Verify WhatsApp poll loop acknowledges durable queue messages."""
+
+    @pytest.mark.asyncio
+    async def test_poll_messages_acks_each_processed_seq(self):
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._check_managed_bridge_exit = AsyncMock(return_value=None)
+        adapter.handle_message = AsyncMock()
+        adapter._build_message_event = AsyncMock(side_effect=[MagicMock(), MagicMock()])
+
+        first_resp = MagicMock()
+        first_resp.status = 200
+        first_resp.json = AsyncMock(return_value=[
+            {"seq": 11, "chatId": "a@lid", "body": "one"},
+            {"seq": 12, "chatId": "a@lid", "body": "two"},
+        ])
+        second_resp = MagicMock()
+        second_resp.status = 200
+        second_resp.json = AsyncMock(return_value=[])
+        ack_resp = MagicMock()
+        ack_resp.status = 200
+
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(side_effect=[_AsyncCM(first_resp), _AsyncCM(second_resp)])
+        mock_session.post = MagicMock(return_value=_AsyncCM(ack_resp))
+        adapter._http_session = mock_session
+
+        async def _stop_after_sleep(*_args, **_kwargs):
+            adapter._running = False
+
+        with patch("gateway.platforms.whatsapp.asyncio.sleep", new=AsyncMock(side_effect=_stop_after_sleep)):
+            await adapter._poll_messages()
+
+        assert adapter.handle_message.await_count == 2
+        assert mock_session.post.call_count == 2
+        assert mock_session.post.call_args_list[0].kwargs["json"] == {"up_to_seq": 11}
+        assert mock_session.post.call_args_list[1].kwargs["json"] == {"up_to_seq": 12}
+
+    @pytest.mark.asyncio
+    async def test_poll_messages_does_not_ack_when_handle_message_raises(self):
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._check_managed_bridge_exit = AsyncMock(return_value=None)
+        adapter.handle_message = AsyncMock(side_effect=RuntimeError("boom"))
+        adapter._build_message_event = AsyncMock(return_value=MagicMock())
+
+        first_resp = MagicMock()
+        first_resp.status = 200
+        first_resp.json = AsyncMock(return_value=[{"seq": 77, "chatId": "a@lid", "body": "one"}])
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(return_value=_AsyncCM(first_resp))
+        mock_session.post = MagicMock()
+        adapter._http_session = mock_session
+
+        async def _sleep_once(*_args, **_kwargs):
+            adapter._running = False
+
+        with patch("gateway.platforms.whatsapp.asyncio.sleep", new=AsyncMock(side_effect=_sleep_once)):
+            await adapter._poll_messages()
+
+        mock_session.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_poll_messages_acks_filtered_events(self):
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._check_managed_bridge_exit = AsyncMock(return_value=None)
+        adapter.handle_message = AsyncMock()
+        adapter._build_message_event = AsyncMock(return_value=None)
+
+        first_resp = MagicMock()
+        first_resp.status = 200
+        first_resp.json = AsyncMock(return_value=[{"seq": 55, "chatId": "a@lid", "body": "ignored"}])
+        second_resp = MagicMock()
+        second_resp.status = 200
+        second_resp.json = AsyncMock(return_value=[])
+        ack_resp = MagicMock()
+        ack_resp.status = 200
+
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(side_effect=[_AsyncCM(first_resp), _AsyncCM(second_resp)])
+        mock_session.post = MagicMock(return_value=_AsyncCM(ack_resp))
+        adapter._http_session = mock_session
+
+        async def _sleep_once(*_args, **_kwargs):
+            adapter._running = False
+
+        with patch("gateway.platforms.whatsapp.asyncio.sleep", new=AsyncMock(side_effect=_sleep_once)):
+            await adapter._poll_messages()
+
+        adapter.handle_message.assert_not_called()
+        mock_session.post.assert_called_once()
+        assert mock_session.post.call_args.kwargs["json"] == {"up_to_seq": 55}

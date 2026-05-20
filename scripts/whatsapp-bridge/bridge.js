@@ -6,7 +6,9 @@
  * and exposes HTTP endpoints for the Python gateway adapter.
  *
  * Endpoints (matches gateway/platforms/whatsapp.py expectations):
- *   GET  /messages       - Long-poll for new incoming messages
+ *   GET  /messages       - Read pending incoming messages (non-destructive)
+ *                         Optional query: limit=N (default 100)
+ *   POST /ack            - Ack delivered messages { up_to_seq }
  *   POST /send           - Send a message { chatId, message, replyTo? }
  *   POST /edit           - Edit a sent message { chatId, messageId, message }
  *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName? }
@@ -29,6 +31,7 @@ import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { DurableQueue } from './durable_queue.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -178,17 +181,16 @@ let lidToPhone = buildLidMap();
 
 const logger = pino({ level: 'warn' });
 
-// Message queue for polling
-const messageQueue = [];
-const MAX_QUEUE_SIZE = 100;
+// Durable queue for inbound events.
+const durableQueue = new DurableQueue({
+  queueDir: path.resolve(SESSION_DIR, '..'),
+  defaultLimit: parseInt(process.env.WHATSAPP_QUEUE_READ_LIMIT || '100', 10),
+  compactionEveryAcks: parseInt(process.env.WHATSAPP_QUEUE_COMPACT_EVERY_ACKS || '100', 10),
+});
 
 // Track recently sent message IDs to prevent echo-back loops with media
 const recentlySentIds = new Set();
 const MAX_RECENT_IDS = 50;
-// Track recently seen inbound message IDs to suppress duplicate upserts
-// for the same WhatsApp message (observed with LID/JID alias flips).
-const recentlySeenInboundIds = new Set();
-const MAX_RECENT_INBOUND_IDS = 500;
 const chatUnreadCounts = new Map();
 const lastInboundMessageByChat = new Map();
 
@@ -354,28 +356,6 @@ async function startSocket() {
 
     for (const msg of messages) {
       if (!msg.message) continue;
-      const inboundMessageId = String(msg.key.id || '');
-      if (inboundMessageId && recentlySeenInboundIds.has(inboundMessageId)) {
-        if (WHATSAPP_DEBUG) {
-          try {
-            console.log(JSON.stringify({
-              event: 'ignored',
-              reason: 'duplicate_message_id',
-              messageId: inboundMessageId,
-              chatId: msg.key.remoteJid,
-            }));
-          } catch {}
-        }
-        continue;
-      }
-      if (inboundMessageId) {
-        recentlySeenInboundIds.add(inboundMessageId);
-        if (recentlySeenInboundIds.size > MAX_RECENT_INBOUND_IDS) {
-          const oldest = recentlySeenInboundIds.values().next().value;
-          if (oldest) recentlySeenInboundIds.delete(oldest);
-        }
-      }
-
       const chatId = msg.key.remoteJid;
       const isStatusUpdate = typeof chatId === 'string' && chatId.toLowerCase() === 'status@broadcast';
       if (isStatusUpdate) {
@@ -582,9 +562,17 @@ async function startSocket() {
         timestamp: msg.messageTimestamp,
       };
 
-      messageQueue.push(event);
-      if (messageQueue.length > MAX_QUEUE_SIZE) {
-        messageQueue.shift();
+      const queued = durableQueue.enqueue(event);
+      if (WHATSAPP_DEBUG && !queued) {
+        try {
+          console.log(JSON.stringify({
+            event: 'ignored',
+            reason: 'duplicate_event_uid',
+            chatId: event.chatId,
+            messageId: event.messageId,
+            senderId: event.senderId,
+          }));
+        } catch {}
       }
     }
   });
@@ -625,10 +613,30 @@ app.use((req, res, next) => {
   next();
 });
 
-// Poll for new messages (long-poll style)
+// Read pending messages (non-destructive)
 app.get('/messages', (req, res) => {
-  const msgs = messageQueue.splice(0, messageQueue.length);
+  const limitRaw = req.query?.limit;
+  const limit = Number.parseInt(String(limitRaw ?? ''), 10);
+  const msgs = durableQueue.readUnacked(Number.isFinite(limit) && limit > 0 ? limit : undefined);
   res.json(msgs);
+});
+
+// Ack processed messages through an inclusive sequence boundary.
+app.post('/ack', (req, res) => {
+  const upToSeq = req.body?.up_to_seq;
+  if (upToSeq === undefined || upToSeq === null) {
+    return res.status(400).json({ error: 'up_to_seq is required' });
+  }
+  const parsed = Number.parseInt(String(upToSeq), 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return res.status(400).json({ error: 'up_to_seq must be a non-negative integer' });
+  }
+  const ack = durableQueue.ackThrough(parsed);
+  return res.json({
+    success: true,
+    ackedUpToSeq: ack.ackedUpToSeq,
+    removed: ack.removed,
+  });
 });
 
 // Send a message
@@ -849,9 +857,12 @@ app.get('/chat/:id', async (req, res) => {
 
 // Health check
 app.get('/health', (req, res) => {
+  const stats = durableQueue.getStats();
   res.json({
     status: connectionState,
-    queueLength: messageQueue.length,
+    queueLength: stats.queueLength,
+    ackedUpToSeq: stats.ackedUpToSeq,
+    maxSeq: stats.maxSeq,
     uptime: process.uptime(),
   });
 });
