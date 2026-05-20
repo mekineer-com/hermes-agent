@@ -841,6 +841,43 @@ class TestDurableBridgeAck:
 
 class TestGatewayWalHooking:
     @pytest.mark.asyncio
+    async def test_connect_existing_bridge_replays_wal_before_polling(self):
+        adapter = _make_adapter()
+        adapter._acquire_platform_lock = MagicMock(return_value=True)
+        adapter._release_platform_lock = MagicMock()
+
+        health_resp = MagicMock()
+        health_resp.status = 200
+        health_resp.json = AsyncMock(return_value={"status": "connected"})
+
+        health_session = MagicMock()
+        health_session.get = MagicMock(return_value=_AsyncCM(health_resp))
+
+        persistent_session = MagicMock()
+        call_order: list[str] = []
+
+        async def _record_replay():
+            call_order.append("replay")
+
+        def _record_poll_task(coro):
+            call_order.append("poll-task")
+            coro.close()
+            return MagicMock()
+
+        adapter._replay_gateway_wal = AsyncMock(side_effect=_record_replay)
+
+        with patch("gateway.platforms.whatsapp.check_whatsapp_requirements", return_value=True), \
+             patch.object(Path, "exists", return_value=True), \
+             patch.object(Path, "mkdir", return_value=None), \
+             patch("aiohttp.ClientSession", side_effect=[_AsyncCM(health_session), persistent_session]), \
+             patch("gateway.platforms.whatsapp.asyncio.create_task", side_effect=_record_poll_task):
+            result = await adapter.connect()
+
+        assert result is True
+        adapter._replay_gateway_wal.assert_awaited_once()
+        assert call_order == ["replay", "poll-task"]
+
+    @pytest.mark.asyncio
     async def test_poll_messages_marks_filtered_wal_row_processed(self):
         adapter = _make_adapter()
         adapter._running = True

@@ -596,9 +596,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             bridge_status = data.get("status", "unknown")
                             if bridge_status == "connected":
                                 print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
-                                self._mark_connected()
                                 self._bridge_process = None  # Not managed by us
                                 self._http_session = aiohttp.ClientSession()
+                                # Replay pending WAL rows before fresh polling.
+                                self._running = True
+                                await self._replay_gateway_wal()
+                                self._mark_connected()
                                 self._poll_task = asyncio.create_task(self._poll_messages())
                                 return True
                             else:

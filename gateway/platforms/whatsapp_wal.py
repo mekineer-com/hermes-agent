@@ -30,6 +30,7 @@ class WhatsAppGatewayWal:
         self._processed_up_to = self._read_processed_offset()
         self._next_wal_seq = self._processed_up_to + 1
         self._bridge_seq_to_wal_seq: dict[int, int] = {}
+        self._completed_out_of_order: set[int] = set()
         self._since_compaction = 0
         self._reload_index()
 
@@ -55,13 +56,22 @@ class WhatsAppGatewayWal:
         return row
 
     def mark_processed(self, wal_seq: Any) -> bool:
-        """Advance processed offset when a WAL row is completed."""
+        """Advance processed offset when WAL rows are completed contiguously."""
         parsed = self._coerce_non_negative_int(wal_seq)
         if parsed is None or parsed <= self._processed_up_to:
             return False
+        if parsed > self._processed_up_to + 1:
+            self._completed_out_of_order.add(parsed)
+            return True
+        advanced = 1
         self._processed_up_to = parsed
+        while (self._processed_up_to + 1) in self._completed_out_of_order:
+            next_seq = self._processed_up_to + 1
+            self._completed_out_of_order.remove(next_seq)
+            self._processed_up_to = next_seq
+            advanced += 1
         self._write_processed_offset()
-        self._since_compaction += 1
+        self._since_compaction += advanced
         if self._since_compaction >= self._compact_every:
             self.compact()
         return True

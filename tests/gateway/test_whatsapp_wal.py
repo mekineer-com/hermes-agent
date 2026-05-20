@@ -62,3 +62,22 @@ def test_compact_drops_processed_prefix(tmp_path):
     lines = [line for line in wal_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert len(lines) == 1
     assert "\"bridge_seq\": 2" in lines[0]
+
+
+def test_out_of_order_completion_waits_for_contiguous_prefix(tmp_path):
+    wal_path = tmp_path / "gateway_wal.jsonl"
+    offset_path = tmp_path / "gateway_wal.offset"
+    wal = WhatsAppGatewayWal(
+        wal_path=wal_path,
+        offset_path=offset_path,
+        compact_every=100,
+    )
+
+    wal.append({"seq": 11, "chatId": "x", "body": "one"})
+    wal.append({"seq": 12, "chatId": "x", "body": "two"})
+
+    assert wal.mark_processed(2) is True
+    assert [row["wal_seq"] for row in wal.pending()] == [1, 2]
+
+    assert wal.mark_processed(1) is True
+    assert wal.pending() == []
