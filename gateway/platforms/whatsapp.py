@@ -29,7 +29,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
 from typing import Dict, Optional, Any
 
-from hermes_constants import get_hermes_dir
+from hermes_constants import get_hermes_dir, get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -184,11 +184,13 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
     cache_image_from_url,
     cache_audio_from_url,
 )
+from gateway.platforms.whatsapp_wal import WhatsAppGatewayWal
 
 
 def check_whatsapp_requirements() -> bool:
@@ -270,6 +272,13 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._bridge_log: Optional[Path] = None
         self._poll_task: Optional[asyncio.Task] = None
         self._http_session: Optional["aiohttp.ClientSession"] = None
+        wal_root = get_hermes_home() / "whatsapp"
+        compact_every = int(os.getenv("WHATSAPP_GATEWAY_WAL_COMPACT_EVERY", "100"))
+        self._gateway_wal = WhatsAppGatewayWal(
+            wal_path=wal_root / "gateway_wal.jsonl",
+            offset_path=wal_root / "gateway_wal.offset",
+            compact_every=compact_every,
+        )
         # Set to True by disconnect() before we SIGTERM our child bridge so
         # _check_managed_bridge_exit() can distinguish an intentional
         # shutdown-time exit (returncode -15 / -2 / 0) from a real crash.
@@ -700,14 +709,24 @@ class WhatsAppAdapter(BasePlatformAdapter):
             # Create a persistent HTTP session for all bridge communication
             self._http_session = aiohttp.ClientSession()
 
+            # Replay can dispatch responses, so enable send() during replay.
+            self._running = True
+
+            # Replay pending WAL rows before normal bridge polling.
+            await self._replay_gateway_wal()
+
+            self._mark_connected()
+
             # Start message polling task
             self._poll_task = asyncio.create_task(self._poll_messages())
-            
-            self._mark_connected()
             print(f"[{self.name}] Bridge started on port {self._bridge_port}")
             return True
             
         except Exception as e:
+            self._running = False
+            if self._http_session and not self._http_session.closed:
+                await self._http_session.close()
+            self._http_session = None
             logger.error("[%s] Failed to start bridge: %s", self.name, e, exc_info=True)
             return False
         finally:
@@ -1121,6 +1140,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
     async def _poll_messages(self) -> None:
         """Poll the bridge for incoming messages."""
         import aiohttp
+        wal = self._ensure_gateway_wal()
 
         while self._running:
             if not self._http_session:
@@ -1144,11 +1164,20 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             drained = True
                             break
                         for msg_data in messages:
+                            wal_row = wal.append(msg_data)
+                            if wal_row is None:
+                                await self._ack_bridge_message(msg_data.get("seq"))
+                                continue
+                            await self._ack_bridge_message(msg_data.get("seq"))
                             event = await self._build_message_event(msg_data)
                             if event:
+                                event_raw = event.raw_message if isinstance(event.raw_message, dict) else {}
+                                event.raw_message = dict(event_raw)
+                                event.raw_message["wal_seq"] = wal_row["wal_seq"]
+                                event.raw_message["bridge_seq"] = wal_row["bridge_seq"]
                                 await self.handle_message(event)
-                            seq = msg_data.get("seq")
-                            await self._ack_bridge_message(seq)
+                            else:
+                                wal.mark_processed(wal_row["wal_seq"])
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -1312,3 +1341,45 @@ class WhatsAppAdapter(BasePlatformAdapter):
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")
             return None
+
+    def _ensure_gateway_wal(self) -> WhatsAppGatewayWal:
+        wal = getattr(self, "_gateway_wal", None)
+        if wal is not None:
+            return wal
+        wal_root = get_hermes_home() / "whatsapp"
+        compact_every = int(os.getenv("WHATSAPP_GATEWAY_WAL_COMPACT_EVERY", "100"))
+        wal = WhatsAppGatewayWal(
+            wal_path=wal_root / "gateway_wal.jsonl",
+            offset_path=wal_root / "gateway_wal.offset",
+            compact_every=compact_every,
+        )
+        self._gateway_wal = wal
+        return wal
+
+    async def _replay_gateway_wal(self) -> None:
+        wal = self._ensure_gateway_wal()
+        for row in wal.pending():
+            wal_seq = row.get("wal_seq")
+            bridge_seq = row.get("bridge_seq")
+            event_data = row.get("event")
+            if not isinstance(event_data, dict):
+                wal.mark_processed(wal_seq)
+                continue
+            event = await self._build_message_event(event_data)
+            if event:
+                event_raw = event.raw_message if isinstance(event.raw_message, dict) else {}
+                event.raw_message = dict(event_raw)
+                event.raw_message["wal_seq"] = wal_seq
+                event.raw_message["bridge_seq"] = bridge_seq
+                await self.handle_message(event)
+            else:
+                wal.mark_processed(wal_seq)
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        raw = event.raw_message if isinstance(event.raw_message, dict) else None
+        if not raw:
+            return
+        wal_seq = raw.get("wal_seq")
+        if wal_seq is None:
+            return
+        self._ensure_gateway_wal().mark_processed(wal_seq)
