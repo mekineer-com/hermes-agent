@@ -65,6 +65,10 @@ def _make_adapter():
     adapter._auto_tts_disabled_chats = set()
     adapter._message_queue = asyncio.Queue()
     adapter._http_session = None
+    adapter._gateway_wal = MagicMock()
+    adapter._gateway_wal.append.side_effect = (
+        lambda event: {"wal_seq": int(event.get("seq") or 1), "bridge_seq": int(event.get("seq") or 1)}
+    )
     return adapter
 
 
@@ -809,7 +813,7 @@ class TestDurableBridgeAck:
         adapter._build_message_event = AsyncMock()
         wal = MagicMock()
         wal.append.return_value = None
-        adapter._ensure_gateway_wal = MagicMock(return_value=wal)
+        adapter._gateway_wal = wal
 
         first_resp = MagicMock()
         first_resp.status = 200
@@ -844,7 +848,7 @@ class TestGatewayWalHooking:
         adapter._build_message_event = AsyncMock(return_value=None)
         wal = MagicMock()
         wal.append.return_value = {"wal_seq": 41, "bridge_seq": 77}
-        adapter._ensure_gateway_wal = MagicMock(return_value=wal)
+        adapter._gateway_wal = wal
 
         first_resp = MagicMock()
         first_resp.status = 200
@@ -876,7 +880,7 @@ class TestGatewayWalHooking:
         wal.pending.return_value = [
             {"wal_seq": 3, "bridge_seq": 17, "event": {"seq": 17, "chatId": "a@lid", "body": "x"}},
         ]
-        adapter._ensure_gateway_wal = MagicMock(return_value=wal)
+        adapter._gateway_wal = wal
 
         await adapter._replay_gateway_wal()
 
@@ -889,10 +893,29 @@ class TestGatewayWalHooking:
     async def test_on_processing_complete_advances_wal_offset(self):
         adapter = _make_adapter()
         wal = MagicMock()
-        adapter._ensure_gateway_wal = MagicMock(return_value=wal)
+        adapter._gateway_wal = wal
         event = MagicMock()
         event.raw_message = {"wal_seq": 12}
 
         await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
 
         wal.mark_processed.assert_called_once_with(12)
+
+    @pytest.mark.asyncio
+    async def test_on_processing_complete_raises_when_wal_seq_missing(self):
+        adapter = _make_adapter()
+        event = MagicMock()
+        event.raw_message = {}
+
+        with pytest.raises(ValueError, match="missing wal_seq"):
+            await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    @pytest.mark.asyncio
+    async def test_replay_gateway_wal_raises_on_invalid_row_payload(self):
+        adapter = _make_adapter()
+        wal = MagicMock()
+        wal.pending.return_value = [{"wal_seq": 5, "bridge_seq": 9, "event": "not-a-dict"}]
+        adapter._gateway_wal = wal
+
+        with pytest.raises(ValueError, match="Invalid WhatsApp WAL row payload"):
+            await adapter._replay_gateway_wal()

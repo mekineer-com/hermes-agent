@@ -174,11 +174,10 @@ export class DurableQueue {
   }
 
   ackThrough(upToSeq) {
-    const parsed = Number.parseInt(String(upToSeq ?? ''), 10);
-    if (!Number.isFinite(parsed) || parsed < 0) {
-      return { ackedUpToSeq: this.ackedUpToSeq, removed: 0 };
+    if (!Number.isInteger(upToSeq) || upToSeq < 0) {
+      throw new TypeError(`upToSeq must be a non-negative integer, got ${upToSeq}`);
     }
-    const target = Math.min(parsed, this.maxSeq);
+    const target = Math.min(upToSeq, this.maxSeq);
     if (target <= this.ackedUpToSeq) {
       return { ackedUpToSeq: this.ackedUpToSeq, removed: 0 };
     }

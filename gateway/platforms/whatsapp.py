@@ -1140,7 +1140,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
     async def _poll_messages(self) -> None:
         """Poll the bridge for incoming messages."""
         import aiohttp
-        wal = self._ensure_gateway_wal()
+        wal = self._gateway_wal
 
         while self._running:
             if not self._http_session:
@@ -1171,8 +1171,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             await self._ack_bridge_message(msg_data.get("seq"))
                             event = await self._build_message_event(msg_data)
                             if event:
-                                event_raw = event.raw_message if isinstance(event.raw_message, dict) else {}
-                                event.raw_message = dict(event_raw)
+                                event.raw_message = dict(event.raw_message)
                                 event.raw_message["wal_seq"] = wal_row["wal_seq"]
                                 event.raw_message["bridge_seq"] = wal_row["bridge_seq"]
                                 await self.handle_message(event)
@@ -1196,11 +1195,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
         try:
             seq_int = int(seq)
         except (TypeError, ValueError):
-            logger.warning("[whatsapp] Skipping ack: invalid seq %r", seq)
-            return
+            raise ValueError(f"Invalid bridge seq for ack: {seq!r}") from None
         if seq_int < 0:
-            logger.warning("[whatsapp] Skipping ack: invalid seq %r", seq)
-            return
+            raise ValueError(f"Invalid bridge seq for ack: {seq!r}")
         import aiohttp
         try:
             async with self._http_session.post(
@@ -1342,33 +1339,17 @@ class WhatsAppAdapter(BasePlatformAdapter):
             print(f"[{self.name}] Error building event: {e}")
             return None
 
-    def _ensure_gateway_wal(self) -> WhatsAppGatewayWal:
-        wal = getattr(self, "_gateway_wal", None)
-        if wal is not None:
-            return wal
-        wal_root = get_hermes_home() / "whatsapp"
-        compact_every = int(os.getenv("WHATSAPP_GATEWAY_WAL_COMPACT_EVERY", "100"))
-        wal = WhatsAppGatewayWal(
-            wal_path=wal_root / "gateway_wal.jsonl",
-            offset_path=wal_root / "gateway_wal.offset",
-            compact_every=compact_every,
-        )
-        self._gateway_wal = wal
-        return wal
-
     async def _replay_gateway_wal(self) -> None:
-        wal = self._ensure_gateway_wal()
+        wal = self._gateway_wal
         for row in wal.pending():
             wal_seq = row.get("wal_seq")
             bridge_seq = row.get("bridge_seq")
             event_data = row.get("event")
             if not isinstance(event_data, dict):
-                wal.mark_processed(wal_seq)
-                continue
+                raise ValueError(f"Invalid WhatsApp WAL row payload at wal_seq={wal_seq!r}")
             event = await self._build_message_event(event_data)
             if event:
-                event_raw = event.raw_message if isinstance(event.raw_message, dict) else {}
-                event.raw_message = dict(event_raw)
+                event.raw_message = dict(event.raw_message)
                 event.raw_message["wal_seq"] = wal_seq
                 event.raw_message["bridge_seq"] = bridge_seq
                 await self.handle_message(event)
@@ -1376,10 +1357,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 wal.mark_processed(wal_seq)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        raw = event.raw_message if isinstance(event.raw_message, dict) else None
-        if not raw:
-            return
-        wal_seq = raw.get("wal_seq")
+        wal_seq = event.raw_message.get("wal_seq")
         if wal_seq is None:
-            return
-        self._ensure_gateway_wal().mark_processed(wal_seq)
+            raise ValueError("WhatsApp WAL invariant break: missing wal_seq on processing completion")
+        self._gateway_wal.mark_processed(wal_seq)
