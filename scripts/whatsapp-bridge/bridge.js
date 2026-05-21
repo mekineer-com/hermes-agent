@@ -67,9 +67,10 @@ const PRESERVE_UNREAD_ON_SEND = envEnabled('WHATSAPP_PRESERVE_UNREAD_ON_SEND', t
 const SEND_UNAVAILABLE_AFTER_ACTIVITY = envEnabled('WHATSAPP_SEND_UNAVAILABLE_AFTER_ACTIVITY', true);
 const ENABLE_TYPING_INDICATOR = envEnabled('WHATSAPP_ENABLE_TYPING_INDICATOR', true);
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
-const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
-  ? DEFAULT_REPLY_PREFIX
-  : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
+const HAS_CUSTOM_REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX !== undefined;
+const REPLY_PREFIX = HAS_CUSTOM_REPLY_PREFIX
+  ? process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n')
+  : DEFAULT_REPLY_PREFIX;
 const MAX_MESSAGE_LENGTH = parseInt(process.env.WHATSAPP_MAX_MESSAGE_LENGTH || '4096', 10);
 const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10);
 // Per-call timeout for sock.sendMessage(). Baileys occasionally hangs forever
@@ -95,10 +96,9 @@ function sendWithTimeout(chatId, payload, timeoutMs = SEND_TIMEOUT_MS) {
 }
 
 function formatOutgoingMessage(message) {
-  // In bot mode, messages come from a different number so the prefix is
-  // redundant — the sender identity is already clear.  Only prepend in
-  // self-chat mode where bot and user share the same number.
-  if (WHATSAPP_MODE !== 'self-chat') return message;
+  // Bot mode normally skips prefix (sender identity is already clear), but
+  // honor an explicit user-configured WHATSAPP_REPLY_PREFIX from config.yaml.
+  if (WHATSAPP_MODE !== 'self-chat' && !HAS_CUSTOM_REPLY_PREFIX) return message;
   return REPLY_PREFIX ? `${REPLY_PREFIX}${message}` : message;
 }
 
