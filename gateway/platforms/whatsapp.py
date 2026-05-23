@@ -582,6 +582,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
             # Ensure session directory exists
             self._session_path.mkdir(parents=True, exist_ok=True)
+            whatsapp_mode = os.getenv("WHATSAPP_MODE", "self-chat")
             
             # Check if bridge is already running and connected
             import aiohttp
@@ -595,15 +596,34 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             data = await resp.json()
                             bridge_status = data.get("status", "unknown")
                             if bridge_status == "connected":
-                                print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
-                                self._bridge_process = None  # Not managed by us
-                                self._http_session = aiohttp.ClientSession()
-                                # Replay pending WAL rows before fresh polling.
-                                self._running = True
-                                await self._replay_gateway_wal()
-                                self._mark_connected()
-                                self._poll_task = asyncio.create_task(self._poll_messages())
-                                return True
+                                bridge_mode = str(data.get("mode") or "").strip()
+                                bridge_reply_prefix = data.get("replyPrefix")
+                                desired_reply_prefix = (
+                                    self._reply_prefix.replace("\\n", "\n")
+                                    if self._reply_prefix is not None
+                                    else None
+                                )
+                                if (
+                                    desired_reply_prefix is not None
+                                    and bridge_reply_prefix != desired_reply_prefix
+                                ):
+                                    print(
+                                        f"[{self.name}] Bridge running with different reply_prefix; restarting"
+                                    )
+                                elif bridge_mode and bridge_mode != whatsapp_mode:
+                                    print(
+                                        f"[{self.name}] Bridge running in mode={bridge_mode}, need mode={whatsapp_mode}; restarting"
+                                    )
+                                else:
+                                    print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
+                                    self._bridge_process = None  # Not managed by us
+                                    self._http_session = aiohttp.ClientSession()
+                                    # Replay pending WAL rows before fresh polling.
+                                    self._running = True
+                                    await self._replay_gateway_wal()
+                                    self._mark_connected()
+                                    self._poll_task = asyncio.create_task(self._poll_messages())
+                                    return True
                             else:
                                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
             except Exception:
@@ -617,7 +637,6 @@ class WhatsAppAdapter(BasePlatformAdapter):
             # Start the bridge process in its own process group.
             # Route output to a log file so QR codes, errors, and reconnection
             # messages are preserved for troubleshooting.
-            whatsapp_mode = os.getenv("WHATSAPP_MODE", "self-chat")
             self._bridge_log = self._session_path.parent / "bridge.log"
             bridge_log_fh = open(self._bridge_log, "a", encoding="utf-8")
             self._bridge_log_fh = bridge_log_fh

@@ -860,6 +860,8 @@ app.get('/health', (req, res) => {
   const stats = durableQueue.getStats();
   res.json({
     status: connectionState,
+    mode: WHATSAPP_MODE,
+    replyPrefix: REPLY_PREFIX,
     queueLength: stats.queueLength,
     ackedUpToSeq: stats.ackedUpToSeq,
     maxSeq: stats.maxSeq,

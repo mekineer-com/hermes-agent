@@ -1344,3 +1344,34 @@ class TestCachedAgentInactivityReset:
             f"Watchdog would see {idle_secs:.0f}s idle, expected ~{STUCK_FOR}s. "
             "Inactivity timeout could not fire for a stuck interrupted turn."
         )
+
+
+class TestCachedAgentSourceRefresh:
+    """Cached agents must refresh source identity every turn."""
+
+    def test_refresh_cached_agent_source_overwrites_stale_identity(self):
+        from gateway.run import GatewayRunner
+
+        agent = MagicMock()
+        source = MagicMock(
+            user_id="15133278228",
+            user_name="Marcos",
+            chat_id="18322935409-1579788049@g.us",
+            chat_name="Familia",
+            chat_type="group",
+            thread_id=None,
+        )
+
+        GatewayRunner._refresh_cached_agent_source(
+            agent,
+            source,
+            session_key="agent:main:whatsapp:group:18322935409-1579788049@g.us",
+        )
+
+        assert agent._user_id == "15133278228"
+        assert agent._user_name == "Marcos"
+        assert agent._chat_id == "18322935409-1579788049@g.us"
+        assert agent._chat_name == "Familia"
+        assert agent._chat_type == "group"
+        assert agent._thread_id is None
+        assert agent._gateway_session_key == "agent:main:whatsapp:group:18322935409-1579788049@g.us"

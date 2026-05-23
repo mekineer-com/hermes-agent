@@ -14087,6 +14087,21 @@ class GatewayRunner:
             agent._last_activity_desc = "starting new turn (cached)"
         agent._api_call_count = 0
 
+    @staticmethod
+    def _refresh_cached_agent_source(
+        agent: Any,
+        source: SessionSource,
+        session_key: str,
+    ) -> None:
+        """Refresh per-turn source identity for a reused cached agent."""
+        agent._user_id = source.user_id
+        agent._user_name = source.user_name
+        agent._chat_id = source.chat_id
+        agent._chat_name = source.chat_name
+        agent._chat_type = source.chat_type
+        agent._thread_id = source.thread_id
+        agent._gateway_session_key = session_key
+
     def _release_evicted_agent_soft(self, agent: Any) -> None:
         """Soft cleanup for cache-evicted agents — preserves session tool state.
 
@@ -15283,6 +15298,7 @@ class GatewayRunner:
                             except KeyError:
                                 pass
                         self._init_cached_agent_for_turn(agent, _interrupt_depth)
+                        self._refresh_cached_agent_source(agent, source, session_key)
                         logger.debug("Reusing cached agent for session %s", session_key)
 
             if agent is None:

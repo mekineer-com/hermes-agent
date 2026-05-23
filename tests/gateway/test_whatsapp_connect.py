@@ -878,6 +878,64 @@ class TestGatewayWalHooking:
         assert call_order == ["replay", "poll-task"]
 
     @pytest.mark.asyncio
+    async def test_connect_restarts_existing_bridge_when_reply_prefix_differs(self):
+        adapter = _make_adapter()
+        adapter._reply_prefix = "✦ *Echo*: "
+        adapter._acquire_platform_lock = MagicMock(return_value=True)
+        adapter._release_platform_lock = MagicMock()
+
+        existing_bridge_resp = MagicMock()
+        existing_bridge_resp.status = 200
+        existing_bridge_resp.json = AsyncMock(
+            return_value={"status": "connected", "mode": "bot", "replyPrefix": "⚕ *Hermes Agent*\n────────────\n"}
+        )
+        existing_bridge_session = MagicMock()
+        existing_bridge_session.get = MagicMock(return_value=_AsyncCM(existing_bridge_resp))
+
+        started_bridge_resp = MagicMock()
+        started_bridge_resp.status = 200
+        started_bridge_resp.json = AsyncMock(return_value={"status": "connected", "mode": "bot", "replyPrefix": "✦ *Echo*: "})
+        started_bridge_session = MagicMock()
+        started_bridge_session.get = MagicMock(return_value=_AsyncCM(started_bridge_resp))
+
+        persistent_session = MagicMock()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_fh = MagicMock()
+        call_order: list[str] = []
+
+        async def _record_replay():
+            call_order.append("replay")
+
+        def _record_poll_task(coro):
+            call_order.append("poll-task")
+            coro.close()
+            return MagicMock()
+
+        adapter._replay_gateway_wal = AsyncMock(side_effect=_record_replay)
+
+        with patch("gateway.platforms.whatsapp.check_whatsapp_requirements", return_value=True), \
+             patch.object(Path, "exists", return_value=True), \
+             patch.object(Path, "mkdir", return_value=None), \
+             patch("gateway.platforms.whatsapp._kill_stale_bridge_by_pidfile"), \
+             patch("gateway.platforms.whatsapp._kill_port_process"), \
+             patch("gateway.platforms.whatsapp.asyncio.sleep", new=AsyncMock()), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0)), \
+             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
+             patch("builtins.open", return_value=mock_fh), \
+             patch(
+                 "aiohttp.ClientSession",
+                 side_effect=[_AsyncCM(existing_bridge_session), _AsyncCM(started_bridge_session), persistent_session],
+             ), \
+             patch("gateway.platforms.whatsapp.asyncio.create_task", side_effect=_record_poll_task):
+            result = await adapter.connect()
+
+        assert result is True
+        assert mock_popen.called
+        adapter._replay_gateway_wal.assert_awaited_once()
+        assert call_order == ["replay", "poll-task"]
+
+    @pytest.mark.asyncio
     async def test_poll_messages_marks_filtered_wal_row_processed(self):
         adapter = _make_adapter()
         adapter._running = True
