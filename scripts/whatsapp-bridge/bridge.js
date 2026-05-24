@@ -391,8 +391,26 @@ async function startSocket() {
         if (chatId.includes('status')) continue;
 
         if (WHATSAPP_MODE === 'bot') {
-          // Bot mode: separate number. ALL fromMe are echo-backs of our own replies — skip.
-          continue;
+          // Bot mode: treat self-chat as operator input, but keep dropping
+          // normal fromMe echo-backs from outbound bridge replies.
+          const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
+          const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
+          const chatNumber = chatId.replace(/@.*/, '');
+          const isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
+          if (!isSelfChat) {
+            if (WHATSAPP_DEBUG) {
+              try {
+                console.log(JSON.stringify({
+                  event: 'ignored',
+                  reason: 'bot_mode_rejects_fromme_non_self',
+                  chatId,
+                  senderId,
+                  messageId: msg.key.id || '',
+                }));
+              } catch {}
+            }
+            continue;
+          }
         }
 
         // Self-chat mode: only allow messages in the user's own self-chat
