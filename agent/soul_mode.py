@@ -272,6 +272,58 @@ def _make_failed_result(agent: Any, error_msg: str, error_detail: str, messages:
     }
 
 
+def _route_whatsapp_notice_to_self_dm(text: str, conversation_id: str, notice_kind: str) -> bool:
+    from agent.whatsapp_bridge_client import read_self_dm_jid, send_text
+
+    try:
+        self_dm = read_self_dm_jid()
+    except Exception as exc:
+        logger.warning(
+            "Soul %s not routed (self-DM lookup failed) for %s: %s",
+            notice_kind,
+            conversation_id,
+            exc,
+        )
+        return False
+
+    if not self_dm:
+        logger.warning(
+            "Soul %s not routed (self_dm missing) for %s",
+            notice_kind,
+            conversation_id,
+        )
+        return False
+
+    try:
+        ok = bool(send_text(self_dm, text))
+    except Exception as exc:
+        logger.warning(
+            "Soul %s not routed (send failed self_dm=%r) for %s: %s",
+            notice_kind,
+            self_dm,
+            conversation_id,
+            exc,
+        )
+        return False
+
+    if ok:
+        logger.info(
+            "Soul routed %s to self-DM %s (from %s)",
+            notice_kind,
+            self_dm,
+            conversation_id,
+        )
+        return True
+
+    logger.warning(
+        "Soul %s not routed (self_dm=%r); silent exit for %s",
+        notice_kind,
+        self_dm,
+        conversation_id,
+    )
+    return False
+
+
 def _silent_listen_result(
     agent: Any,
     config: SoulModeConfig,
@@ -454,18 +506,11 @@ def handle_turn(
         # platforms have no self-DM concept and fall through to the default
         # respond path below.
         if response_target == "private" and platform == "whatsapp" and response_text:
-            from agent.whatsapp_bridge_client import read_self_dm_jid, send_text
-            self_dm = read_self_dm_jid()
-            if self_dm and send_text(self_dm, response_text):
-                logger.info(
-                    "Soul routed PRIVATE to self-DM %s (from %s)",
-                    self_dm, conversation_id,
-                )
-            else:
-                logger.warning(
-                    "Soul PRIVATE not routed (self_dm=%r); silent exit for %s",
-                    self_dm, conversation_id,
-                )
+            _route_whatsapp_notice_to_self_dm(
+                response_text,
+                conversation_id,
+                "PRIVATE reply",
+            )
             return _silent_listen_result(
                 agent, config, messages, conversation_history, user_message,
                 task_id, summarize_for_log, platform,
@@ -496,6 +541,16 @@ def handle_turn(
             if getattr(exc, "status_code", None) is None
             else f"memU turn failed (HTTP {exc.status_code}): {exc}"
         )
+        if platform == "whatsapp":
+            _route_whatsapp_notice_to_self_dm(
+                error_msg,
+                conversation_id,
+                "memU failure notice",
+            )
+            return _silent_listen_result(
+                agent, config, messages, conversation_history, user_message,
+                task_id, summarize_for_log, platform, exit_reason="soul_mode_memu_error_private_notice",
+            )
         return _make_failed_result(agent, error_msg, str(exc), messages)
 
     except Exception as exc:

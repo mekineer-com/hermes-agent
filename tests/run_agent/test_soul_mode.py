@@ -304,6 +304,52 @@ def test_handle_turn_routes_private_to_self_dm_on_whatsapp(soul_agent, monkeypat
     assert result["final_response"] == ""  # gateway's default send path stays quiet
 
 
+def test_handle_turn_routes_memu_failure_notice_to_self_dm_on_whatsapp(soul_agent, monkeypatch):
+    """memU failures on WhatsApp should notify via self-DM and keep the
+    originating chat silent."""
+    soul_agent.platform = "whatsapp"
+    soul_agent._chat_id = "120363000000000000@g.us"
+    soul_agent._chat_type = "group"
+    soul_agent._chat_name = "Familia"
+    soul_agent._user_name = "Marcos"
+    soul_agent._gateway_session_key = "agent:main:whatsapp:group:120363000000000000@g.us:15551234567"
+
+    mock_client = MagicMock()
+    mock_client.memu_turn.side_effect = MemuClientError(
+        "memU request failed: <urlopen error [Errno 111] Connection refused>",
+    )
+    soul_agent._soul_config._client = mock_client
+
+    from agent import whatsapp_bridge_client
+    monkeypatch.setattr(whatsapp_bridge_client, "read_self_dm_jid", lambda: "15133278228@s.whatsapp.net")
+    sent = []
+    monkeypatch.setattr(
+        whatsapp_bridge_client,
+        "send_text",
+        lambda chat_id, text, **_kw: (sent.append((chat_id, text)) or True),
+    )
+
+    result = soul_mode.handle_turn(
+        soul_agent, soul_agent._soul_config,
+        user_message="hi",
+        conversation_history=[],
+        messages=[{"role": "user", "content": "hi"}],
+        task_id="test-task",
+        original_user_message="hi",
+        summarize_for_log=lambda x: str(x)[:50],
+    )
+
+    assert sent == [
+        (
+            "15133278228@s.whatsapp.net",
+            "memU turn failed: memU request failed: <urlopen error [Errno 111] Connection refused>",
+        )
+    ]
+    assert result["completed"] is True
+    assert result["turn_exit_reason"] == "soul_mode_memu_error_private_notice"
+    assert result["final_response"] == ""
+
+
 # --- Phase 2: conversation routing ---
 
 
