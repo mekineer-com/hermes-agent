@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 
 import { DurableQueue } from './durable_queue.js';
 
@@ -139,6 +139,60 @@ test('durable queue compacts on ack threshold', () => {
     assert.equal(queueLines.length, 1);
     const remaining = JSON.parse(queueLines[0]);
     assert.equal(remaining.seq, 2);
+  } finally {
+    rmSync(queueDir, { recursive: true, force: true });
+  }
+});
+
+test('durable queue bootstraps seen ids from queue rows when seen file is missing', () => {
+  const queueDir = mkQueueDir();
+  try {
+    const legacyRow = {
+      seq: 1,
+      event_uid: '114628432556258@lid:ACCB6730B9B318CD8D20AF8EA94082E1:15133278228@s.whatsapp.net',
+      messageId: 'ACCB6730B9B318CD8D20AF8EA94082E1',
+      chatId: '114628432556258@lid',
+      senderId: '15133278228@s.whatsapp.net',
+      senderName: 'Marcos',
+      isGroup: false,
+      body: 'Please respond privately.',
+      hasMedia: false,
+      mediaType: '',
+      mediaUrls: [],
+      mentionedIds: [],
+      quotedMessageId: null,
+      quotedParticipant: null,
+      quotedRemoteJid: null,
+      hasQuotedMessage: false,
+      botIds: [],
+      timestamp: 1,
+    };
+    writeFileSync(path.join(queueDir, 'queue.jsonl'), `${JSON.stringify(legacyRow)}\n`, 'utf8');
+    writeFileSync(path.join(queueDir, 'queue.offset'), '1\n', 'utf8');
+
+    const queue = new DurableQueue({ queueDir, compactionEveryAcks: 1000 });
+    const seenLines = readLines(path.join(queueDir, 'queue.seen'));
+    assert.deepEqual(seenLines, ['114628432556258@lid:ACCB6730B9B318CD8D20AF8EA94082E1']);
+
+    const duplicate = queue.enqueue({
+      messageId: 'ACCB6730B9B318CD8D20AF8EA94082E1',
+      chatId: '114628432556258@lid',
+      senderId: '114628432556258@lid',
+      senderName: 'Marcos',
+      isGroup: false,
+      body: 'same message different sender alias',
+      hasMedia: false,
+      mediaType: '',
+      mediaUrls: [],
+      mentionedIds: [],
+      quotedMessageId: null,
+      quotedParticipant: null,
+      quotedRemoteJid: null,
+      hasQuotedMessage: false,
+      botIds: [],
+      timestamp: 2,
+    });
+    assert.equal(duplicate, null);
   } finally {
     rmSync(queueDir, { recursive: true, force: true });
   }

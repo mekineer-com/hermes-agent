@@ -81,8 +81,13 @@ export class DurableQueue {
     mkdirSync(this.queueDir, { recursive: true });
     this.ackedUpToSeq = this._readAckedOffset();
     this._loadSeen();
+    const seenFileExists = existsSync(this.seenPath);
+    let seenDirty = !seenFileExists;
 
     if (!existsSync(this.queuePath)) {
+      if (seenDirty) {
+        this._persistSeen();
+      }
       this.nextSeq = this.ackedUpToSeq + 1;
       return;
     }
@@ -101,10 +106,17 @@ export class DurableQueue {
       const seq = Number(row?.seq);
       if (!Number.isFinite(seq) || seq < 1) continue;
       if (seq > this.maxSeq) this.maxSeq = seq;
+      const eventUid = eventUidFor(row);
+      if (eventUid && !this.seenUidSet.has(eventUid)) {
+        this.seenUidSet.add(eventUid);
+        seenDirty = true;
+      }
       if (seq <= this.ackedUpToSeq) continue;
-      const eventUid = String(row?.event_uid || '').trim();
       this.unacked.push(row);
       if (eventUid) this.unackedUidSet.add(eventUid);
+    }
+    if (seenDirty) {
+      this._persistSeen();
     }
     this.nextSeq = Math.max(this.maxSeq + 1, this.ackedUpToSeq + 1);
   }
@@ -145,6 +157,15 @@ export class DurableQueue {
     } finally {
       closeSync(fd);
     }
+  }
+
+  _persistSeen() {
+    const lines = Array.from(this.seenUidSet);
+    if (!lines.length) {
+      atomicWriteText(this.seenPath, '');
+      return;
+    }
+    atomicWriteText(this.seenPath, `${lines.join('\n')}\n`);
   }
 
   _persistOffset() {
