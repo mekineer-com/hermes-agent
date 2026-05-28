@@ -145,6 +145,8 @@ class MemuHttpClient:
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
                 raw = response.read().decode("utf-8", errors="replace")
+        except TimeoutError as exc:
+            raise MemuClientError(f"memU request timed out: {exc}") from exc
         except urllib.error.HTTPError as exc:
             body = ""
             try:

@@ -562,6 +562,21 @@ def handle_turn(
         _invoke_hook_safe("on_session_end", session_id=agent.session_id, completed=False, interrupted=False, model=agent.model, platform=getattr(agent, "platform", None) or "")
         agent._stream_callback = None
         error_msg = f"memU turn failed: {type(exc).__name__}: {exc}"
+        if str(getattr(agent, "platform", "") or "").strip().lower() == "whatsapp":
+            conv_id = (
+                locals().get("conversation_id")
+                or str(getattr(agent, "_gateway_session_key", "") or "")
+                or str(getattr(agent, "session_id", "") or "unknown")
+            )
+            _route_whatsapp_notice_to_self_dm(
+                error_msg,
+                str(conv_id),
+                "memU failure notice",
+            )
+            return _silent_listen_result(
+                agent, config, messages, conversation_history, user_message,
+                task_id, summarize_for_log, "whatsapp", exit_reason="soul_mode_memu_error_private_notice",
+            )
         return _make_failed_result(agent, error_msg, f"{type(exc).__name__}: {exc}", messages)
 
     messages.append({"role": "assistant", "content": final_response})

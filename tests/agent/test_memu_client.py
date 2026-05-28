@@ -1,4 +1,6 @@
-from agent.memu_client import MemuHttpClient, normalize_history_for_memu
+import pytest
+
+from agent.memu_client import MemuClientError, MemuHttpClient, normalize_history_for_memu
 
 
 def test_normalize_history_for_memu_filters_and_keeps_timestamps():
@@ -155,3 +157,15 @@ def test_memu_turn_falls_back_to_history_user_name_when_user_name_missing(monkey
     )
 
     assert captured["payload"]["user_name"] == "Marcos"
+
+
+def test_post_wraps_timeout_error_as_memu_client_error(monkeypatch):
+    client = MemuHttpClient(base_url="http://127.0.0.1:8099")
+
+    def _fake_urlopen(*_args, **_kwargs):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+
+    with pytest.raises(MemuClientError, match=r"memU request timed out: timed out"):
+        client._post("/integration/memu/turn", {"message": "hi"})
