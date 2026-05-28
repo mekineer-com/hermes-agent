@@ -25,7 +25,7 @@ class SoulModeConfig:
     user_id: str = ""
     memu_base_url: str = "http://127.0.0.1:8099"
     use_memu_turn: bool = True
-    timeout_seconds: float = 45.0
+    timeout_seconds: float = 90.0
     _client: MemuHttpClient | None = field(default=None, repr=False)
     _session_started: bool = field(default=False, repr=False)
 
@@ -68,7 +68,7 @@ def resolve_agent_config(user_config: dict | None, session_key: str) -> dict[str
               user_id: marcos
               memu_base_url: http://127.0.0.1:8099
               use_memu_turn: true
-              timeout_seconds: 45
+              timeout_seconds: 90
     """
     default_cfg = {
         "enabled": False,
@@ -77,7 +77,7 @@ def resolve_agent_config(user_config: dict | None, session_key: str) -> dict[str
         "user_id": "",
         "memu_base_url": "http://127.0.0.1:8099",
         "use_memu_turn": True,
-        "timeout_seconds": 45.0,
+        "timeout_seconds": 90.0,
     }
     cfg = user_config if isinstance(user_config, dict) else {}
     soul_mode = cfg.get("soul_mode")
@@ -113,9 +113,9 @@ def resolve_agent_config(user_config: dict | None, session_key: str) -> dict[str
         out["memu_base_url"] = memu_base_url
     out["use_memu_turn"] = _is_truthy(agent_cfg.get("use_memu_turn"), default=True)
     try:
-        out["timeout_seconds"] = float(agent_cfg.get("timeout_seconds", 45.0))
+        out["timeout_seconds"] = float(agent_cfg.get("timeout_seconds", 90.0))
     except (TypeError, ValueError):
-        out["timeout_seconds"] = 45.0
+        out["timeout_seconds"] = 90.0
     return out
 
 
@@ -127,7 +127,7 @@ def configure(
     user_id: str = "",
     memu_base_url: str = "http://127.0.0.1:8099",
     use_memu_turn: bool = True,
-    timeout_seconds: float = 45.0,
+    timeout_seconds: float = 90.0,
 ) -> SoulModeConfig:
     role_norm = str(role or "standard").strip().lower()
     try:

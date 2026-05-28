@@ -47,9 +47,9 @@ function eventUidFor(event) {
   const chatId = String(event?.chatId || '').trim();
   const messageId = String(event?.messageId || '').trim();
   if (!chatId || !messageId) return '';
-  const isGroup = !!event?.isGroup;
-  const participant = String(event?.senderId || '').trim();
-  if (isGroup && participant) return `${chatId}:${messageId}:${participant}`;
+  // messageId is already chat-scoped in WhatsApp. Including senderId here
+  // causes false misses when the same participant surfaces as @lid vs
+  // @s.whatsapp.net across reconnects/replays.
   return `${chatId}:${messageId}`;
 }
 
