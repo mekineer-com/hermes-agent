@@ -63,6 +63,7 @@ export class DurableQueue {
     this.queueDir = queueDir;
     this.queuePath = path.join(queueDir, 'queue.jsonl');
     this.offsetPath = path.join(queueDir, 'queue.offset');
+    this.seenPath = path.join(queueDir, 'queue.seen');
     this.defaultLimit = parsePositiveInt(defaultLimit, DEFAULT_LIMIT);
     this.compactionEveryAcks = parsePositiveInt(compactionEveryAcks, 100);
     this.ackedUpToSeq = 0;
@@ -70,6 +71,7 @@ export class DurableQueue {
     this.nextSeq = 1;
     this.unacked = [];
     this.unackedUidSet = new Set();
+    this.seenUidSet = new Set();
     this.ackSinceCompaction = 0;
 
     this._load();
@@ -78,6 +80,7 @@ export class DurableQueue {
   _load() {
     mkdirSync(this.queueDir, { recursive: true });
     this.ackedUpToSeq = this._readAckedOffset();
+    this._loadSeen();
 
     if (!existsSync(this.queuePath)) {
       this.nextSeq = this.ackedUpToSeq + 1;
@@ -124,6 +127,26 @@ export class DurableQueue {
     }
   }
 
+  _loadSeen() {
+    if (!existsSync(this.seenPath)) return;
+    const raw = readFileSync(this.seenPath, 'utf8');
+    const lines = raw.split('\n');
+    for (const line of lines) {
+      const uid = String(line || '').trim();
+      if (uid) this.seenUidSet.add(uid);
+    }
+  }
+
+  _appendSeenUid(eventUid) {
+    const fd = openSync(this.seenPath, 'a');
+    try {
+      writeFileSync(fd, `${eventUid}\n`, { encoding: 'utf8' });
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  }
+
   _persistOffset() {
     atomicWriteText(this.offsetPath, `${this.ackedUpToSeq}\n`);
   }
@@ -152,6 +175,7 @@ export class DurableQueue {
   enqueue(event) {
     const eventUid = eventUidFor(event);
     if (!eventUid) return null;
+    if (this.seenUidSet.has(eventUid)) return null;
     if (this.unackedUidSet.has(eventUid)) return null;
 
     const seq = this.nextSeq;
@@ -163,8 +187,10 @@ export class DurableQueue {
       ...event,
     };
     this._appendRow(row);
+    this._appendSeenUid(eventUid);
     this.unacked.push(row);
     this.unackedUidSet.add(eventUid);
+    this.seenUidSet.add(eventUid);
     return row;
   }
 
@@ -214,6 +240,7 @@ export class DurableQueue {
       ackedUpToSeq: this.ackedUpToSeq,
       maxSeq: this.maxSeq,
       queueLength: this.unacked.length,
+      seenCount: this.seenUidSet.size,
       nextSeq: this.nextSeq,
     };
   }
