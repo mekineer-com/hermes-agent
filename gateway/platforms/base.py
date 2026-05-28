@@ -1109,6 +1109,11 @@ def merge_pending_message_event(
     """
     existing = pending_messages.get(session_key)
     if existing:
+        # WhatsApp must preserve strict one-message-per-event semantics in
+        # the pending slot. Never concatenate or media-merge follow-ups.
+        if event.source.platform == Platform.WHATSAPP:
+            pending_messages[session_key] = event
+            return
         existing_is_photo = getattr(existing, "message_type", None) == MessageType.PHOTO
         incoming_is_photo = event.message_type == MessageType.PHOTO
         existing_has_media = bool(existing.media_urls)

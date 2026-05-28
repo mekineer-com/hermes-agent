@@ -329,6 +329,37 @@ async def test_pending_sentinel_whatsapp_followups_do_not_append_text():
     assert adapter._pending_messages[session_key].text == "second"
 
 
+def test_whatsapp_pending_slot_replaces_media_instead_of_merging():
+    pending = {}
+    source = SessionSource(
+        platform=Platform.WHATSAPP,
+        chat_id="15133278228@s.whatsapp.net",
+        chat_type="dm",
+        user_id="u1",
+    )
+    session_key = build_session_key(source)
+    first = MessageEvent(
+        text="[image received]",
+        message_type=MessageType.PHOTO,
+        source=source,
+        media_urls=["/tmp/a.jpg"],
+        media_types=["image/jpeg"],
+    )
+    second = MessageEvent(
+        text="follow-up text",
+        message_type=MessageType.TEXT,
+        source=source,
+    )
+
+    merge_pending_message_event(pending, session_key, first, merge_text=True)
+    merge_pending_message_event(pending, session_key, second, merge_text=True)
+
+    merged = pending[session_key]
+    assert merged is second
+    assert merged.text == "follow-up text"
+    assert merged.media_urls == []
+
+
 # ------------------------------------------------------------------
 # Test 5: Sentinel not placed for command messages
 # ------------------------------------------------------------------
