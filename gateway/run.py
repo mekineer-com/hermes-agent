@@ -6350,7 +6350,7 @@ class GatewayRunner:
                         adapter._pending_messages,
                         _quick_key,
                         event,
-                        merge_text=True,
+                        merge_text=(source.platform == Platform.TELEGRAM),
                     )
                 return None
 
@@ -6370,7 +6370,7 @@ class GatewayRunner:
                         adapter._pending_messages,
                         _quick_key,
                         event,
-                        merge_text=True,
+                        merge_text=(source.platform == Platform.TELEGRAM),
                     )
                 return None
             if self._draining:

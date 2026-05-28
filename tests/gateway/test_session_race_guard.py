@@ -40,9 +40,15 @@ class _FakeAdapter:
 def _make_runner():
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***"),
+            Platform.WHATSAPP: PlatformConfig(enabled=True, token="***"),
+        }
     )
-    runner.adapters = {Platform.TELEGRAM: _FakeAdapter()}
+    runner.adapters = {
+        Platform.TELEGRAM: _FakeAdapter(),
+        Platform.WHATSAPP: _FakeAdapter(),
+    }
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._session_run_generation = {}
@@ -67,9 +73,9 @@ def _make_runner():
     return runner
 
 
-def _make_event(text="hello", chat_id="12345"):
+def _make_event(text="hello", chat_id="12345", platform=Platform.TELEGRAM):
     source = SessionSource(
-        platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm",
+        platform=platform, chat_id=chat_id, chat_type="dm",
         user_id="u1",
     )
     return MessageEvent(text=text, message_type=MessageType.TEXT, source=source)
@@ -298,6 +304,29 @@ async def test_recent_telegram_followups_append_in_pending_queue():
     fake_agent.interrupt.assert_not_called()
     adapter = runner.adapters[Platform.TELEGRAM]
     assert adapter._pending_messages[session_key].text == "part one\npart two"
+
+
+@pytest.mark.asyncio
+async def test_pending_sentinel_whatsapp_followups_do_not_append_text():
+    runner = _make_runner()
+    first = _make_event(
+        text="first",
+        chat_id="15551234567@s.whatsapp.net",
+        platform=Platform.WHATSAPP,
+    )
+    second = _make_event(
+        text="second",
+        chat_id="15551234567@s.whatsapp.net",
+        platform=Platform.WHATSAPP,
+    )
+    session_key = build_session_key(first.source)
+
+    runner._running_agents[session_key] = _AGENT_PENDING_SENTINEL
+    await runner._handle_message(first)
+    await runner._handle_message(second)
+
+    adapter = runner.adapters[Platform.WHATSAPP]
+    assert adapter._pending_messages[session_key].text == "second"
 
 
 # ------------------------------------------------------------------
