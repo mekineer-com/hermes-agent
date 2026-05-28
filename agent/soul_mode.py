@@ -133,7 +133,7 @@ def configure(
     try:
         timeout = float(timeout_seconds)
     except (TypeError, ValueError):
-        timeout = 45.0
+        timeout = 90.0
     return SoulModeConfig(
         enabled=bool(enabled),
         role="soul" if role_norm == "soul" else "standard",
