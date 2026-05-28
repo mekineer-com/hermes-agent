@@ -135,8 +135,32 @@ function trackSentMessageId(sent) {
 }
 
 function normalizeWhatsAppId(value) {
-  if (!value) return '';
-  return String(value).replace(':', '@');
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+
+  const collapsed = raw.replace(/:.*@/, '@');
+  const atIndex = collapsed.indexOf('@');
+  if (atIndex < 0) {
+    return collapsed;
+  }
+
+  const local = collapsed.slice(0, atIndex);
+  const domain = collapsed.slice(atIndex + 1).toLowerCase();
+  if (!local) {
+    return '';
+  }
+
+  if (domain === 'lid') {
+    const mappedPhone = String(lidToPhone[local] || '').trim();
+    if (mappedPhone) {
+      return `${mappedPhone}@s.whatsapp.net`;
+    }
+    return `${local}@lid`;
+  }
+  if (domain === 's.whatsapp.net') {
+    return `${local}@s.whatsapp.net`;
+  }
+  return collapsed;
 }
 
 function getMessageContent(msg) {
@@ -356,33 +380,35 @@ async function startSocket() {
 
     for (const msg of messages) {
       if (!msg.message) continue;
-      const chatId = msg.key.remoteJid;
-      const isStatusUpdate = typeof chatId === 'string' && chatId.toLowerCase() === 'status@broadcast';
+      const rawChatId = String(msg.key.remoteJid || '');
+      const isStatusUpdate = rawChatId.toLowerCase() === 'status@broadcast';
       if (isStatusUpdate) {
         if (WHATSAPP_DEBUG) {
           try {
             console.log(JSON.stringify({
               event: 'ignored',
               reason: 'status_update',
-              chatId,
+              chatId: rawChatId,
               messageId: msg.key.id || '',
             }));
           } catch {}
         }
         continue;
       }
+      const chatId = normalizeWhatsAppId(rawChatId);
+      if (!chatId) continue;
       rememberInboundLastMessage(msg);
+      const senderId = normalizeWhatsAppId(msg.key.participant || rawChatId) || chatId;
       if (WHATSAPP_DEBUG) {
         try {
           console.log(JSON.stringify({
             event: 'upsert', type,
             fromMe: !!msg.key.fromMe, chatId,
-            senderId: msg.key.participant || chatId,
+            senderId,
             messageKeys: Object.keys(msg.message || {}),
           }));
         } catch {}
       }
-      const senderId = msg.key.participant || chatId;
       const isGroup = chatId.endsWith('@g.us');
       const senderNumber = senderId.replace(/@.*/, '');
 
