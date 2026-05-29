@@ -217,9 +217,35 @@ const recentlySentIds = new Set();
 const MAX_RECENT_IDS = 50;
 const chatUnreadCounts = new Map();
 const lastInboundMessageByChat = new Map();
+const pushNameCache = new Map();
+const groupNameCache = new Map();
 
 let sock = null;
 let connectionState = 'disconnected';
+
+function rememberPushName(senderId, pushName) {
+  const sid = normalizeWhatsAppId(senderId);
+  const name = String(pushName || '').trim();
+  if (!sid || !name) return;
+  pushNameCache.set(sid, name);
+}
+
+async function resolveGroupChatName(chatId) {
+  const normalizedChatId = normalizeWhatsAppId(chatId);
+  if (!normalizedChatId) return '';
+  const cached = String(groupNameCache.get(normalizedChatId) || '').trim();
+  if (cached) return cached;
+  if (!sock || !normalizedChatId.endsWith('@g.us')) return '';
+  try {
+    const metadata = await sock.groupMetadata(normalizedChatId);
+    const subject = String(metadata?.subject || '').trim();
+    if (subject) {
+      groupNameCache.set(normalizedChatId, subject);
+      return subject;
+    }
+  } catch {}
+  return '';
+}
 
 function updateUnreadCountSnapshot(chats) {
   if (!Array.isArray(chats)) return;
@@ -331,6 +357,18 @@ async function startSocket() {
   sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
   sock.ev.on('chats.upsert', updateUnreadCountSnapshot);
   sock.ev.on('chats.update', updateUnreadCountSnapshot);
+  sock.ev.on('contacts.upsert', (contacts) => {
+    if (!Array.isArray(contacts)) return;
+    for (const contact of contacts) {
+      const contactId = normalizeWhatsAppId(contact?.id || '');
+      const displayName = String(
+        contact?.notify || contact?.name || contact?.verifiedName || ''
+      ).trim();
+      if (contactId && displayName) {
+        pushNameCache.set(contactId, displayName);
+      }
+    }
+  });
 
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -411,6 +449,7 @@ async function startSocket() {
       }
       const isGroup = chatId.endsWith('@g.us');
       const senderNumber = senderId.replace(/@.*/, '');
+      rememberPushName(senderId, msg.pushName);
 
       // Handle fromMe messages based on mode
       if (msg.key.fromMe) {
@@ -586,12 +625,19 @@ async function startSocket() {
         continue;
       }
 
+      const resolvedSenderName = String(
+        msg.pushName || pushNameCache.get(senderId) || senderNumber
+      ).trim() || senderNumber;
+      const resolvedChatName = isGroup
+        ? (await resolveGroupChatName(chatId)) || chatId.split('@')[0]
+        : resolvedSenderName;
+
       const event = {
         messageId: msg.key.id,
         chatId,
         senderId,
-        senderName: msg.pushName || senderNumber,
-        chatName: isGroup ? (chatId.split('@')[0]) : (msg.pushName || senderNumber),
+        senderName: resolvedSenderName,
+        chatName: resolvedChatName,
         isGroup,
         body,
         hasMedia,
