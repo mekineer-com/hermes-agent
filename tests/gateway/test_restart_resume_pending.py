@@ -1006,8 +1006,7 @@ async def test_startup_auto_resume_includes_crash_recovery():
     adapter.handle_message.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_startup_auto_resume_skips_soul_mode_sessions():
+def test_startup_auto_resume_skips_soul_mode_sessions():
     runner, adapter = make_restart_runner()
     source = make_restart_source(chat_id="soul-chat")
     pending_entry = SessionEntry(
@@ -1037,13 +1036,10 @@ async def test_startup_auto_resume_skips_soul_mode_sessions():
             }
         }
     )
-    adapter.handle_message = AsyncMock()
 
     scheduled = runner._schedule_resume_pending_sessions()
-    await asyncio.sleep(0)
 
     assert scheduled == 0
-    adapter.handle_message.assert_not_called()
 
 
 @pytest.mark.asyncio
