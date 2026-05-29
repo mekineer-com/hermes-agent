@@ -1007,6 +1007,46 @@ async def test_startup_auto_resume_includes_crash_recovery():
 
 
 @pytest.mark.asyncio
+async def test_startup_auto_resume_skips_soul_mode_sessions():
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="soul-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:echo:whatsapp:dm:15133278228",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    runner._read_user_config = MagicMock(
+        return_value={
+            "soul_mode": {
+                "agents": {
+                    "echo": {
+                        "enabled": True,
+                        "role": "soul",
+                        "soul_id": "Echo",
+                        "user_id": "marcos",
+                    }
+                }
+            }
+        }
+    )
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+
+    assert scheduled == 0
+    adapter.handle_message.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_startup_auto_resume_skips_stale_entries():
     """Entries older than the freshness window must not be auto-resumed."""
     runner, adapter = make_restart_runner()

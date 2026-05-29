@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Literal
+from typing import Any, Literal
 
 from gateway.whatsapp_identity import canonical_whatsapp_identifier, normalize_whatsapp_identifier
 from hermes_constants import get_hermes_home
@@ -105,3 +105,32 @@ def whatsapp_channel_settings(chat_id: str) -> tuple[WhatsAppChannelPolicy, bool
     if isinstance(entry, dict) and isinstance(entry.get("memorize"), bool):
         return policy, bool(entry.get("memorize"))
     return policy, _default_memorize_for_policy(policy)
+
+
+def _is_soul_mode_session(gateway: Any, session_key: str) -> bool:
+    """Return True when the given gateway session resolves to soul mode."""
+    resolved_session_key = str(session_key or "").strip()
+    if not resolved_session_key:
+        return False
+    try:
+        from agent.soul_mode import resolve_agent_config
+        user_config = gateway._read_user_config()
+        cfg = resolve_agent_config(user_config, resolved_session_key)
+        return bool(cfg.get("enabled")) and str(cfg.get("role") or "").strip().lower() == "soul"
+    except Exception as exc:
+        logger.warning(
+            "memu_policy: failed soul-mode resolve for session=%s: %s",
+            resolved_session_key,
+            exc,
+        )
+        return False
+
+
+def should_skip_soul_mode_auto_resume(gateway: Any, session_key: str) -> bool:
+    """True when startup auto-resume should not synthesize an internal event."""
+    return _is_soul_mode_session(gateway, session_key)
+
+
+def should_suppress_soul_mode_resume_note(gateway: Any, session_key: str) -> bool:
+    """True when gateway resume/tool-tail system-note prepend should be skipped."""
+    return _is_soul_mode_session(gateway, session_key)

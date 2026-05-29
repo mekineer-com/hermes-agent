@@ -93,3 +93,48 @@ def test_memorize_respects_explicit_false(hermes_home):
     )
     from gateway.memu_policy import whatsapp_channel_memorize
     assert whatsapp_channel_memorize("12345@s.whatsapp.net") is False
+
+
+def test_should_skip_soul_mode_auto_resume_uses_session_agent_name():
+    from gateway.memu_policy import should_skip_soul_mode_auto_resume
+
+    class _Gateway:
+        def _read_user_config(self):
+            return {
+                "soul_mode": {
+                    "agents": {
+                        "main": {
+                            "enabled": False,
+                            "role": "standard",
+                        },
+                        "echo": {
+                            "enabled": True,
+                            "role": "soul",
+                            "soul_id": "Echo",
+                            "user_id": "marcos",
+                        },
+                    }
+                }
+            }
+
+    assert should_skip_soul_mode_auto_resume(
+        _Gateway(),
+        "agent:echo:whatsapp:dm:15133278228",
+    ) is True
+    assert should_skip_soul_mode_auto_resume(
+        _Gateway(),
+        "agent:main:whatsapp:dm:15133278228",
+    ) is False
+
+
+def test_should_skip_soul_mode_auto_resume_logs_on_config_failure(caplog):
+    from gateway.memu_policy import should_skip_soul_mode_auto_resume
+
+    class _Gateway:
+        def _read_user_config(self):
+            raise RuntimeError("broken config")
+
+    with caplog.at_level("WARNING"):
+        out = should_skip_soul_mode_auto_resume(_Gateway(), "agent:main:whatsapp:dm:x")
+    assert out is False
+    assert "failed soul-mode resolve" in caplog.text

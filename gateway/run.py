@@ -3277,6 +3277,13 @@ class GatewayRunner:
                     getattr(source.platform, "value", source.platform),
                 )
                 continue
+            from gateway.memu_policy import should_skip_soul_mode_auto_resume
+            if should_skip_soul_mode_auto_resume(self, entry.session_key):
+                logger.info(
+                    "Skipping startup auto-resume synthetic turn for soul-mode session %s",
+                    entry.session_key,
+                )
+                continue
 
             # Empty-text internal event — the _is_resume_pending branch in
             # _handle_message_with_agent prepends the proper reason-aware
@@ -15684,6 +15691,15 @@ class GatewayRunner:
                 and agent_history[-1].get("role") == "tool"
                 and _interruption_is_fresh
             )
+            if (_is_resume_pending or _has_fresh_tool_tail) and session_key:
+                from gateway.memu_policy import should_suppress_soul_mode_resume_note
+                if should_suppress_soul_mode_resume_note(self, session_key):
+                    logger.info(
+                        "Suppressing gateway resume/tool-tail note for soul-mode session %s",
+                        session_key,
+                    )
+                    _is_resume_pending = False
+                    _has_fresh_tool_tail = False
 
             if _is_resume_pending:
                 _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
