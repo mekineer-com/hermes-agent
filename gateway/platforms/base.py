@@ -1156,6 +1156,22 @@ def merge_pending_message_event(
     pending_messages[session_key] = event
 
 
+def _is_duplicate_whatsapp_followup(current_event: MessageEvent, queued_event: MessageEvent) -> bool:
+    """True when a queued WhatsApp follow-up is a replay of the current turn."""
+    if (
+        getattr(current_event, "source", None) is None
+        or getattr(queued_event, "source", None) is None
+    ):
+        return False
+    if current_event.source.platform != Platform.WHATSAPP:
+        return False
+    if queued_event.source.platform != Platform.WHATSAPP:
+        return False
+    current_id = str(getattr(current_event, "message_id", "") or "").strip()
+    queued_id = str(getattr(queued_event, "message_id", "") or "").strip()
+    return bool(current_id and queued_id and current_id == queued_id)
+
+
 # Error substrings that indicate a transient *connection* failure worth retrying.
 # "timeout" / "timed out" / "readtimeout" / "writetimeout" are intentionally
 # excluded: a read/write timeout on a non-idempotent call (e.g. send_message)
@@ -3322,6 +3338,16 @@ class BasePlatformAdapter(ABC):
             # Check if there's a pending message that was queued during our processing
             if session_key in self._pending_messages:
                 pending_event = self._pending_messages.pop(session_key)
+                if _is_duplicate_whatsapp_followup(event, pending_event):
+                    logger.info(
+                        "[%s] Dropping duplicate WhatsApp pending replay (message_id=%s) for %s",
+                        self.name,
+                        str(pending_event.message_id or ""),
+                        session_key,
+                    )
+                    pending_event = None
+                if pending_event is None:
+                    return
                 logger.debug("[%s] Processing queued message from interrupt", self.name)
                 # Keep the _active_sessions entry live across the turn chain
                 # and only CLEAR the interrupt Event — do NOT delete the entry.
@@ -3432,6 +3458,14 @@ class BasePlatformAdapter(ABC):
             # active-session entry and the queued message would be silently
             # dropped (user never gets a reply).
             late_pending = self._pending_messages.pop(session_key, None)
+            if late_pending is not None and _is_duplicate_whatsapp_followup(event, late_pending):
+                logger.info(
+                    "[%s] Dropping duplicate WhatsApp late-arrival replay (message_id=%s) for %s",
+                    self.name,
+                    str(late_pending.message_id or ""),
+                    session_key,
+                )
+                late_pending = None
             if late_pending is not None:
                 current_task = asyncio.current_task()
                 existing_task = self._session_tasks.get(session_key)

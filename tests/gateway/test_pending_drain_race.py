@@ -49,23 +49,24 @@ class _StubAdapter(BasePlatformAdapter):
         return {}
 
 
-def _make_adapter():
-    adapter = _StubAdapter(PlatformConfig(enabled=True, token="t"), Platform.TELEGRAM)
+def _make_adapter(platform: Platform = Platform.TELEGRAM):
+    adapter = _StubAdapter(PlatformConfig(enabled=True, token="t"), platform)
     adapter._send_with_retry = AsyncMock(return_value=None)
     return adapter
 
 
-def _make_event(text="hi", chat_id="42"):
+def _make_event(text="hi", chat_id="42", *, platform: Platform = Platform.TELEGRAM, message_id: str | None = None):
     return MessageEvent(
         text=text,
         message_type=MessageType.TEXT,
-        source=SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"),
+        source=SessionSource(platform=platform, chat_id=chat_id, chat_type="dm"),
+        message_id=message_id,
     )
 
 
-def _sk(chat_id="42"):
+def _sk(chat_id="42", *, platform: Platform = Platform.TELEGRAM):
     return build_session_key(
-        SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm")
+        SessionSource(platform=platform, chat_id=chat_id, chat_type="dm")
     )
 
 
@@ -210,3 +211,51 @@ async def test_no_pending_cleans_up_normally():
     assert sk not in adapter._pending_messages
 
     await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_duplicate_pending_message_id_is_dropped():
+    """If WhatsApp replays the same message_id while a turn is active,
+    pending-drain must drop it so the same user message is not answered twice.
+    """
+    adapter = _make_adapter(Platform.WHATSAPP)
+    sk = _sk(platform=Platform.WHATSAPP)
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    calls: list[str] = []
+
+    async def handler(event):
+        calls.append(str(event.message_id or ""))
+        if len(calls) == 1:
+            first_started.set()
+            await release_first.wait()
+        return "ok"
+
+    adapter._message_handler = handler
+
+    first_event = _make_event(
+        text="hello",
+        platform=Platform.WHATSAPP,
+        message_id="wamid.dup.123",
+    )
+    await adapter.handle_message(first_event)
+    await asyncio.wait_for(first_started.wait(), timeout=1.0)
+
+    adapter._pending_messages[sk] = _make_event(
+        text="hello",
+        platform=Platform.WHATSAPP,
+        message_id="wamid.dup.123",
+    )
+    release_first.set()
+
+    for _ in range(200):
+        if sk not in adapter._active_sessions:
+            break
+        await asyncio.sleep(0.01)
+
+    await adapter.cancel_background_tasks()
+
+    assert calls == ["wamid.dup.123"], (
+        "duplicate WhatsApp pending replay was not dropped; "
+        "the same inbound message_id was handled twice"
+    )
