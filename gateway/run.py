@@ -14108,6 +14108,7 @@ class GatewayRunner:
         agent._chat_type = source.chat_type
         agent._thread_id = source.thread_id
         agent._gateway_session_key = session_key
+        agent._external_message_id = source.message_id
 
     def _release_evicted_agent_soft(self, agent: Any) -> None:
         """Soft cleanup for cache-evicted agents — preserves session tool state.

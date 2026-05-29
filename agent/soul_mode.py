@@ -410,6 +410,7 @@ def handle_turn(
         chat_name = str(getattr(agent, "_chat_name", "") or "").strip()
         channel_mode = "group" if (platform == "whatsapp" and chat_type != "dm") else "direct"
         sender_display_name = str(getattr(agent, "_user_name", "") or "")
+        ext_msg_id = str(getattr(agent, "_external_message_id", "") or "").strip() or None
         memorize_chat: bool | None = None
 
         # WhatsApp channel policy (memu.json): "excluded" → drop silently, no
@@ -433,6 +434,7 @@ def handle_turn(
                         message=memu_message,
                         user_name=sender_display_name,
                         memorize_chat=memorize_chat,
+                        external_message_id=ext_msg_id,
                     )
                 except Exception as exc:
                     logger.warning("Soul listen_only append failed for %s: %s", conversation_id, exc)
@@ -457,6 +459,7 @@ def handle_turn(
             chat_name=chat_name,
             chat_type=chat_type,
             memorize_chat=memorize_chat,
+            external_message_id=ext_msg_id,
         )
 
         turn_ok = turn_out.get("ok", True)
