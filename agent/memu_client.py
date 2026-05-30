@@ -69,6 +69,8 @@ def normalize_history_for_memu(
         return []
 
     role_to_name = {}
+    if user_name:
+        role_to_name["user"] = user_name
     if soul_name:
         role_to_name["assistant"] = soul_name
 
@@ -88,9 +90,6 @@ def normalize_history_for_memu(
             "role": role,
             "content": text,
         }
-        # Preserve explicit participant names from transcript rows.
-        # Never force-fill user names from session metadata: in multi-chat
-        # scenarios that can stamp the wrong person across a DM transcript.
         name = str(msg.get("name") or "").strip()
         if not name:
             name = role_to_name.get(role, "")
