@@ -230,6 +230,22 @@ const chatUnreadCounts = new Map();
 const lastInboundMessageByChat = new Map();
 const pushNameCache = new Map();
 const groupNameCache = new Map();
+const sentMessageStore = new Map();
+const MAX_SENT_STORE = 200;
+
+function storeSentMessage(sent, content) {
+  if (!sent?.key?.id || !sent?.key?.remoteJid) return;
+  const k = `${sent.key.remoteJid}:${sent.key.id}:${sent.key.fromMe ? '1' : '0'}`;
+  sentMessageStore.set(k, { content, ts: Date.now() });
+  if (sentMessageStore.size > MAX_SENT_STORE) {
+    sentMessageStore.delete(sentMessageStore.keys().next().value);
+  }
+  const cutoff = Date.now() - 86400000;
+  for (const [key, val] of sentMessageStore) {
+    if (val.ts < cutoff) sentMessageStore.delete(key);
+    else break;
+  }
+}
 
 let sock = null;
 let connectionState = 'disconnected';
@@ -359,8 +375,13 @@ async function startSocket() {
     // Required for Baileys 7.x: without this, incoming messages that need
     // E2EE session re-establishment are silently dropped (msg.message === null)
     getMessage: async (key) => {
-      // We don't maintain a message store, so return a placeholder.
-      // This is enough for Baileys to complete the retry handshake.
+      const k = `${key.remoteJid}:${key.id}:${key.fromMe ? '1' : '0'}`;
+      const entry = sentMessageStore.get(k);
+      if (entry) {
+        logger.debug({ event: 'getMessage_hit', key }, 'retry served from cache');
+        return entry.content;
+      }
+      logger.warn({ event: 'getMessage_miss', remoteJid: key.remoteJid, id: key.id, fromMe: key.fromMe }, 'retry key not in cache');
       return { conversation: '' };
     },
   });
@@ -758,6 +779,7 @@ app.post('/send', async (req, res) => {
     for (let i = 0; i < chunks.length; i += 1) {
       const sent = await sendWithTimeout(chatId, { text: chunks[i] });
       trackSentMessageId(sent);
+      storeSentMessage(sent, { conversation: chunks[i] });
       if (sent?.key?.id) messageIds.push(sent.key.id);
       if (chunks.length > 1 && i < chunks.length - 1) {
         await sleep(CHUNK_DELAY_MS);
@@ -794,10 +816,12 @@ app.post('/edit', async (req, res) => {
     const messageIds = [];
 
     await sendWithTimeout(chatId, { text: chunks[0], edit: key });
+    storeSentMessage({ key }, { conversation: chunks[0] });
     if (chunks.length > 1) {
       for (let i = 1; i < chunks.length; i += 1) {
         const sent = await sendWithTimeout(chatId, { text: chunks[i] });
         trackSentMessageId(sent);
+        storeSentMessage(sent, { conversation: chunks[i] });
         if (sent?.key?.id) messageIds.push(sent.key.id);
         if (i < chunks.length - 1) {
           await sleep(CHUNK_DELAY_MS);
