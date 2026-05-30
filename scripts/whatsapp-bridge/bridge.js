@@ -188,6 +188,7 @@ function getContextInfo(messageContent) {
 mkdirSync(SESSION_DIR, { recursive: true });
 
 // Build LID → phone reverse map from session files (lid-mapping-{phone}.json)
+// and creds.json self-identity (me.id / me.lid).
 function buildLidMap() {
   const map = {};
   try {
@@ -197,6 +198,16 @@ function buildLidMap() {
       const phone = m[1];
       const lid = JSON.parse(readFileSync(path.join(SESSION_DIR, f), 'utf8'));
       if (lid) map[String(lid)] = phone;
+    }
+  } catch {}
+  // Self-identity fallback: creds.json stores our own phone/LID pair even
+  // when no lid-mapping-*.json file exists for it.
+  try {
+    const creds = JSON.parse(readFileSync(path.join(SESSION_DIR, 'creds.json'), 'utf8'));
+    const meId = String(creds?.me?.id || '').replace(/:.*@/, '@').split('@')[0];
+    const meLid = String(creds?.me?.lid || '').replace(/:.*@/, '@').split('@')[0];
+    if (meId && meLid && meId !== meLid) {
+      map[meLid] = meId;
     }
   } catch {}
   return map;
