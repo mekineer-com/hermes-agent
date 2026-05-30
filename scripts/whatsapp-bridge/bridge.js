@@ -381,6 +381,13 @@ async function startSocket() {
         logger.debug({ event: 'getMessage_hit', key }, 'retry served from cache');
         return entry.content;
       }
+      // LID/phone duality: retry remoteJid may differ from send JID. Fall back to id-only scan.
+      for (const [ck, cv] of sentMessageStore) {
+        if (ck.includes(`:${key.id}:`)) {
+          logger.debug({ event: 'getMessage_hit_id_fallback', key }, 'retry served from cache via id-only match');
+          return cv.content;
+        }
+      }
       logger.warn({ event: 'getMessage_miss', remoteJid: key.remoteJid, id: key.id, fromMe: key.fromMe }, 'retry key not in cache');
       return { conversation: '' };
     },
