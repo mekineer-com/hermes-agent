@@ -84,7 +84,7 @@ def test_memu_turn_forwards_chat_name_and_chat_type(monkeypatch):
     assert payload["chat_type"] == "dm"
 
 
-def test_memu_turn_fills_user_name_from_history_user_name(monkeypatch):
+def test_memu_turn_does_not_force_fill_user_name_from_history_user_name(monkeypatch):
     client = MemuHttpClient(base_url="http://127.0.0.1:8099")
     captured = {}
 
@@ -106,7 +106,7 @@ def test_memu_turn_fills_user_name_from_history_user_name(monkeypatch):
 
     assert out["ok"] is True
     payload = captured["payload"]
-    assert payload["history"][0]["name"] == "Liz Kalverda"
+    assert "name" not in payload["history"][0]
 
 
 def test_normalize_history_for_memu_still_fills_assistant_name_from_soul_name():
