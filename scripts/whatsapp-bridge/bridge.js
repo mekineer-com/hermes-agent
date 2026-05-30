@@ -232,6 +232,21 @@ const pushNameCache = new Map();
 const groupNameCache = new Map();
 const sentMessageStore = new Map();
 const MAX_SENT_STORE = 200;
+const knownChats = new Map();
+
+function rememberKnownChat(chatId, { isGroup = false, name = '', lastSenderName = '' } = {}) {
+  const normalizedChatId = normalizeWhatsAppId(chatId);
+  if (!normalizedChatId) return;
+  const existing = knownChats.get(normalizedChatId) || {};
+  const merged = {
+    chatId: normalizedChatId,
+    isGroup: !!(isGroup || existing.isGroup),
+    name: String(name || existing.name || '').trim(),
+    lastSenderName: String(lastSenderName || existing.lastSenderName || '').trim(),
+    updatedAtMs: Date.now(),
+  };
+  knownChats.set(normalizedChatId, merged);
+}
 
 function storeSentMessage(sent, content) {
   if (!sent?.key?.id || !sent?.key?.remoteJid) return;
@@ -489,6 +504,7 @@ async function startSocket() {
       const isGroup = chatId.endsWith('@g.us');
       const senderNumber = senderId.replace(/@.*/, '');
       rememberPushName(senderId, msg.pushName);
+      rememberKnownChat(chatId, { isGroup });
 
       // Handle fromMe messages based on mode
       if (msg.key.fromMe) {
@@ -670,6 +686,11 @@ async function startSocket() {
       const resolvedChatName = isGroup
         ? (await resolveGroupChatName(chatId)) || chatId.split('@')[0]
         : resolvedSenderName;
+      rememberKnownChat(chatId, {
+        isGroup,
+        name: resolvedChatName,
+        lastSenderName: resolvedSenderName,
+      });
 
       const event = {
         messageId: msg.key.id,
@@ -964,7 +985,7 @@ app.post('/typing', async (req, res) => {
 
 // Chat info
 app.get('/chat/:id', async (req, res) => {
-  const chatId = req.params.id;
+  const chatId = normalizeWhatsAppId(req.params.id);
   const isGroup = chatId.endsWith('@g.us');
 
   if (isGroup && sock) {
@@ -981,10 +1002,30 @@ app.get('/chat/:id', async (req, res) => {
   }
 
   res.json({
-    name: chatId.replace(/@.*/, ''),
+    name: String(pushNameCache.get(chatId) || chatId.replace(/@.*/, '')),
     isGroup,
     participants: [],
   });
+});
+
+// Best-effort discovery list for local policy UIs.
+// Includes chats seen in message events even when those messages are filtered
+// out before enqueueing to the Python gateway.
+app.get('/chats-known', (req, res) => {
+  const out = [];
+  for (const [chatId, row] of knownChats.entries()) {
+    const isGroup = !!row.isGroup || chatId.endsWith('@g.us');
+    const displayName = isGroup
+      ? String(row.name || '').trim() || chatId.split('@')[0]
+      : String(row.name || row.lastSenderName || pushNameCache.get(chatId) || '').trim() || chatId.split('@')[0];
+    out.push({
+      id: chatId,
+      name: displayName,
+      type: isGroup ? 'group' : 'dm',
+    });
+  }
+  out.sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id)));
+  res.json({ chats: out });
 });
 
 // Health check
