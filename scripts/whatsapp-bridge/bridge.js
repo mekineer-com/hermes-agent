@@ -728,24 +728,6 @@ async function startSocket() {
       const senderId = normalizeWhatsAppId(msg.key.participant || rawChatId) || chatId;
       const isGroup = chatId.endsWith('@g.us');
       const senderDisplayName = extractPossibleSenderName(msg);
-      if (WHATSAPP_DEBUG) {
-        try {
-          console.log(JSON.stringify({
-            event: 'discovery_probe',
-            type,
-            rawChatId,
-            normalizedChatId: chatId,
-            rawParticipant: String(msg.key.participant || ''),
-            normalizedSenderId: senderId,
-            fromMe: !!msg.key.fromMe,
-            pushName: String(msg.pushName || ''),
-            notifyName: String(msg.notifyName || ''),
-            participantName: String(msg.participantName || ''),
-            extractedSenderDisplayName: senderDisplayName,
-            hasMessagePayload: !!msg.message,
-          }));
-        } catch {}
-      }
       // Keep discovery populated even when WhatsApp event decryption fails and
       // msg.message is absent (observed as Bad MAC / missing session errors).
       if (!msg.key.fromMe) {
