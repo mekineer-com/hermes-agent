@@ -371,3 +371,12 @@ def test_is_broadcast_chat_helper_recognizes_common_jids():
     assert WhatsAppAdapter._is_broadcast_chat("120363001234567890@g.us") is False
     assert WhatsAppAdapter._is_broadcast_chat("") is False
     assert WhatsAppAdapter._is_broadcast_chat(None) is False  # type: ignore[arg-type]
+
+
+def test_normalize_whatsapp_id_collapses_device_suffix():
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    assert (
+        WhatsAppAdapter._normalize_whatsapp_id("15133278228:12@s.whatsapp.net")
+        == "15133278228@s.whatsapp.net"
+    )

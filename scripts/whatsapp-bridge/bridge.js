@@ -42,8 +42,6 @@ function getArg(name, defaultVal) {
 }
 
 const WHATSAPP_DEBUG =
-  typeof process !== 'undefined' &&
-  process.env &&
   typeof process.env.WHATSAPP_DEBUG === 'string' &&
   ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_DEBUG.toLowerCase());
 
@@ -262,6 +260,7 @@ const pushNameCache = new Map();
 const groupNameCache = new Map();
 const sentMessageStore = new Map();
 const MAX_SENT_STORE = 200;
+const SENT_MESSAGE_RETENTION_MS = 24 * 60 * 60 * 1000;
 const knownChats = new Map();
 const unresolvedDmNameLogged = new Set();
 const recentDmMessageById = new Map();
@@ -422,14 +421,14 @@ function rememberKnownChat(chatId, { isGroup = false, name = '', lastSenderName 
 function storeSentMessage(sent, content) {
   if (!sent?.key?.id || !sent?.key?.remoteJid) return;
   const k = `${sent.key.remoteJid}:${sent.key.id}:${sent.key.fromMe ? '1' : '0'}`;
-  sentMessageStore.set(k, { content, ts: Date.now() });
+  const nowMs = Date.now();
+  sentMessageStore.set(k, { content, ts: nowMs });
   if (sentMessageStore.size > MAX_SENT_STORE) {
     sentMessageStore.delete(sentMessageStore.keys().next().value);
   }
-  const cutoff = Date.now() - 86400000;
+  const cutoff = nowMs - SENT_MESSAGE_RETENTION_MS;
   for (const [key, val] of sentMessageStore) {
     if (val.ts < cutoff) sentMessageStore.delete(key);
-    else break;
   }
 }
 
@@ -531,15 +530,13 @@ function learnAliasFromMirroredDmMessage({ chatId, messageId, fromMe, isGroup })
 
   learnLidPhoneShare(`${lidLocal}@lid`, `${phoneLocal}@s.whatsapp.net`);
   if (WHATSAPP_DEBUG) {
-    try {
-      console.log(JSON.stringify({
-        event: 'discovery_alias_learned',
-        source: 'mirrored_dm_message_id',
-        messageId: id,
-        lid: lidLocal,
-        phone: phoneLocal,
-      }));
-    } catch {}
+    console.log(JSON.stringify({
+      event: 'discovery_alias_learned',
+      source: 'mirrored_dm_message_id',
+      messageId: id,
+      lid: lidLocal,
+      phone: phoneLocal,
+    }));
   }
 }
 
@@ -550,14 +547,12 @@ function resolveDmDisplayName(chatId, row) {
   if (fromRow) return fromRow;
   if (WHATSAPP_DEBUG && !unresolvedDmNameLogged.has(chatId)) {
     unresolvedDmNameLogged.add(chatId);
-    try {
-      console.log(JSON.stringify({
-        event: 'dm_name_unresolved',
-        chatId,
-        hadRowName: !!String(row?.name || '').trim(),
-        hadLastSenderName: !!String(row?.lastSenderName || '').trim(),
-      }));
-    } catch {}
+    console.log(JSON.stringify({
+      event: 'dm_name_unresolved',
+      chatId,
+      hadRowName: !!String(row?.name || '').trim(),
+      hadLastSenderName: !!String(row?.lastSenderName || '').trim(),
+    }));
   }
   return chatId.split('@')[0];
 }
@@ -649,14 +644,12 @@ async function postSendPresenceAndUnreadRestore(chatId, hadUnreadBeforeSend) {
       await sock.sendPresenceUpdate('unavailable');
     } catch (err) {
       if (WHATSAPP_DEBUG) {
-        try {
-          console.log(JSON.stringify({
-            event: 'warn',
-            reason: 'set_unavailable_failed',
-            chatId,
-            error: err?.message || String(err),
-          }));
-        } catch {}
+        console.log(JSON.stringify({
+          event: 'warn',
+          reason: 'set_unavailable_failed',
+          chatId,
+          error: err?.message || String(err),
+        }));
       }
     }
   }
@@ -673,14 +666,12 @@ async function postSendPresenceAndUnreadRestore(chatId, hadUnreadBeforeSend) {
     );
   } catch (err) {
     if (WHATSAPP_DEBUG) {
-      try {
-        console.log(JSON.stringify({
-          event: 'warn',
-          reason: 'preserve_unread_failed',
-          chatId: normalizedChatId,
-          error: err?.message || String(err),
-        }));
-      } catch {}
+      console.log(JSON.stringify({
+        event: 'warn',
+        reason: 'preserve_unread_failed',
+        chatId: normalizedChatId,
+        error: err?.message || String(err),
+      }));
     }
   }
 }
@@ -820,14 +811,12 @@ async function startSocket() {
       const isStatusUpdate = rawChatId.toLowerCase() === 'status@broadcast';
       if (isStatusUpdate) {
         if (WHATSAPP_DEBUG) {
-          try {
-            console.log(JSON.stringify({
-              event: 'ignored',
-              reason: 'status_update',
-              chatId: rawChatId,
-              messageId: msg.key.id || '',
-            }));
-          } catch {}
+          console.log(JSON.stringify({
+            event: 'ignored',
+            reason: 'status_update',
+            chatId: rawChatId,
+            messageId: msg.key.id || '',
+          }));
         }
         continue;
       }
@@ -861,35 +850,27 @@ async function startSocket() {
       if (!msg.key.fromMe) {
         rememberPushName(senderId, senderDisplayName);
       }
-      rememberKnownChat(chatId, {
-        isGroup,
-        lastSenderName: (!isGroup && !msg.key.fromMe) ? senderDisplayName : '',
-      });
-      if (!msg.message) continue;
+      if (!msg.message) {
+        rememberKnownChat(chatId, {
+          isGroup,
+          lastSenderName: (!isGroup && !msg.key.fromMe) ? senderDisplayName : '',
+        });
+        continue;
+      }
       rememberInboundLastMessage(msg);
       if (WHATSAPP_DEBUG) {
-        try {
-          console.log(JSON.stringify({
-            event: 'upsert', type,
-            fromMe: !!msg.key.fromMe, chatId,
-            senderId,
-            messageKeys: Object.keys(msg.message || {}),
-          }));
-        } catch {}
+        console.log(JSON.stringify({
+          event: 'upsert', type,
+          fromMe: !!msg.key.fromMe, chatId,
+          senderId,
+          messageKeys: Object.keys(msg.message || {}),
+        }));
       }
       const senderNumber = senderId.replace(/@.*/, '');
       if (!forwardableType) continue;
 
       // Handle fromMe messages based on mode
       if (msg.key.fromMe) {
-        if (chatId.includes('status')) continue;
-
-        if (WHATSAPP_MODE === 'bot') {
-          // Bot mode: echo-back filtering happens at line 935 (prefix +
-          // recentlySentIds check). Phone-originated fromMe messages pass
-          // through so Echo has full conversation context.
-        }
-
         if (WHATSAPP_MODE === 'self-chat') {
           const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
           const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
@@ -906,25 +887,21 @@ async function startSocket() {
       // to arbitrary incoming messages (#8389).
       if (!msg.key.fromMe) {
         if (WHATSAPP_MODE === 'self-chat') {
-          try {
-            console.log(JSON.stringify({
-              event: 'ignored',
-              reason: 'self_chat_mode_rejects_non_self',
-              chatId,
-              senderId,
-            }));
-          } catch {}
+          console.log(JSON.stringify({
+            event: 'ignored',
+            reason: 'self_chat_mode_rejects_non_self',
+            chatId,
+            senderId,
+          }));
           continue;
         }
         if (!matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
-          try {
-            console.log(JSON.stringify({
-              event: 'ignored',
-              reason: 'allowlist_mismatch',
-              chatId,
-              senderId,
-            }));
-          } catch {}
+          console.log(JSON.stringify({
+            event: 'ignored',
+            reason: 'allowlist_mismatch',
+            chatId,
+            senderId,
+          }));
           continue;
         }
       }
@@ -1018,7 +995,7 @@ async function startSocket() {
       // Ignore Hermes' own reply messages in self-chat mode to avoid loops.
       if (msg.key.fromMe && ((REPLY_PREFIX && body.startsWith(REPLY_PREFIX)) || recentlySentIds.has(msg.key.id))) {
         if (WHATSAPP_DEBUG) {
-          try { console.log(JSON.stringify({ event: 'ignored', reason: 'agent_echo', chatId, messageId: msg.key.id })); } catch {}
+          console.log(JSON.stringify({ event: 'ignored', reason: 'agent_echo', chatId, messageId: msg.key.id }));
         }
         continue;
       }
@@ -1026,11 +1003,7 @@ async function startSocket() {
       // Skip empty messages
       if (!body && !hasMedia) {
         if (WHATSAPP_DEBUG) {
-          try { 
-            console.log(JSON.stringify({ event: 'ignored', reason: 'empty', chatId, messageKeys: Object.keys(msg.message || {}) })); 
-          } catch (err) {
-            console.error('Failed to log empty message event:', err);
-          }
+          console.log(JSON.stringify({ event: 'ignored', reason: 'empty', chatId, messageKeys: Object.keys(msg.message || {}) }));
         }
         continue;
       }
@@ -1069,15 +1042,13 @@ async function startSocket() {
 
       const queued = durableQueue.enqueue(event);
       if (WHATSAPP_DEBUG && !queued) {
-        try {
-          console.log(JSON.stringify({
-            event: 'ignored',
-            reason: 'duplicate_event_uid',
-            chatId: event.chatId,
-            messageId: event.messageId,
-            senderId: event.senderId,
-          }));
-        } catch {}
+        console.log(JSON.stringify({
+          event: 'ignored',
+          reason: 'duplicate_event_uid',
+          chatId: event.chatId,
+          messageId: event.messageId,
+          senderId: event.senderId,
+        }));
       }
     }
   });
@@ -1363,8 +1334,9 @@ app.get('/chat/:id', async (req, res) => {
     }
   }
 
+  const chatRow = knownChats.get(chatId) || null;
   res.json({
-    name: resolveDmDisplayName(chatId, null),
+    name: resolveDmDisplayName(chatId, chatRow),
     isGroup,
     participants: [],
   });
