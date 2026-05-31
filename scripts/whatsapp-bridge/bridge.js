@@ -1370,10 +1370,6 @@ app.get('/chat/:id', async (req, res) => {
   });
 });
 
-app.get('/lid-map', (req, res) => {
-  res.json(lidToPhone);
-});
-
 // Best-effort discovery list for local policy UIs.
 // Includes chats seen in message events even when those messages are filtered
 // out before enqueueing to the Python gateway.
