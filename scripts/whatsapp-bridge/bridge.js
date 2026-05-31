@@ -488,6 +488,8 @@ async function postSendPresenceAndUnreadRestore(chatId, hadUnreadBeforeSend) {
 }
 
 loadKnownState();
+persistKnownChats();
+persistKnownContacts();
 
 async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
@@ -499,9 +501,7 @@ async function startSocket() {
     logger,
     printQRInTerminal: false,
     browser: ['Hermes Agent', 'Chrome', '120.0'],
-    // Needed for complete chat/contact discovery across restarts. Without
-    // full history sync, Baileys may only expose a narrow active subset.
-    syncFullHistory: true,
+    syncFullHistory: false,
     markOnlineOnConnect: false,
     // Required for Baileys 7.x: without this, incoming messages that need
     // E2EE session re-establishment are silently dropped (msg.message === null)
