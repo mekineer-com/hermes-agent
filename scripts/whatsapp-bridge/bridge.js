@@ -591,7 +591,6 @@ async function startSocket() {
     ].filter(Boolean)));
 
     for (const msg of messages) {
-      if (!msg.message) continue;
       const rawChatId = String(msg.key.remoteJid || '');
       const isStatusUpdate = rawChatId.toLowerCase() === 'status@broadcast';
       if (isStatusUpdate) {
@@ -609,8 +608,16 @@ async function startSocket() {
       }
       const chatId = normalizeWhatsAppId(rawChatId);
       if (!chatId) continue;
-      rememberInboundLastMessage(msg);
       const senderId = normalizeWhatsAppId(msg.key.participant || rawChatId) || chatId;
+      const isGroup = chatId.endsWith('@g.us');
+      // Keep discovery populated even when WhatsApp event decryption fails and
+      // msg.message is absent (observed as Bad MAC / missing session errors).
+      if (!msg.key.fromMe) {
+        rememberPushName(senderId, msg.pushName);
+      }
+      rememberKnownChat(chatId, { isGroup });
+      if (!msg.message) continue;
+      rememberInboundLastMessage(msg);
       if (WHATSAPP_DEBUG) {
         try {
           console.log(JSON.stringify({
@@ -621,12 +628,7 @@ async function startSocket() {
           }));
         } catch {}
       }
-      const isGroup = chatId.endsWith('@g.us');
       const senderNumber = senderId.replace(/@.*/, '');
-      if (!msg.key.fromMe) {
-        rememberPushName(senderId, msg.pushName);
-      }
-      rememberKnownChat(chatId, { isGroup });
       if (!forwardableType) continue;
 
       // Handle fromMe messages based on mode
