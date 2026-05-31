@@ -237,6 +237,7 @@ const groupNameCache = new Map();
 const sentMessageStore = new Map();
 const MAX_SENT_STORE = 200;
 const knownChats = new Map();
+const unresolvedDmNameLogged = new Set();
 
 function _atomicWriteJson(filePath, payload) {
   const tmpPath = `${filePath}.tmp`;
@@ -319,6 +320,53 @@ function loadKnownState() {
 
 }
 
+function canonicalizeKnownStateWithLidMap() {
+  let chatsChanged = false;
+  let contactsChanged = false;
+
+  for (const [lid, phone] of Object.entries(lidToPhone)) {
+    const lidJid = `${String(lid || '').trim()}@lid`;
+    const phoneJid = `${String(phone || '').trim()}@s.whatsapp.net`;
+    if (!lid || !phone) continue;
+
+    const lidChat = knownChats.get(lidJid);
+    if (lidChat) {
+      const phoneChat = knownChats.get(phoneJid) || {};
+      knownChats.set(phoneJid, {
+        chatId: phoneJid,
+        isGroup: !!(phoneChat.isGroup || lidChat.isGroup),
+        name: String(phoneChat.name || lidChat.name || '').trim(),
+        lastSenderName: String(phoneChat.lastSenderName || lidChat.lastSenderName || '').trim(),
+        updatedAtMs: Math.max(
+          Number(phoneChat.updatedAtMs || 0) || 0,
+          Number(lidChat.updatedAtMs || 0) || 0,
+          Date.now(),
+        ),
+      });
+      knownChats.delete(lidJid);
+      chatsChanged = true;
+    }
+
+    const lidName = String(pushNameCache.get(lidJid) || '').trim();
+    const phoneName = String(pushNameCache.get(phoneJid) || '').trim();
+    if (lidName && !phoneName) {
+      pushNameCache.set(phoneJid, lidName);
+      contactsChanged = true;
+    }
+    if (lidName) {
+      pushNameCache.delete(lidJid);
+      contactsChanged = true;
+    }
+  }
+
+  if (chatsChanged) {
+    persistKnownChats();
+  }
+  if (contactsChanged) {
+    persistKnownContacts();
+  }
+}
+
 function rememberKnownChat(chatId, { isGroup = false, name = '', lastSenderName = '' } = {}) {
   const normalizedChatId = normalizeWhatsAppId(chatId);
   if (!normalizedChatId) return;
@@ -382,6 +430,47 @@ function rememberKnownContactsFromSnapshot(contacts) {
       rememberPushName(contactId, displayName);
     }
   }
+}
+
+function learnLidPhoneShare(lidValue, jidValue) {
+  const lidLocal = String(lidValue || '').trim().replace(/:.*@/, '@').split('@', 1)[0];
+  const phoneLocal = String(jidValue || '').trim().replace(/:.*@/, '@').split('@', 1)[0];
+  if (!lidLocal || !phoneLocal || lidLocal === phoneLocal) return;
+  if (String(lidToPhone[lidLocal] || '') === phoneLocal) return;
+  lidToPhone[lidLocal] = phoneLocal;
+  canonicalizeKnownStateWithLidMap();
+}
+
+function rememberPhoneNumberShares(payload) {
+  if (Array.isArray(payload)) {
+    for (const row of payload) {
+      if (!row || typeof row !== 'object') continue;
+      learnLidPhoneShare(row.lid, row.jid);
+    }
+    return;
+  }
+  if (payload && typeof payload === 'object') {
+    learnLidPhoneShare(payload.lid, payload.jid);
+  }
+}
+
+function resolveDmDisplayName(chatId, row) {
+  const fromRow = String(row?.name || row?.lastSenderName || '').trim();
+  if (fromRow) return fromRow;
+  const fromCache = String(pushNameCache.get(chatId) || '').trim();
+  if (fromCache) return fromCache;
+  if (WHATSAPP_DEBUG && !unresolvedDmNameLogged.has(chatId)) {
+    unresolvedDmNameLogged.add(chatId);
+    try {
+      console.log(JSON.stringify({
+        event: 'dm_name_unresolved',
+        chatId,
+        hadRowName: !!String(row?.name || '').trim(),
+        hadLastSenderName: !!String(row?.lastSenderName || '').trim(),
+      }));
+    } catch {}
+  }
+  return chatId.split('@')[0];
 }
 
 async function resolveGroupChatName(chatId) {
@@ -488,6 +577,7 @@ async function postSendPresenceAndUnreadRestore(chatId, hadUnreadBeforeSend) {
 }
 
 loadKnownState();
+canonicalizeKnownStateWithLidMap();
 persistKnownChats();
 persistKnownContacts();
 
@@ -524,7 +614,14 @@ async function startSocket() {
     },
   });
 
-  sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
+  sock.ev.on('creds.update', () => {
+    saveCreds();
+    lidToPhone = buildLidMap();
+    canonicalizeKnownStateWithLidMap();
+  });
+  sock.ev.on('chats.phoneNumberShare', (payload) => {
+    rememberPhoneNumberShares(payload);
+  });
   sock.ev.on('chats.upsert', (chats) => {
     updateUnreadCountSnapshot(chats);
     rememberKnownChatsFromSnapshot(chats);
@@ -1127,7 +1224,7 @@ app.get('/chat/:id', async (req, res) => {
   }
 
   res.json({
-    name: String(pushNameCache.get(chatId) || chatId.replace(/@.*/, '')),
+    name: resolveDmDisplayName(chatId, null),
     isGroup,
     participants: [],
   });
@@ -1142,7 +1239,7 @@ app.get('/chats-known', (req, res) => {
     const isGroup = !!row.isGroup || chatId.endsWith('@g.us');
     const displayName = isGroup
       ? String(row.name || '').trim() || chatId.split('@')[0]
-      : String(row.name || row.lastSenderName || pushNameCache.get(chatId) || '').trim() || chatId.split('@')[0];
+      : resolveDmDisplayName(chatId, row);
     out.push({
       id: chatId,
       name: displayName,
