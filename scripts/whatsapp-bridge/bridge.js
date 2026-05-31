@@ -473,6 +473,26 @@ function resolveDmDisplayName(chatId, row) {
   return chatId.split('@')[0];
 }
 
+function extractPossibleSenderName(msg) {
+  const candidates = [
+    msg?.pushName,
+    msg?.verifiedBizName,
+    msg?.notifyName,
+    msg?.name,
+    msg?.participantName,
+    msg?.chatName,
+  ];
+  for (const raw of candidates) {
+    const name = String(raw || '').trim();
+    if (!name) continue;
+    // Ignore obvious non-name placeholders/noise.
+    if (/^\[.*\]$/.test(name)) continue;
+    if (/^(image|video|audio|document)\s+received$/i.test(name)) continue;
+    return name;
+  }
+  return '';
+}
+
 async function resolveGroupChatName(chatId) {
   const normalizedChatId = normalizeWhatsAppId(chatId);
   if (!normalizedChatId) return '';
@@ -707,7 +727,7 @@ async function startSocket() {
       if (!chatId) continue;
       const senderId = normalizeWhatsAppId(msg.key.participant || rawChatId) || chatId;
       const isGroup = chatId.endsWith('@g.us');
-      const senderDisplayName = String(msg.pushName || '').trim();
+      const senderDisplayName = extractPossibleSenderName(msg);
       // Keep discovery populated even when WhatsApp event decryption fails and
       // msg.message is absent (observed as Bad MAC / missing session errors).
       if (!msg.key.fromMe) {
