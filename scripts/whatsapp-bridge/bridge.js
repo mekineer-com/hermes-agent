@@ -61,6 +61,18 @@ const BRIDGE_STATE_DIR = path.resolve(SESSION_DIR, '..');
 const KNOWN_CHATS_PATH = path.join(BRIDGE_STATE_DIR, 'known_chats.json');
 const KNOWN_CONTACTS_PATH = path.join(BRIDGE_STATE_DIR, 'known_contacts.json');
 const DISCOVERY_PROBE_LOG_PATH = path.join(BRIDGE_STATE_DIR, 'discovery_probe.log');
+const SYNC_EVENT_LOG_PATH = path.join(BRIDGE_STATE_DIR, 'sync_events.jsonl');
+
+function logSyncEvent(eventName, payload) {
+  try {
+    const entry = JSON.stringify({
+      ts: new Date().toISOString(),
+      event: eventName,
+      ...payload,
+    });
+    appendFileSync(SYNC_EVENT_LOG_PATH, entry + '\n', 'utf8');
+  } catch {}
+}
 const IMAGE_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'image_cache');
 const DOCUMENT_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'document_cache');
 const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
@@ -684,7 +696,7 @@ async function startSocket() {
     logger,
     printQRInTerminal: false,
     browser: ['Hermes Agent', 'Chrome', '120.0'],
-    syncFullHistory: false,
+    syncFullHistory: true,
     markOnlineOnConnect: false,
     // Required for Baileys 7.x: without this, incoming messages that need
     // E2EE session re-establishment are silently dropped (msg.message === null)
@@ -716,20 +728,31 @@ async function startSocket() {
     rememberPhoneNumberShares(payload);
   });
   sock.ev.on('chats.upsert', (chats) => {
+    logSyncEvent('chats.upsert', { count: Array.isArray(chats) ? chats.length : 0, chats });
     updateUnreadCountSnapshot(chats);
     rememberKnownChatsFromSnapshot(chats);
   });
   sock.ev.on('chats.update', (chats) => {
+    logSyncEvent('chats.update', { count: Array.isArray(chats) ? chats.length : 0, chats });
     updateUnreadCountSnapshot(chats);
     rememberKnownChatsFromSnapshot(chats);
   });
   sock.ev.on('contacts.upsert', (contacts) => {
+    logSyncEvent('contacts.upsert', { count: Array.isArray(contacts) ? contacts.length : 0, contacts });
     rememberKnownContactsFromSnapshot(contacts);
   });
   sock.ev.on('contacts.update', (contacts) => {
+    logSyncEvent('contacts.update', { count: Array.isArray(contacts) ? contacts.length : 0, contacts });
     rememberKnownContactsFromSnapshot(contacts);
   });
-  sock.ev.on('messaging-history.set', ({ chats, contacts }) => {
+  sock.ev.on('messaging-history.set', ({ chats, contacts, messages, isLatest, progress, syncType }) => {
+    logSyncEvent('messaging-history.set', {
+      chatCount: Array.isArray(chats) ? chats.length : 0,
+      contactCount: Array.isArray(contacts) ? contacts.length : 0,
+      messageCount: Array.isArray(messages) ? messages.length : 0,
+      isLatest, progress, syncType,
+      chats, contacts,
+    });
     rememberKnownChatsFromSnapshot(chats);
     rememberKnownContactsFromSnapshot(contacts);
   });
