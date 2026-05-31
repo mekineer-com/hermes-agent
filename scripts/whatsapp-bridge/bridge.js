@@ -77,6 +77,7 @@ const REPLY_PREFIX = HAS_CUSTOM_REPLY_PREFIX
   : DEFAULT_REPLY_PREFIX;
 const MAX_MESSAGE_LENGTH = parseInt(process.env.WHATSAPP_MAX_MESSAGE_LENGTH || '4096', 10);
 const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10);
+const DM_ALIAS_EVENT_TTL_MS = 5 * 60 * 1000;
 // Per-call timeout for sock.sendMessage(). Baileys occasionally hangs forever
 // when uploading media to WhatsApp servers (and, less often, on text sends),
 // which pins the bridge's HTTP handler until the upstream aiohttp timeout
@@ -167,6 +168,17 @@ function normalizeWhatsAppId(value) {
   return collapsed;
 }
 
+function extractJidLocal(id) {
+  return String(id || '').trim().replace(/:.*@/, '@').split('@', 1)[0];
+}
+
+function extractJidDomain(id) {
+  const normalized = normalizeWhatsAppId(id);
+  const atIndex = normalized.indexOf('@');
+  if (atIndex < 0) return '';
+  return normalized.slice(atIndex + 1).toLowerCase();
+}
+
 function getMessageContent(msg) {
   const content = msg?.message || {};
   if (content.ephemeralMessage?.message) return content.ephemeralMessage.message;
@@ -239,6 +251,7 @@ const sentMessageStore = new Map();
 const MAX_SENT_STORE = 200;
 const knownChats = new Map();
 const unresolvedDmNameLogged = new Set();
+const recentDmMessageById = new Map();
 
 function _atomicWriteJson(filePath, payload) {
   const tmpPath = `${filePath}.tmp`;
@@ -462,6 +475,55 @@ function rememberPhoneNumberShares(payload) {
   }
   if (payload && typeof payload === 'object') {
     learnLidPhoneShare(payload.lid, payload.jid);
+  }
+}
+
+function pruneRecentDmMessageCache(nowMs) {
+  for (const [key, row] of recentDmMessageById.entries()) {
+    if ((nowMs - Number(row?.ts || 0)) > DM_ALIAS_EVENT_TTL_MS) {
+      recentDmMessageById.delete(key);
+    }
+  }
+}
+
+function learnAliasFromMirroredDmMessage({ chatId, messageId, fromMe, isGroup }) {
+  if (isGroup) return;
+  const normalizedChatId = normalizeWhatsAppId(chatId);
+  const id = String(messageId || '').trim();
+  if (!normalizedChatId || !id) return;
+  const domain = extractJidDomain(normalizedChatId);
+  if (domain !== 'lid' && domain !== 's.whatsapp.net') return;
+
+  const nowMs = Date.now();
+  pruneRecentDmMessageCache(nowMs);
+  const key = `${fromMe ? '1' : '0'}:${id}`;
+  const previous = recentDmMessageById.get(key);
+  recentDmMessageById.set(key, { chatId: normalizedChatId, ts: nowMs });
+  if (!previous || previous.chatId === normalizedChatId) return;
+
+  const previousDomain = extractJidDomain(previous.chatId);
+  if (previousDomain === domain) return;
+
+  const lidLocal = domain === 'lid'
+    ? extractJidLocal(normalizedChatId)
+    : extractJidLocal(previous.chatId);
+  const phoneLocal = domain === 's.whatsapp.net'
+    ? extractJidLocal(normalizedChatId)
+    : extractJidLocal(previous.chatId);
+  if (!lidLocal || !phoneLocal || lidLocal === phoneLocal) return;
+  if (String(lidToPhone[lidLocal] || '') === phoneLocal) return;
+
+  learnLidPhoneShare(`${lidLocal}@lid`, `${phoneLocal}@s.whatsapp.net`);
+  if (WHATSAPP_DEBUG) {
+    try {
+      console.log(JSON.stringify({
+        event: 'discovery_alias_learned',
+        source: 'mirrored_dm_message_id',
+        messageId: id,
+        lid: lidLocal,
+        phone: phoneLocal,
+      }));
+    } catch {}
   }
 }
 
@@ -738,6 +800,12 @@ async function startSocket() {
       if (!chatId) continue;
       const senderId = normalizeWhatsAppId(msg.key.participant || rawChatId) || chatId;
       const isGroup = chatId.endsWith('@g.us');
+      learnAliasFromMirroredDmMessage({
+        chatId,
+        messageId: msg.key.id,
+        fromMe: !!msg.key.fromMe,
+        isGroup,
+      });
       const senderDisplayName = extractPossibleSenderName(msg);
       appendDiscoveryProbe({
         event: 'discovery_probe',
