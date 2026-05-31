@@ -1013,7 +1013,7 @@ async function startSocket() {
       ).trim() || senderNumber;
       const resolvedChatName = isGroup
         ? (await resolveGroupChatName(chatId)) || chatId.split('@')[0]
-        : msg.key.fromMe ? '' : resolvedSenderName;
+        : resolveDmDisplayName(chatId, knownChats.get(chatId));
       rememberKnownChat(chatId, {
         isGroup,
         name: resolvedChatName,
