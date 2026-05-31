@@ -25,7 +25,7 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync, unlinkSync } from 'fs';
 import { randomBytes } from 'crypto';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
@@ -57,6 +57,9 @@ function envEnabled(name, defaultValue = true) {
 
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
+const BRIDGE_STATE_DIR = path.resolve(SESSION_DIR, '..');
+const KNOWN_CHATS_PATH = path.join(BRIDGE_STATE_DIR, 'known_chats.json');
+const KNOWN_CONTACTS_PATH = path.join(BRIDGE_STATE_DIR, 'known_contacts.json');
 const IMAGE_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'image_cache');
 const DOCUMENT_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'document_cache');
 const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
@@ -186,6 +189,7 @@ function getContextInfo(messageContent) {
 }
 
 mkdirSync(SESSION_DIR, { recursive: true });
+mkdirSync(BRIDGE_STATE_DIR, { recursive: true });
 
 // Build LID → phone reverse map from session files (lid-mapping-{phone}.json)
 // and creds.json self-identity (me.id / me.lid).
@@ -234,6 +238,86 @@ const sentMessageStore = new Map();
 const MAX_SENT_STORE = 200;
 const knownChats = new Map();
 
+function _atomicWriteJson(filePath, payload) {
+  const tmpPath = `${filePath}.tmp`;
+  writeFileSync(tmpPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  renameSync(tmpPath, filePath);
+}
+
+function _readJson(filePath) {
+  if (!existsSync(filePath)) return null;
+  try {
+    return JSON.parse(readFileSync(filePath, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function persistKnownChats() {
+  const chats = [];
+  for (const row of knownChats.values()) {
+    if (!row?.chatId) continue;
+    chats.push({
+      id: String(row.chatId),
+      is_group: !!row.isGroup,
+      name: String(row.name || ''),
+      last_sender_name: String(row.lastSenderName || ''),
+      updated_at_ms: Number(row.updatedAtMs || 0) || Date.now(),
+    });
+  }
+  chats.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  try {
+    _atomicWriteJson(KNOWN_CHATS_PATH, {
+      updated_at: new Date().toISOString(),
+      chats,
+    });
+  } catch (err) {
+    logger.warn({ err }, 'failed to persist known chats');
+  }
+}
+
+function persistKnownContacts() {
+  const contacts = [];
+  for (const [id, displayName] of pushNameCache.entries()) {
+    if (!id || !displayName) continue;
+    contacts.push({ id: String(id), display_name: String(displayName) });
+  }
+  contacts.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  try {
+    _atomicWriteJson(KNOWN_CONTACTS_PATH, {
+      updated_at: new Date().toISOString(),
+      contacts,
+    });
+  } catch (err) {
+    logger.warn({ err }, 'failed to persist known contacts');
+  }
+}
+
+function loadKnownState() {
+  const chatsData = _readJson(KNOWN_CHATS_PATH);
+  const chats = Array.isArray(chatsData?.chats) ? chatsData.chats : [];
+  for (const row of chats) {
+    const chatId = normalizeWhatsAppId(row?.id || '');
+    if (!chatId) continue;
+    knownChats.set(chatId, {
+      chatId,
+      isGroup: !!row.is_group,
+      name: String(row?.name || '').trim(),
+      lastSenderName: String(row?.last_sender_name || '').trim(),
+      updatedAtMs: Number(row?.updated_at_ms || 0) || Date.now(),
+    });
+  }
+
+  const contactsData = _readJson(KNOWN_CONTACTS_PATH);
+  const contacts = Array.isArray(contactsData?.contacts) ? contactsData.contacts : [];
+  for (const row of contacts) {
+    const contactId = normalizeWhatsAppId(row?.id || '');
+    const displayName = String(row?.display_name || '').trim();
+    if (!contactId || !displayName) continue;
+    pushNameCache.set(contactId, displayName);
+  }
+}
+
 function rememberKnownChat(chatId, { isGroup = false, name = '', lastSenderName = '' } = {}) {
   const normalizedChatId = normalizeWhatsAppId(chatId);
   if (!normalizedChatId) return;
@@ -246,6 +330,7 @@ function rememberKnownChat(chatId, { isGroup = false, name = '', lastSenderName 
     updatedAtMs: Date.now(),
   };
   knownChats.set(normalizedChatId, merged);
+  persistKnownChats();
 }
 
 function storeSentMessage(sent, content) {
@@ -269,7 +354,20 @@ function rememberPushName(senderId, pushName) {
   const sid = normalizeWhatsAppId(senderId);
   const name = String(pushName || '').trim();
   if (!sid || !name) return;
+  if (String(pushNameCache.get(sid) || '') === name) return;
   pushNameCache.set(sid, name);
+  persistKnownContacts();
+}
+
+function rememberKnownChatsFromSnapshot(chats) {
+  if (!Array.isArray(chats)) return;
+  for (const chat of chats) {
+    const chatId = normalizeWhatsAppId(chat?.id || chat?.jid || '');
+    if (!chatId) continue;
+    const isGroup = chatId.endsWith('@g.us') || chat?.isGroup === true || String(chat?.type || '').toLowerCase() === 'group';
+    const name = String(chat?.name || chat?.subject || '').trim();
+    rememberKnownChat(chatId, { isGroup, name });
+  }
 }
 
 async function resolveGroupChatName(chatId) {
@@ -375,6 +473,8 @@ async function postSendPresenceAndUnreadRestore(chatId, hadUnreadBeforeSend) {
   }
 }
 
+loadKnownState();
+
 async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
   const { version } = await fetchLatestBaileysVersion();
@@ -409,8 +509,14 @@ async function startSocket() {
   });
 
   sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
-  sock.ev.on('chats.upsert', updateUnreadCountSnapshot);
-  sock.ev.on('chats.update', updateUnreadCountSnapshot);
+  sock.ev.on('chats.upsert', (chats) => {
+    updateUnreadCountSnapshot(chats);
+    rememberKnownChatsFromSnapshot(chats);
+  });
+  sock.ev.on('chats.update', (chats) => {
+    updateUnreadCountSnapshot(chats);
+    rememberKnownChatsFromSnapshot(chats);
+  });
   sock.ev.on('contacts.upsert', (contacts) => {
     if (!Array.isArray(contacts)) return;
     for (const contact of contacts) {
