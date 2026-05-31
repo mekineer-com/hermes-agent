@@ -543,10 +543,10 @@ function learnAliasFromMirroredDmMessage({ chatId, messageId, fromMe, isGroup })
 }
 
 function resolveDmDisplayName(chatId, row) {
-  const fromRow = String(row?.name || row?.lastSenderName || '').trim();
-  if (fromRow) return fromRow;
   const fromCache = String(pushNameCache.get(chatId) || '').trim();
   if (fromCache) return fromCache;
+  const fromRow = String(row?.name || row?.lastSenderName || '').trim();
+  if (fromRow) return fromRow;
   if (WHATSAPP_DEBUG && !unresolvedDmNameLogged.has(chatId)) {
     unresolvedDmNameLogged.add(chatId);
     try {
