@@ -371,6 +371,19 @@ function rememberKnownChatsFromSnapshot(chats) {
   }
 }
 
+function rememberKnownContactsFromSnapshot(contacts) {
+  if (!Array.isArray(contacts)) return;
+  for (const contact of contacts) {
+    const contactId = normalizeWhatsAppId(contact?.id || '');
+    const displayName = String(
+      contact?.notify || contact?.name || contact?.verifiedName || ''
+    ).trim();
+    if (contactId && displayName) {
+      rememberPushName(contactId, displayName);
+    }
+  }
+}
+
 async function resolveGroupChatName(chatId) {
   const normalizedChatId = normalizeWhatsAppId(chatId);
   if (!normalizedChatId) return '';
@@ -519,16 +532,11 @@ async function startSocket() {
     rememberKnownChatsFromSnapshot(chats);
   });
   sock.ev.on('contacts.upsert', (contacts) => {
-    if (!Array.isArray(contacts)) return;
-    for (const contact of contacts) {
-      const contactId = normalizeWhatsAppId(contact?.id || '');
-      const displayName = String(
-        contact?.notify || contact?.name || contact?.verifiedName || ''
-      ).trim();
-      if (contactId && displayName) {
-        rememberPushName(contactId, displayName);
-      }
-    }
+    rememberKnownContactsFromSnapshot(contacts);
+  });
+  sock.ev.on('messaging-history.set', ({ chats, contacts }) => {
+    rememberKnownChatsFromSnapshot(chats);
+    rememberKnownContactsFromSnapshot(contacts);
   });
 
   sock.ev.on('connection.update', (update) => {
