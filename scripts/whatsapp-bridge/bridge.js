@@ -32,6 +32,7 @@ import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { DurableQueue } from './durable_queue.js';
+import { buildMediaRetryCachePayload } from './media_retry_cache.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -1308,6 +1309,13 @@ app.post('/send-media', async (req, res) => {
     const sent = await sendWithTimeout(chatId, msgPayload);
 
     trackSentMessageId(sent);
+    storeSentMessage(
+      sent,
+      buildMediaRetryCachePayload(type, {
+        caption,
+        fileName: fileName || path.basename(filePath),
+      }),
+    );
 
     await postSendPresenceAndUnreadRestore(chatId, hadUnreadBeforeSend);
 
