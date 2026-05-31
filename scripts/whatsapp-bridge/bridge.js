@@ -316,6 +316,7 @@ function loadKnownState() {
     if (!contactId || !displayName) continue;
     pushNameCache.set(contactId, displayName);
   }
+
 }
 
 function rememberKnownChat(chatId, { isGroup = false, name = '', lastSenderName = '' } = {}) {
@@ -525,7 +526,7 @@ async function startSocket() {
         contact?.notify || contact?.name || contact?.verifiedName || ''
       ).trim();
       if (contactId && displayName) {
-        pushNameCache.set(contactId, displayName);
+        rememberPushName(contactId, displayName);
       }
     }
   });
@@ -567,9 +568,9 @@ async function startSocket() {
   });
 
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    // In self-chat mode, your own messages commonly arrive as 'append' rather
-    // than 'notify'. Accept both and filter agent echo-backs below.
-    if (type !== 'notify' && type !== 'append') return;
+    // Discovery should observe all upsert types (WhatsApp/Baileys varies by
+    // event kind). Forwarding into memU remains restricted to notify/append.
+    const forwardableType = (type === 'notify' || type === 'append');
 
     const botIds = Array.from(new Set([
       normalizeWhatsAppId(sock.user?.id),
@@ -609,8 +610,11 @@ async function startSocket() {
       }
       const isGroup = chatId.endsWith('@g.us');
       const senderNumber = senderId.replace(/@.*/, '');
-      rememberPushName(senderId, msg.pushName);
+      if (!msg.key.fromMe) {
+        rememberPushName(senderId, msg.pushName);
+      }
       rememberKnownChat(chatId, { isGroup });
+      if (!forwardableType) continue;
 
       // Handle fromMe messages based on mode
       if (msg.key.fromMe) {
