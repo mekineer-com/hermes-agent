@@ -448,7 +448,7 @@ function rememberKnownChatsFromSnapshot(chats) {
   if (!Array.isArray(chats)) return;
   for (const chat of chats) {
     const chatId = normalizeWhatsAppId(chat?.id || chat?.jid || '');
-    if (!chatId) continue;
+    if (!chatId || chatId.toLowerCase().includes('status@broadcast')) continue;
     const isGroup = chatId.endsWith('@g.us') || chat?.isGroup === true || String(chat?.type || '').toLowerCase() === 'group';
     const name = String(chat?.name || chat?.subject || '').trim();
     rememberKnownChat(chatId, { isGroup, name });
@@ -458,6 +458,9 @@ function rememberKnownChatsFromSnapshot(chats) {
 function rememberKnownContactsFromSnapshot(contacts) {
   if (!Array.isArray(contacts)) return;
   for (const contact of contacts) {
+    if (contact?.lid && contact?.jid) {
+      learnLidPhoneShare(contact.lid, contact.jid);
+    }
     const contactId = normalizeWhatsAppId(contact?.id || '');
     const displayName = String(
       contact?.notify || contact?.name || contact?.verifiedName || ''
@@ -764,6 +767,14 @@ async function startSocket() {
       console.log('\n📱 Scan this QR code with WhatsApp on your phone:\n');
       qrcode.generate(qr, { small: true });
       console.log('\nWaiting for scan...\n');
+      const qrHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>WhatsApp QR</title>
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1/build/qrcode.min.js"></script></head>
+<body style="display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#111">
+<canvas id="qr"></canvas>
+<script>QRCode.toCanvas(document.getElementById('qr'),${JSON.stringify(qr)},{width:400,margin:2})</script>
+</body></html>`;
+      const qrPath = path.join(BRIDGE_STATE_DIR, 'qr.html');
+      try { writeFileSync(qrPath, qrHtml, 'utf8'); console.log(`QR saved to ${qrPath}`); } catch {}
     }
 
     if (connection === 'close') {
@@ -1028,11 +1039,11 @@ async function startSocket() {
       ).trim() || senderNumber;
       const resolvedChatName = isGroup
         ? (await resolveGroupChatName(chatId)) || chatId.split('@')[0]
-        : resolvedSenderName;
+        : msg.key.fromMe ? '' : resolvedSenderName;
       rememberKnownChat(chatId, {
         isGroup,
         name: resolvedChatName,
-        lastSenderName: resolvedSenderName,
+        lastSenderName: msg.key.fromMe ? '' : resolvedSenderName,
       });
 
       const event = {
