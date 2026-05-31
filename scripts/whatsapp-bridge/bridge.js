@@ -707,12 +707,16 @@ async function startSocket() {
       if (!chatId) continue;
       const senderId = normalizeWhatsAppId(msg.key.participant || rawChatId) || chatId;
       const isGroup = chatId.endsWith('@g.us');
+      const senderDisplayName = String(msg.pushName || '').trim();
       // Keep discovery populated even when WhatsApp event decryption fails and
       // msg.message is absent (observed as Bad MAC / missing session errors).
       if (!msg.key.fromMe) {
-        rememberPushName(senderId, msg.pushName);
+        rememberPushName(senderId, senderDisplayName);
       }
-      rememberKnownChat(chatId, { isGroup });
+      rememberKnownChat(chatId, {
+        isGroup,
+        lastSenderName: (!isGroup && !msg.key.fromMe) ? senderDisplayName : '',
+      });
       if (!msg.message) continue;
       rememberInboundLastMessage(msg);
       if (WHATSAPP_DEBUG) {
