@@ -499,7 +499,9 @@ async function startSocket() {
     logger,
     printQRInTerminal: false,
     browser: ['Hermes Agent', 'Chrome', '120.0'],
-    syncFullHistory: false,
+    // Needed for complete chat/contact discovery across restarts. Without
+    // full history sync, Baileys may only expose a narrow active subset.
+    syncFullHistory: true,
     markOnlineOnConnect: false,
     // Required for Baileys 7.x: without this, incoming messages that need
     // E2EE session re-establishment are silently dropped (msg.message === null)
@@ -532,6 +534,9 @@ async function startSocket() {
     rememberKnownChatsFromSnapshot(chats);
   });
   sock.ev.on('contacts.upsert', (contacts) => {
+    rememberKnownContactsFromSnapshot(contacts);
+  });
+  sock.ev.on('contacts.update', (contacts) => {
     rememberKnownContactsFromSnapshot(contacts);
   });
   sock.ev.on('messaging-history.set', ({ chats, contacts }) => {
