@@ -25,7 +25,7 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync, unlinkSync } from 'fs';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync, unlinkSync } from 'fs';
 import { randomBytes } from 'crypto';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
@@ -60,6 +60,7 @@ const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.herme
 const BRIDGE_STATE_DIR = path.resolve(SESSION_DIR, '..');
 const KNOWN_CHATS_PATH = path.join(BRIDGE_STATE_DIR, 'known_chats.json');
 const KNOWN_CONTACTS_PATH = path.join(BRIDGE_STATE_DIR, 'known_contacts.json');
+const DISCOVERY_PROBE_LOG_PATH = path.join(BRIDGE_STATE_DIR, 'discovery_probe.log');
 const IMAGE_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'image_cache');
 const DOCUMENT_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'document_cache');
 const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
@@ -243,6 +244,16 @@ function _atomicWriteJson(filePath, payload) {
   const tmpPath = `${filePath}.tmp`;
   writeFileSync(tmpPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
   renameSync(tmpPath, filePath);
+}
+
+function appendDiscoveryProbe(payload) {
+  try {
+    appendFileSync(
+      DISCOVERY_PROBE_LOG_PATH,
+      `${JSON.stringify({ ts: new Date().toISOString(), ...payload })}\n`,
+      'utf8',
+    );
+  } catch {}
 }
 
 function _readJson(filePath) {
@@ -728,24 +739,20 @@ async function startSocket() {
       const senderId = normalizeWhatsAppId(msg.key.participant || rawChatId) || chatId;
       const isGroup = chatId.endsWith('@g.us');
       const senderDisplayName = extractPossibleSenderName(msg);
-      if (WHATSAPP_DEBUG) {
-        try {
-          console.log(JSON.stringify({
-            event: 'discovery_probe',
-            type,
-            rawChatId,
-            normalizedChatId: chatId,
-            rawParticipant: String(msg.key.participant || ''),
-            normalizedSenderId: senderId,
-            fromMe: !!msg.key.fromMe,
-            pushName: String(msg.pushName || ''),
-            notifyName: String(msg.notifyName || ''),
-            participantName: String(msg.participantName || ''),
-            extractedSenderDisplayName: senderDisplayName,
-            hasMessagePayload: !!msg.message,
-          }));
-        } catch {}
-      }
+      appendDiscoveryProbe({
+        event: 'discovery_probe',
+        type,
+        rawChatId,
+        normalizedChatId: chatId,
+        rawParticipant: String(msg.key.participant || ''),
+        normalizedSenderId: senderId,
+        fromMe: !!msg.key.fromMe,
+        pushName: String(msg.pushName || ''),
+        notifyName: String(msg.notifyName || ''),
+        participantName: String(msg.participantName || ''),
+        extractedSenderDisplayName: senderDisplayName,
+        hasMessagePayload: !!msg.message,
+      });
       // Keep discovery populated even when WhatsApp event decryption fails and
       // msg.message is absent (observed as Bad MAC / missing session errors).
       if (!msg.key.fromMe) {
