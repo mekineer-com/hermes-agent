@@ -460,6 +460,20 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 cleaned = re.sub(rf"@{re.escape(bare_id)}\b[,:\-]*\s*", "", cleaned)
         return cleaned.strip() or text
 
+    def _resolve_event_chat_name(self, data: Dict[str, Any], *, is_group: bool) -> str:
+        """Resolve a non-empty chat display name for source identity."""
+        chat_name = str(data.get("chatName") or "").strip()
+        if chat_name:
+            return chat_name
+
+        chat_id = str(data.get("chatId") or "").strip()
+        sender_name = str(data.get("senderName") or "").strip()
+        if not is_group and sender_name:
+            return sender_name
+        if chat_id:
+            return chat_id.split("@", 1)[0] or chat_id
+        return "unknown-chat"
+
     def _should_process_message(self, data: Dict[str, Any]) -> bool:
         chat_id_raw = str(data.get("chatId") or "")
         # WhatsApp uses pseudo-chats for Status updates (Stories) and
@@ -1254,11 +1268,20 @@ class WhatsAppAdapter(BasePlatformAdapter):
             # Determine chat type
             is_group = data.get("isGroup", False)
             chat_type = "group" if is_group else "dm"
+            chat_name = self._resolve_event_chat_name(data, is_group=is_group)
+            if not str(data.get("chatName") or "").strip():
+                logger.warning(
+                    "[%s] Incoming bridge event missing chatName; using fallback name=%r chat_id=%r message_id=%r",
+                    self.name,
+                    chat_name,
+                    data.get("chatId"),
+                    data.get("messageId"),
+                )
             
             # Build source
             source = self.build_source(
                 chat_id=data.get("chatId", ""),
-                chat_name=data.get("chatName"),
+                chat_name=chat_name,
                 chat_type=chat_type,
                 user_id=data.get("senderId"),
                 user_name=data.get("senderName"),
@@ -1348,11 +1371,13 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         except Exception as e:
                             print(f"[{self.name}] Failed to read document text: {e}", flush=True)
 
+            raw_message = dict(data)
+            raw_message["chatName"] = chat_name
             return MessageEvent(
                 text=body,
                 message_type=msg_type,
                 source=source,
-                raw_message=data,
+                raw_message=raw_message,
                 message_id=data.get("messageId"),
                 media_urls=cached_urls,
                 media_types=media_types,

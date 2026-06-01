@@ -325,6 +325,48 @@ class TestBridgeEventMetadata:
         assert event.raw_message["quotedRemoteJid"] == "15551234567@s.whatsapp.net"
         assert event.raw_message["hasQuotedMessage"] is True
 
+    @pytest.mark.asyncio
+    async def test_missing_chat_name_dm_falls_back_to_sender_name(self):
+        adapter = _make_adapter()
+        data = {
+            "messageId": "incoming-dm",
+            "chatId": "15551234567@s.whatsapp.net",
+            "senderId": "15551234567@s.whatsapp.net",
+            "senderName": "Raquel",
+            "chatName": "",
+            "isGroup": False,
+            "body": "hello",
+            "hasMedia": False,
+            "mediaUrls": [],
+        }
+
+        event = await adapter._build_message_event(data)
+
+        assert event is not None
+        assert event.source.chat_name == "Raquel"
+        assert event.raw_message["chatName"] == "Raquel"
+
+    @pytest.mark.asyncio
+    async def test_missing_chat_name_group_falls_back_to_chat_local_part(self):
+        adapter = _make_adapter()
+        data = {
+            "messageId": "incoming-group",
+            "chatId": "18322935409-1579788049@g.us",
+            "senderId": "15133278228@s.whatsapp.net",
+            "senderName": "Marcos",
+            "chatName": "",
+            "isGroup": True,
+            "body": "hola",
+            "hasMedia": False,
+            "mediaUrls": [],
+        }
+
+        event = await adapter._build_message_event(data)
+
+        assert event is not None
+        assert event.source.chat_name == "18322935409-1579788049"
+        assert event.raw_message["chatName"] == "18322935409-1579788049"
+
 
 # ---------------------------------------------------------------------------
 # display_config tier classification
