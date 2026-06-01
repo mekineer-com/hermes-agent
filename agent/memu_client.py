@@ -220,8 +220,7 @@ class MemuHttpClient:
         if channel_mode:
             payload["channel_mode"] = str(channel_mode)
         # chat_name / chat_type identify the originating chat (e.g. "Alice" / "dm").
-        # memu uses them to render "Current chat:" in the turn prompt and to
-        # validate the soul's response_peer against the actual chat.
+        # memu uses them to render "Current chat:" in the turn prompt.
         chat_name_clean = str(chat_name or "").strip()
         if chat_name_clean:
             payload["chat_name"] = chat_name_clean

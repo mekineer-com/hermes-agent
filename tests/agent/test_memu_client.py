@@ -58,8 +58,7 @@ def test_memu_turn_builds_expected_payload(monkeypatch):
 
 def test_memu_turn_forwards_chat_name_and_chat_type(monkeypatch):
     """chat_name and chat_type must flow through to memu's payload so the
-    server can render `Current chat:` in the turn prompt and validate the
-    soul's response_peer against the actual originating chat.
+    server can render `Current chat:` in the turn prompt.
     """
     client = MemuHttpClient(base_url="http://127.0.0.1:8099")
     captured = {}

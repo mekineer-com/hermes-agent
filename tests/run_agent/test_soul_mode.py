@@ -218,7 +218,6 @@ def test_handle_turn_listens_when_response_target_listen(soul_agent):
         "ok": True,
         "response": "",
         "response_target": "listen",
-        "response_peer": "",
     }
     soul_agent._soul_config._client = mock_client
 
@@ -236,15 +235,13 @@ def test_handle_turn_listens_when_response_target_listen(soul_agent):
     assert result["final_response"] == ""
 
 
-def test_handle_turn_silent_when_peer_mismatch_dropped_response(soul_agent):
-    """memu drops response_text to "" when the soul names the wrong peer.
-    soul_mode must treat that as a silent exit, not an error."""
+def test_handle_turn_fails_on_empty_respond_response(soul_agent):
+    """respond with empty response is an error."""
     mock_client = MagicMock()
     mock_client.memu_turn.return_value = {
         "ok": True,
-        "response": "",  # memu's peer-mismatch guard cleared it
+        "response": "",
         "response_target": "respond",
-        "response_peer": "Alice",
     }
     soul_agent._soul_config._client = mock_client
 
@@ -258,8 +255,8 @@ def test_handle_turn_silent_when_peer_mismatch_dropped_response(soul_agent):
         summarize_for_log=lambda x: str(x)[:50],
     )
 
-    assert result["completed"] is True
-    assert result["final_response"] == ""
+    assert result["completed"] is False
+    assert result["failed"] is True
 
 
 def test_handle_turn_routes_private_to_self_dm_on_whatsapp(soul_agent, monkeypatch):
@@ -276,7 +273,6 @@ def test_handle_turn_routes_private_to_self_dm_on_whatsapp(soul_agent, monkeypat
         "ok": True,
         "response": "aside for you",
         "response_target": "private",
-        "response_peer": "",
     }
     soul_agent._soul_config._client = mock_client
 
