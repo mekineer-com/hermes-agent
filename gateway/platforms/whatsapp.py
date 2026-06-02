@@ -1249,6 +1249,37 @@ class WhatsAppAdapter(BasePlatformAdapter):
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
+            event_type = str(data.get("eventType") or "").strip().lower()
+            if event_type == "revoke":
+                chat_id = str(data.get("chatId") or "").strip()
+                if not chat_id:
+                    return None
+                is_group = bool(data.get("isGroup")) or chat_id.endswith("@g.us")
+                chat_type = "group" if is_group else "dm"
+                chat_name = self._resolve_event_chat_name(data, is_group=is_group)
+                source_user_id = str(data.get("senderId") or "").strip()
+                source_user_name = str(data.get("senderName") or "").strip()
+                if not is_group:
+                    source_user_id = chat_id or source_user_id
+                    source_user_name = chat_name or source_user_name
+                source = self.build_source(
+                    chat_id=chat_id,
+                    chat_name=chat_name,
+                    chat_type=chat_type,
+                    user_id=source_user_id,
+                    user_name=source_user_name,
+                )
+                raw_message = dict(data)
+                raw_message["chatName"] = chat_name
+                return MessageEvent(
+                    text="",
+                    message_type=MessageType.TEXT,
+                    source=source,
+                    raw_message=raw_message,
+                    message_id=str(data.get("messageId") or "").strip() or None,
+                    internal=True,
+                )
+
             if not self._should_process_message(data):
                 return None
 
@@ -1279,12 +1310,17 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 )
             
             # Build source
+            source_user_id = data.get("senderId")
+            source_user_name = data.get("senderName")
+            if not is_group:
+                source_user_id = data.get("chatId") or source_user_id
+                source_user_name = chat_name or source_user_name
             source = self.build_source(
                 chat_id=data.get("chatId", ""),
                 chat_name=chat_name,
                 chat_type=chat_type,
-                user_id=data.get("senderId"),
-                user_name=data.get("senderName"),
+                user_id=source_user_id,
+                user_name=source_user_name,
             )
             
             # Download media URLs to the local cache so agent tools

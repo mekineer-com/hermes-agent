@@ -47,6 +47,10 @@ function eventUidFor(event) {
   const chatId = String(event?.chatId || '').trim();
   const messageId = String(event?.messageId || '').trim();
   if (!chatId || !messageId) return '';
+  const eventType = String(event?.eventType || '').trim().toLowerCase();
+  if (eventType === 'revoke') {
+    return `revoke:${chatId}:${messageId}`;
+  }
   // messageId is already chat-scoped in WhatsApp. Including senderId here
   // causes false misses when the same participant surfaces as @lid vs
   // @s.whatsapp.net across reconnects/replays.

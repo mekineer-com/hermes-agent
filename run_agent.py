@@ -4787,6 +4787,10 @@ class AIAgent:
             for msg in messages[flush_from:]:
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
+                sender_id = msg.get("sender_id")
+                sender_name = msg.get("sender_name")
+                source_chat_id = msg.get("source_chat_id")
+                source_message_id = msg.get("source_message_id")
                 # Persist multimodal tool results as their text summary only —
                 # base64 images would bloat the session DB and aren't useful
                 # for cross-session replay.
@@ -4809,12 +4813,33 @@ class AIAgent:
                     ]
                 elif isinstance(msg.get("tool_calls"), list):
                     tool_calls_data = msg["tool_calls"]
+                if role == "user":
+                    if not sender_id:
+                        sender_id = getattr(self, "_gateway_message_sender_id", None) or getattr(self, "_user_id", None)
+                    if not sender_name:
+                        sender_name = getattr(self, "_gateway_message_sender_name", None) or getattr(self, "_user_name", None)
+                elif role == "assistant":
+                    soul_name = str(getattr(getattr(self, "_soul_config", None), "soul_id", "") or "").strip()
+                    if soul_name:
+                        if not sender_name:
+                            sender_name = soul_name
+                        if not sender_id:
+                            sender_id = f"soul:{soul_name}"
+                    if (
+                        (content is None or (isinstance(content, str) and not content.strip()))
+                        and not tool_calls_data
+                        and not msg.get("tool_call_id")
+                        and not msg.get("tool_name")
+                    ):
+                        continue
                 self._session_db.append_message(
                     session_id=self.session_id,
                     role=role,
                     content=content,
-                    sender_id=msg.get("sender_id"),
-                    sender_name=msg.get("sender_name"),
+                    sender_id=sender_id,
+                    sender_name=sender_name,
+                    source_chat_id=source_chat_id,
+                    source_message_id=source_message_id,
                     tool_name=msg.get("tool_name"),
                     tool_calls=tool_calls_data,
                     tool_call_id=msg.get("tool_call_id"),
@@ -12355,6 +12380,26 @@ class AIAgent:
 
         # Add user message
         user_msg = {"role": "user", "content": user_message}
+        _platform = str(getattr(self, "platform", "") or "").strip().lower()
+        _gateway_sender_id = str(getattr(self, "_gateway_message_sender_id", "") or "").strip()
+        _gateway_sender_name = str(getattr(self, "_gateway_message_sender_name", "") or "").strip()
+        if _platform == "whatsapp":
+            if _gateway_sender_id:
+                user_msg["sender_id"] = _gateway_sender_id
+            if _gateway_sender_name:
+                user_msg["sender_name"] = _gateway_sender_name
+            _source_message_id = str(getattr(self, "_gateway_source_message_id", "") or "").strip()
+            _source_chat_id = str(getattr(self, "_gateway_source_chat_id", "") or "").strip()
+            if _source_message_id and _source_chat_id:
+                user_msg["source_message_id"] = _source_message_id
+                user_msg["source_chat_id"] = _source_chat_id
+        else:
+            _sender_id = str(getattr(self, "_user_id", "") or "").strip()
+            _sender_name = str(getattr(self, "_user_name", "") or "").strip()
+            if _sender_id:
+                user_msg["sender_id"] = _sender_id
+            if _sender_name:
+                user_msg["sender_name"] = _sender_name
         messages.append(user_msg)
         current_turn_user_idx = len(messages) - 1
         self._persist_user_message_idx = current_turn_user_idx

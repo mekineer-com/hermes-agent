@@ -94,6 +94,7 @@ const DM_ALIAS_EVENT_TTL_MS = 5 * 60 * 1000;
 // which pins the bridge's HTTP handler until the upstream aiohttp timeout
 // fires. Fail fast instead so the gateway can surface a real error and retry.
 const SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SEND_TIMEOUT_MS || '60000', 10);
+const WHATSAPP_REVOKE_STUB_TYPE = 1;
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -1096,6 +1097,27 @@ async function startSocket() {
           senderId: event.senderId,
         }));
       }
+    }
+  });
+
+  sock.ev.on('messages.update', (updates) => {
+    if (!Array.isArray(updates)) return;
+    for (const row of updates) {
+      const key = row?.key;
+      const update = row?.update;
+      const remoteJid = normalizeWhatsAppId(key?.remoteJid || '');
+      const messageId = String(key?.id || '').trim();
+      if (!remoteJid || !messageId || !update || typeof update !== 'object') continue;
+      const stubType = Number(update.messageStubType);
+      if (stubType !== WHATSAPP_REVOKE_STUB_TYPE) continue;
+      if (update.message !== null && update.message !== undefined) continue;
+      durableQueue.enqueue({
+        eventType: 'revoke',
+        messageId,
+        chatId: remoteJid,
+        isGroup: remoteJid.endsWith('@g.us'),
+        timestamp: Date.now(),
+      });
     }
   });
 }

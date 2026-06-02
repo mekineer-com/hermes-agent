@@ -228,6 +228,8 @@ CREATE TABLE IF NOT EXISTS messages (
     content TEXT,
     sender_id TEXT,
     sender_name TEXT,
+    source_chat_id TEXT,
+    source_message_id TEXT,
     tool_call_id TEXT,
     tool_calls TEXT,
     tool_name TEXT,
@@ -572,6 +574,14 @@ class SessionDB:
         # migration was skipped (e.g. due to version renumbering), the
         # column gets created here.
         self._reconcile_columns(cursor)
+        try:
+            cursor.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_source_key "
+                "ON messages(source_chat_id, source_message_id) "
+                "WHERE source_chat_id IS NOT NULL AND source_message_id IS NOT NULL"
+            )
+        except sqlite3.OperationalError:
+            pass
 
         # ── Schema version bookkeeping ─────────────────────────────────
         # Bump to current so future data migrations (if any) can gate on
@@ -1439,6 +1449,8 @@ class SessionDB:
         content: str = None,
         sender_id: str = None,
         sender_name: str = None,
+        source_chat_id: str = None,
+        source_message_id: str = None,
         tool_name: str = None,
         tool_calls: Any = None,
         tool_call_id: str = None,
@@ -1481,17 +1493,19 @@ class SessionDB:
 
         def _do(conn):
             cursor = conn.execute(
-                """INSERT INTO messages (session_id, role, content, sender_id, sender_name,
-                   tool_call_id, tool_calls, tool_name, timestamp, token_count,
+                """INSERT OR IGNORE INTO messages (session_id, role, content, sender_id, sender_name,
+                   source_chat_id, source_message_id, tool_call_id, tool_calls, tool_name, timestamp, token_count,
                    finish_reason, reasoning, reasoning_content, reasoning_details,
                    codex_reasoning_items, codex_message_items)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
                     stored_content,
                     sender_id,
                     sender_name,
+                    source_chat_id,
+                    source_message_id,
                     tool_call_id,
                     tool_calls_json,
                     tool_name,
@@ -1505,20 +1519,31 @@ class SessionDB:
                     codex_message_items_json,
                 ),
             )
-            msg_id = cursor.lastrowid
+            inserted = bool(cursor.rowcount)
+            if inserted:
+                msg_id = cursor.lastrowid
+            elif source_chat_id and source_message_id:
+                row = conn.execute(
+                    "SELECT id FROM messages WHERE source_chat_id = ? AND source_message_id = ? LIMIT 1",
+                    (source_chat_id, source_message_id),
+                ).fetchone()
+                msg_id = int(row[0]) if row else 0
+            else:
+                msg_id = 0
 
             # Update counters
-            if num_tool_calls > 0:
-                conn.execute(
-                    """UPDATE sessions SET message_count = message_count + 1,
-                       tool_call_count = tool_call_count + ? WHERE id = ?""",
-                    (num_tool_calls, session_id),
-                )
-            else:
-                conn.execute(
-                    "UPDATE sessions SET message_count = message_count + 1 WHERE id = ?",
-                    (session_id,),
-                )
+            if inserted:
+                if num_tool_calls > 0:
+                    conn.execute(
+                        """UPDATE sessions SET message_count = message_count + 1,
+                           tool_call_count = tool_call_count + ? WHERE id = ?""",
+                        (num_tool_calls, session_id),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE sessions SET message_count = message_count + 1 WHERE id = ?",
+                        (session_id,),
+                    )
             return msg_id
 
         return self._execute_write(_do)
@@ -1567,16 +1592,19 @@ class SessionDB:
 
                 conn.execute(
                     """INSERT INTO messages (session_id, role, content, sender_id, sender_name,
+                       source_chat_id, source_message_id,
                        tool_call_id, tool_calls, tool_name, timestamp, token_count,
                        finish_reason, reasoning, reasoning_content, reasoning_details,
                        codex_reasoning_items, codex_message_items)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         session_id,
                         role,
                         self._encode_content(msg.get("content")),
                         msg.get("sender_id"),
                         msg.get("sender_name"),
+                        msg.get("source_chat_id"),
+                        msg.get("source_message_id"),
                         msg.get("tool_call_id"),
                         tool_calls_json,
                         msg.get("tool_name"),
@@ -1626,6 +1654,44 @@ class SessionDB:
                 (sender_id, sender_name, row[0]),
             )
         self._execute_write(_do)
+
+    def delete_message_by_source_key(
+        self,
+        *,
+        source_chat_id: str,
+        source_message_id: str,
+    ) -> int:
+        chat_key = str(source_chat_id or "").strip()
+        message_key = str(source_message_id or "").strip()
+        if not chat_key or not message_key:
+            return 0
+
+        def _do(conn):
+            rows = conn.execute(
+                "SELECT session_id FROM messages WHERE source_chat_id = ? AND source_message_id = ?",
+                (chat_key, message_key),
+            ).fetchall()
+            if not rows:
+                return 0
+            session_counts: dict[str, int] = {}
+            for row in rows:
+                sid = str(row[0] or "").strip()
+                if sid:
+                    session_counts[sid] = session_counts.get(sid, 0) + 1
+
+            cursor = conn.execute(
+                "DELETE FROM messages WHERE source_chat_id = ? AND source_message_id = ?",
+                (chat_key, message_key),
+            )
+            deleted = int(cursor.rowcount or 0)
+            for sid, count in session_counts.items():
+                conn.execute(
+                    "UPDATE sessions SET message_count = MAX(message_count - ?, 0) WHERE id = ?",
+                    (count, sid),
+                )
+            return deleted
+
+        return int(self._execute_write(_do))
 
     def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages for a session, ordered by insertion order."""

@@ -181,6 +181,52 @@ class TestMessageStorage:
         assert user_rows[1]["sender_id"] == "140063262396533@lid"
         assert user_rows[1]["sender_name"] == "Raquel"
 
+    def test_append_message_dedupes_by_source_key(self, db):
+        db.create_session(session_id="s1", source="cli")
+        first_id = db.append_message(
+            "s1",
+            role="user",
+            content="hello",
+            source_chat_id="15133278228@s.whatsapp.net",
+            source_message_id="wamid.1",
+        )
+        second_id = db.append_message(
+            "s1",
+            role="user",
+            content="hello (dup)",
+            source_chat_id="15133278228@s.whatsapp.net",
+            source_message_id="wamid.1",
+        )
+        messages = db.get_messages("s1")
+        session = db.get_session("s1")
+        assert first_id == second_id
+        assert len(messages) == 1
+        assert session["message_count"] == 1
+
+    def test_delete_message_by_source_key(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="user",
+            content="kept",
+            source_chat_id="15133278228@s.whatsapp.net",
+            source_message_id="wamid.keep",
+        )
+        db.append_message(
+            "s1",
+            role="user",
+            content="delete me",
+            source_chat_id="15133278228@s.whatsapp.net",
+            source_message_id="wamid.delete",
+        )
+        deleted = db.delete_message_by_source_key(
+            source_chat_id="15133278228@s.whatsapp.net",
+            source_message_id="wamid.delete",
+        )
+        messages = db.get_messages("s1")
+        assert deleted == 1
+        assert [m["content"] for m in messages] == ["kept"]
+
     def test_message_increments_session_count(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="Hello")

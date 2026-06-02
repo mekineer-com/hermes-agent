@@ -937,6 +937,7 @@ class SessionStore:
                 "session_id": session_id,
                 "source": source.platform.value,
                 "user_id": source.user_id,
+                "parent_session_id": db_end_session_id,
             }
 
         # SQLite operations outside the lock
@@ -1163,6 +1164,7 @@ class SessionStore:
                 "session_id": session_id,
                 "source": old_entry.platform.value if old_entry.platform else "unknown",
                 "user_id": old_entry.origin.user_id if old_entry.origin else None,
+                "parent_session_id": db_end_session_id,
             }
 
         if self._db and db_end_session_id:
@@ -1270,6 +1272,8 @@ class SessionStore:
                     content=message.get("content"),
                     sender_id=message.get("sender_id"),
                     sender_name=message.get("sender_name"),
+                    source_chat_id=message.get("source_chat_id"),
+                    source_message_id=message.get("source_message_id"),
                     tool_name=message.get("tool_name"),
                     tool_calls=message.get("tool_calls"),
                     tool_call_id=message.get("tool_call_id"),

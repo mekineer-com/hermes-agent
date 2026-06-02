@@ -5800,6 +5800,17 @@ class GatewayRunner:
         7. Return response
         """
         source = event.source
+        _raw_message = (
+            event.raw_message
+            if isinstance(getattr(event, "raw_message", None), dict)
+            else {}
+        )
+        if (
+            source.platform == Platform.WHATSAPP
+            and str(_raw_message.get("eventType") or "").strip().lower() == "revoke"
+        ):
+            self._apply_whatsapp_revoke(source, _raw_message)
+            return None
 
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
@@ -7966,9 +7977,16 @@ class GatewayRunner:
             )
             _sender_id = str(_raw_message.get("senderId") or "").strip() or None
             _sender_name = str(_raw_message.get("senderName") or "").strip() or None
+            _source_message_id = str(_raw_message.get("messageId") or "").strip() or None
+            _source_chat_id = str(_raw_message.get("chatId") or "").strip() or None
             _user_sender_fields = (
                 {"sender_id": _sender_id, "sender_name": _sender_name}
                 if source.platform == Platform.WHATSAPP and (_sender_id or _sender_name)
+                else {}
+            )
+            _user_source_fields = (
+                {"source_message_id": _source_message_id, "source_chat_id": _source_chat_id}
+                if source.platform == Platform.WHATSAPP and _source_message_id and _source_chat_id
                 else {}
             )
             
@@ -8003,7 +8021,13 @@ class GatewayRunner:
                 # it's a gateway-generated hint, not model output. (#7100)
                 self.session_store.append_to_transcript(
                     session_entry.session_id,
-                    {"role": "user", "content": message_text, "timestamp": ts, **_user_sender_fields},
+                    {
+                        "role": "user",
+                        "content": message_text,
+                        "timestamp": ts,
+                        **_user_sender_fields,
+                        **_user_source_fields,
+                    },
                 )
             else:
                 history_len = agent_result.get("history_offset", len(history))
@@ -8013,7 +8037,13 @@ class GatewayRunner:
                 if not new_messages:
                     self.session_store.append_to_transcript(
                         session_entry.session_id,
-                        {"role": "user", "content": message_text, "timestamp": ts, **_user_sender_fields}
+                        {
+                            "role": "user",
+                            "content": message_text,
+                            "timestamp": ts,
+                            **_user_sender_fields,
+                            **_user_source_fields,
+                        }
                     )
                     if response:
                         self.session_store.append_to_transcript(
@@ -9999,6 +10029,60 @@ class GatewayRunner:
         
         preview = removed_msg[:40] + "..." if len(removed_msg) > 40 else removed_msg
         return t("gateway.undo.removed", count=removed_count, preview=preview)
+
+    def _apply_whatsapp_revoke(self, source: SessionSource, raw: dict[str, Any]) -> None:
+        source_chat_id = str(raw.get("chatId") or "").strip()
+        source_message_id = str(raw.get("messageId") or "").strip()
+        if not source_chat_id or not source_message_id:
+            return
+
+        deleted = 0
+        if self._session_db:
+            try:
+                deleted = int(
+                    self._session_db.delete_message_by_source_key(
+                        source_chat_id=source_chat_id,
+                        source_message_id=source_message_id,
+                    )
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to apply WhatsApp revoke in state.db chat=%s message=%s: %s",
+                    source_chat_id,
+                    source_message_id,
+                    exc,
+                )
+
+        try:
+            self.session_store._ensure_loaded()
+            session_key = self._session_key_for_source(source)
+            entry = self.session_store._entries.get(session_key)
+            if entry:
+                history = self.session_store.load_transcript(entry.session_id)
+                filtered = [
+                    msg
+                    for msg in history
+                    if not (
+                        str(msg.get("source_chat_id") or "").strip() == source_chat_id
+                        and str(msg.get("source_message_id") or "").strip() == source_message_id
+                    )
+                ]
+                if len(filtered) != len(history):
+                    self.session_store.rewrite_transcript(entry.session_id, filtered)
+        except Exception as exc:
+            logger.debug(
+                "Failed to apply WhatsApp revoke in transcript chat=%s message=%s: %s",
+                source_chat_id,
+                source_message_id,
+                exc,
+            )
+
+        logger.info(
+            "Applied WhatsApp revoke chat=%s message=%s deleted_rows=%d",
+            source_chat_id,
+            source_message_id,
+            deleted,
+        )
 
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
         """Handle /sethome command -- set the current chat as the platform's home channel."""
@@ -14141,6 +14225,10 @@ class GatewayRunner:
         agent._thread_id = source.thread_id
         agent._gateway_session_key = session_key
         agent._external_message_id = source.message_id
+        agent._gateway_message_sender_id = None
+        agent._gateway_message_sender_name = None
+        agent._gateway_source_message_id = None
+        agent._gateway_source_chat_id = None
 
     def _release_evicted_agent_soft(self, agent: Any) -> None:
         """Soft cleanup for cache-evicted agents — preserves session tool state.
@@ -15771,6 +15859,21 @@ class GatewayRunner:
                 _srn = _pending_notes.pop(session_key, None)
                 if _srn:
                     message = _srn + "\n\n" + message
+
+            _event_raw = (
+                event.raw_message
+                if isinstance(getattr(event, "raw_message", None), dict)
+                else {}
+            )
+            if source.platform == Platform.WHATSAPP:
+                _sender_id = str(_event_raw.get("senderId") or "").strip()
+                _sender_name = str(_event_raw.get("senderName") or "").strip()
+                _source_message_id = str(_event_raw.get("messageId") or "").strip()
+                _source_chat_id = str(_event_raw.get("chatId") or "").strip()
+                agent._gateway_message_sender_id = _sender_id or None
+                agent._gateway_message_sender_name = _sender_name or None
+                agent._gateway_source_message_id = _source_message_id or None
+                agent._gateway_source_chat_id = _source_chat_id or None
 
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)

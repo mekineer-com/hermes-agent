@@ -727,6 +727,56 @@ class TestSessionStoreSwitchSession:
         assert resumed["end_reason"] is None
         db.close()
 
+    def test_reset_session_links_parent_in_db(self, tmp_path):
+        from hermes_state import SessionDB
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+        db = SessionDB(db_path=tmp_path / "state.db")
+        store._db = db
+        store._loaded = True
+
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="15133278228@s.whatsapp.net",
+            chat_type="dm",
+            user_id="15133278228@s.whatsapp.net",
+            user_name="Marcos",
+        )
+        entry = store.get_or_create_session(source)
+        old_sid = entry.session_id
+        new_entry = store.reset_session(entry.session_key)
+        assert new_entry is not None
+        new_sid = new_entry.session_id
+        assert db.get_session(new_sid)["parent_session_id"] == old_sid
+        db.close()
+
+    def test_auto_reset_links_parent_in_db(self, tmp_path):
+        from hermes_state import SessionDB
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+        db = SessionDB(db_path=tmp_path / "state.db")
+        store._db = db
+        store._loaded = True
+
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="15133278228@s.whatsapp.net",
+            chat_type="dm",
+            user_id="15133278228@s.whatsapp.net",
+            user_name="Marcos",
+        )
+        first = store.get_or_create_session(source)
+        old_sid = first.session_id
+        assert store.suspend_session(first.session_key) is True
+        second = store.get_or_create_session(source)
+        assert second.session_id != old_sid
+        assert db.get_session(second.session_id)["parent_session_id"] == old_sid
+        db.close()
+
 
 class TestWhatsAppSessionKeyConsistency:
     """Regression: WhatsApp session keys must collapse JID/LID aliases to a
