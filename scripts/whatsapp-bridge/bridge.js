@@ -241,6 +241,7 @@ function buildLidMap() {
   return map;
 }
 let lidToPhone = buildLidMap();
+let lidKeyStore = null;
 
 const logger = pino({ level: 'warn' });
 
@@ -457,9 +458,10 @@ function rememberKnownChatsFromSnapshot(chats) {
 
 function rememberKnownContactsFromSnapshot(contacts) {
   if (!Array.isArray(contacts)) return;
+  const persistBatch = {};
   for (const contact of contacts) {
     if (contact?.lid && contact?.jid) {
-      learnLidPhoneShare(contact.lid, contact.jid);
+      learnLidPhoneShare(contact.lid, contact.jid, { persistBatch });
     }
     const contactId = normalizeWhatsAppId(contact?.id || '');
     const displayName = String(
@@ -469,23 +471,47 @@ function rememberKnownContactsFromSnapshot(contacts) {
       rememberPushName(contactId, displayName);
     }
   }
+  persistLidMappingsBatch(persistBatch);
 }
 
-function learnLidPhoneShare(lidValue, jidValue) {
+function addLidPairToPersistBatch(persistBatch, phoneLocal, lidLocal) {
+  persistBatch[phoneLocal] = lidLocal;
+  persistBatch[`${lidLocal}_reverse`] = phoneLocal;
+}
+
+function persistLidMappingsBatch(persistBatch) {
+  if (!lidKeyStore) return;
+  const keys = Object.keys(persistBatch);
+  if (keys.length === 0) return;
+  void lidKeyStore
+    .set({ 'lid-mapping': persistBatch })
+    .catch((err) => logger.warn({ err }, 'failed to persist lid-mapping batch'));
+}
+
+function learnLidPhoneShare(lidValue, jidValue, { persistBatch = null } = {}) {
   const lidLocal = String(lidValue || '').trim().replace(/:.*@/, '@').split('@', 1)[0];
   const phoneLocal = String(jidValue || '').trim().replace(/:.*@/, '@').split('@', 1)[0];
   if (!lidLocal || !phoneLocal || lidLocal === phoneLocal) return;
   if (String(lidToPhone[lidLocal] || '') === phoneLocal) return;
   lidToPhone[lidLocal] = phoneLocal;
+  if (persistBatch) {
+    addLidPairToPersistBatch(persistBatch, phoneLocal, lidLocal);
+  } else {
+    const immediateBatch = {};
+    addLidPairToPersistBatch(immediateBatch, phoneLocal, lidLocal);
+    persistLidMappingsBatch(immediateBatch);
+  }
   canonicalizeKnownStateWithLidMap();
 }
 
 function rememberPhoneNumberShares(payload) {
   if (Array.isArray(payload)) {
+    const persistBatch = {};
     for (const row of payload) {
       if (!row || typeof row !== 'object') continue;
-      learnLidPhoneShare(row.lid, row.jid);
+      learnLidPhoneShare(row.lid, row.jid, { persistBatch });
     }
+    persistLidMappingsBatch(persistBatch);
     return;
   }
   if (payload && typeof payload === 'object') {
@@ -683,6 +709,7 @@ persistKnownContacts();
 
 async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
+  lidKeyStore = state.keys;
   const { version } = await fetchLatestBaileysVersion();
 
   sock = makeWASocket({
