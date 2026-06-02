@@ -849,7 +849,11 @@ async function startSocket() {
       }
       const chatId = normalizeWhatsAppId(rawChatId);
       if (!chatId) continue;
-      const senderId = normalizeWhatsAppId(msg.key.participant || rawChatId) || chatId;
+      const selfSenderId = normalizeWhatsAppId(sock.user?.id || sock.user?.lid || '');
+      const participantId = normalizeWhatsAppId(msg.key.participant || '');
+      const senderId = msg.key.fromMe
+        ? (selfSenderId || participantId || chatId)
+        : (participantId || chatId);
       const isGroup = chatId.endsWith('@g.us');
       learnAliasFromMirroredDmMessage({
         chatId,
@@ -1035,9 +1039,15 @@ async function startSocket() {
         continue;
       }
 
-      const resolvedSenderName = String(
-        msg.pushName || pushNameCache.get(senderId) || senderNumber
-      ).trim() || senderNumber;
+      const resolvedSenderName = msg.key.fromMe
+        ? (
+          String(pushNameCache.get(senderId) || sock.user?.name || '').trim()
+          || senderNumber
+        )
+        : (
+          String(msg.pushName || pushNameCache.get(senderId) || senderNumber).trim()
+          || senderNumber
+        );
       const resolvedChatName = isGroup
         ? (await resolveGroupChatName(chatId)) || chatId.split('@')[0]
         : resolveDmDisplayName(chatId, knownChats.get(chatId));
