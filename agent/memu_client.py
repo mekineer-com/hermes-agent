@@ -234,42 +234,6 @@ class MemuHttpClient:
 
         return self._post("/integration/memu/turn", payload)
 
-    def append_message_only(
-        self,
-        *,
-        conversation_id: str,
-        user_id: str,
-        soul_id: str,
-        message: str,
-        user_name: str | None = None,
-        role: str = "user",
-        memorize_chat: bool | None = None,
-        external_message_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Ingest one message into memU's messages table without engaging the soul.
-
-        Used for listen-only WhatsApp channels: the soul stores the message
-        for memorize + cross-chat context, but doesn't produce a response.
-        """
-        cid = str(conversation_id or "").strip()
-        if not cid:
-            raise MemuClientError("append_message_only requires conversation_id")
-        payload: dict[str, Any] = {
-            "user_id": str(user_id or "").strip(),
-            "soul_id": str(soul_id or "").strip(),
-            "message": str(message or "").strip(),
-            "role": str(role or "user").strip(),
-        }
-        speaker_name = str(user_name or "").strip()
-        if speaker_name:
-            payload["user_name"] = speaker_name
-        if isinstance(memorize_chat, bool):
-            payload["memorize_chat"] = memorize_chat
-        if external_message_id:
-            payload["external_message_id"] = str(external_message_id)
-        path = f"/conversation/{urllib.parse.quote(cid, safe='')}/messages/append"
-        return self._post(path, payload)
-
     def memu_retrieve(
         self,
         *,

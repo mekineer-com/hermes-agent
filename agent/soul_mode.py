@@ -413,9 +413,9 @@ def handle_turn(
         ext_msg_id = str(getattr(agent, "_external_message_id", "") or "").strip() or None
         memorize_chat: bool | None = None
 
-        # WhatsApp channel policy (memu.json): "excluded" → drop silently, no
-        # ingestion. "listen_only" → ingest into memU's messages table for memorize
-        # + cross-chat context, but skip the soul turn entirely.
+        # WhatsApp channel policy (memu.json): "excluded" → drop silently.
+        # "listen_only" → skip the soul turn entirely. memU now reads WhatsApp
+        # cross/memorize context directly from Hermes storage.
         if platform == "whatsapp":
             from gateway.memu_policy import whatsapp_channel_settings
             policy, memorize_chat = whatsapp_channel_settings(str(getattr(agent, "_chat_id", "") or ""))
@@ -426,18 +426,6 @@ def handle_turn(
                     task_id, summarize_for_log, platform, exit_reason="soul_mode_excluded",
                 )
             if policy == "listen_only":
-                try:
-                    client.append_message_only(
-                        conversation_id=conversation_id,
-                        user_id=config.user_id,
-                        soul_id=config.soul_id,
-                        message=memu_message,
-                        user_name=sender_display_name,
-                        memorize_chat=memorize_chat,
-                        external_message_id=ext_msg_id,
-                    )
-                except Exception as exc:
-                    logger.warning("Soul listen_only append failed for %s: %s", conversation_id, exc)
                 logger.info("Soul listen_only for %s (memu.json policy)", conversation_id)
                 return _silent_listen_result(
                     agent, config, messages, conversation_history, user_message,
