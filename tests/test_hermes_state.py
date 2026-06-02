@@ -153,6 +153,34 @@ class TestMessageStorage:
         assert messages[0]["content"] == "Hello"
         assert messages[1]["role"] == "assistant"
 
+    def test_append_message_persists_sender_columns(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="user",
+            content="Hello",
+            sender_id="15133278228@s.whatsapp.net",
+            sender_name="Marcos",
+        )
+
+        messages = db.get_messages("s1")
+        assert messages[0]["sender_id"] == "15133278228@s.whatsapp.net"
+        assert messages[0]["sender_name"] == "Marcos"
+
+    def test_set_latest_user_sender_updates_only_latest_user_row(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="first")
+        db.append_message("s1", role="assistant", content="ack")
+        db.append_message("s1", role="user", content="second")
+
+        db.set_latest_user_sender("s1", sender_id="140063262396533@lid", sender_name="Raquel")
+
+        messages = db.get_messages("s1")
+        user_rows = [msg for msg in messages if msg["role"] == "user"]
+        assert user_rows[0]["sender_name"] is None
+        assert user_rows[1]["sender_id"] == "140063262396533@lid"
+        assert user_rows[1]["sender_name"] == "Raquel"
+
     def test_message_increments_session_count(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="Hello")
@@ -2942,4 +2970,3 @@ class TestFTS5ToolCallMigration:
             assert version == 11
         finally:
             session_db.close()
-

@@ -847,10 +847,19 @@ async function startSocket() {
         }
         continue;
       }
-      const chatId = normalizeWhatsAppId(rawChatId);
+      let chatId = normalizeWhatsAppId(rawChatId);
       if (!chatId) continue;
       const selfSenderId = normalizeWhatsAppId(sock.user?.id || sock.user?.lid || '');
       const participantId = normalizeWhatsAppId(msg.key.participant || '');
+      if (
+        msg.key.fromMe
+        && participantId
+        && selfSenderId
+        && chatId === selfSenderId
+        && participantId !== selfSenderId
+      ) {
+        chatId = participantId;
+      }
       const senderId = msg.key.fromMe
         ? (selfSenderId || participantId || chatId)
         : (participantId || chatId);

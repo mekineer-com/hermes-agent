@@ -7959,6 +7959,18 @@ class GatewayRunner:
                 )
 
             ts = datetime.now().isoformat()
+            _raw_message = (
+                event.raw_message
+                if isinstance(getattr(event, "raw_message", None), dict)
+                else {}
+            )
+            _sender_id = str(_raw_message.get("senderId") or "").strip() or None
+            _sender_name = str(_raw_message.get("senderName") or "").strip() or None
+            _user_sender_fields = (
+                {"sender_id": _sender_id, "sender_name": _sender_name}
+                if source.platform == Platform.WHATSAPP and (_sender_id or _sender_name)
+                else {}
+            )
             
             # If this is a fresh session (no history), write the full tool
             # definitions as the first entry so the transcript is self-describing
@@ -7991,7 +8003,7 @@ class GatewayRunner:
                 # it's a gateway-generated hint, not model output. (#7100)
                 self.session_store.append_to_transcript(
                     session_entry.session_id,
-                    {"role": "user", "content": message_text, "timestamp": ts},
+                    {"role": "user", "content": message_text, "timestamp": ts, **_user_sender_fields},
                 )
             else:
                 history_len = agent_result.get("history_offset", len(history))
@@ -8001,7 +8013,7 @@ class GatewayRunner:
                 if not new_messages:
                     self.session_store.append_to_transcript(
                         session_entry.session_id,
-                        {"role": "user", "content": message_text, "timestamp": ts}
+                        {"role": "user", "content": message_text, "timestamp": ts, **_user_sender_fields}
                     )
                     if response:
                         self.session_store.append_to_transcript(
@@ -8024,6 +8036,26 @@ class GatewayRunner:
                             session_entry.session_id, entry,
                             skip_db=agent_persisted,
                         )
+
+            if (
+                not is_context_overflow_failure
+                and _user_sender_fields
+                and self._session_db
+                and session_entry
+                and session_entry.session_id
+            ):
+                try:
+                    self._session_db.set_latest_user_sender(
+                        session_entry.session_id,
+                        sender_id=_sender_id,
+                        sender_name=_sender_name,
+                    )
+                except Exception as e:
+                    logger.debug(
+                        "Failed to stamp latest user sender for session %s: %s",
+                        session_entry.session_id,
+                        e,
+                    )
             
             # Token counts and model are now persisted by the agent directly.
             # Keep only last_prompt_tokens here for context-window tracking and

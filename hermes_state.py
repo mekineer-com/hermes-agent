@@ -226,6 +226,8 @@ CREATE TABLE IF NOT EXISTS messages (
     session_id TEXT NOT NULL REFERENCES sessions(id),
     role TEXT NOT NULL,
     content TEXT,
+    sender_id TEXT,
+    sender_name TEXT,
     tool_call_id TEXT,
     tool_calls TEXT,
     tool_name TEXT,
@@ -1435,6 +1437,8 @@ class SessionDB:
         session_id: str,
         role: str,
         content: str = None,
+        sender_id: str = None,
+        sender_name: str = None,
         tool_name: str = None,
         tool_calls: Any = None,
         tool_call_id: str = None,
@@ -1477,15 +1481,17 @@ class SessionDB:
 
         def _do(conn):
             cursor = conn.execute(
-                """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, timestamp, token_count, finish_reason,
-                   reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO messages (session_id, role, content, sender_id, sender_name,
+                   tool_call_id, tool_calls, tool_name, timestamp, token_count,
+                   finish_reason, reasoning, reasoning_content, reasoning_details,
+                   codex_reasoning_items, codex_message_items)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
                     stored_content,
+                    sender_id,
+                    sender_name,
                     tool_call_id,
                     tool_calls_json,
                     tool_name,
@@ -1560,15 +1566,17 @@ class SessionDB:
                 tool_calls_json = json.dumps(tool_calls) if tool_calls else None
 
                 conn.execute(
-                    """INSERT INTO messages (session_id, role, content, tool_call_id,
-                       tool_calls, tool_name, timestamp, token_count, finish_reason,
-                       reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                       codex_message_items)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    """INSERT INTO messages (session_id, role, content, sender_id, sender_name,
+                       tool_call_id, tool_calls, tool_name, timestamp, token_count,
+                       finish_reason, reasoning, reasoning_content, reasoning_details,
+                       codex_reasoning_items, codex_message_items)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         session_id,
                         role,
                         self._encode_content(msg.get("content")),
+                        msg.get("sender_id"),
+                        msg.get("sender_name"),
                         msg.get("tool_call_id"),
                         tool_calls_json,
                         msg.get("tool_name"),
@@ -1594,6 +1602,29 @@ class SessionDB:
                 (total_messages, total_tool_calls, session_id),
             )
 
+        self._execute_write(_do)
+
+    def set_latest_user_sender(
+        self,
+        session_id: str,
+        *,
+        sender_id: str | None = None,
+        sender_name: str | None = None,
+    ) -> None:
+        """Stamp sender identity on the latest user row for a session."""
+        if sender_id is None and sender_name is None:
+            return
+        def _do(conn):
+            row = conn.execute(
+                "SELECT id FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            if not row:
+                return
+            conn.execute(
+                "UPDATE messages SET sender_id = ?, sender_name = ? WHERE id = ?",
+                (sender_id, sender_name, row[0]),
+            )
         self._execute_write(_do)
 
     def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
@@ -2963,4 +2994,3 @@ class SessionDB:
                 (error[:500], session_id),
             )
         self._execute_write(_do)
-
