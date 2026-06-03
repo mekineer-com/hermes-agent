@@ -15875,6 +15875,7 @@ class GatewayRunner:
                 if isinstance(getattr(event, "raw_message", None), dict)
                 else {}
             )
+            _sender_id = ""
             if source.platform == Platform.WHATSAPP:
                 _sender_id = str(_event_raw.get("senderId") or "").strip()
             _sender_name = str(_event_raw.get("senderName") or "").strip()
