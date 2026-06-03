@@ -33,6 +33,7 @@ import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { DurableQueue } from './durable_queue.js';
 import { buildMediaRetryCachePayload } from './media_retry_cache.js';
+import { canonicalizeMessageIds, historyMessageSources, isRecentlySentEcho } from './history_ingest.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -798,7 +799,7 @@ async function enqueueHistoryMessage(rawMsg, { chatFallback = '', surface = 'syn
   const messageContent = getMessageContent(msg);
   if (!messageContent || Object.keys(messageContent).length === 0) return false;
 
-  const participantId = normalizeWhatsAppId(msg.key.participant || '');
+  let participantId = normalizeWhatsAppId(msg.key.participant || '');
   const selfSenderId = normalizeWhatsAppId(sock?.user?.id || sock?.user?.lid || '');
   if (
     msg.key.fromMe
@@ -816,16 +817,23 @@ async function enqueueHistoryMessage(rawMsg, { chatFallback = '', surface = 'syn
     isGroup: chatId.endsWith('@g.us'),
   });
 
-  const senderId = msg.key.fromMe
-    ? (selfSenderId || participantId || chatId)
-    : (participantId || chatId);
+  const ids = canonicalizeMessageIds({
+    chatId,
+    participantId,
+    selfSenderId,
+    fromMe: !!msg.key.fromMe,
+  }, normalizeWhatsAppId);
+  chatId = ids.chatId;
+  participantId = ids.participantId;
+  const senderId = ids.senderId;
   const { body: extractedBody, hasMedia, mediaType } = extractTextAndMedia(messageContent);
   let body = extractedBody;
   let speakerRoleHint = 'user';
   let speakerNameHint = '';
   if (msg.key.fromMe) {
+    if (isRecentlySentEcho({ fromMe: true, messageId }, recentlySentIds)) return false;
     const parsed = parseDecoratedAssistantBody(body);
-    if (parsed || recentlySentIds.has(messageId)) {
+    if (parsed) {
       speakerRoleHint = 'assistant';
       speakerNameHint = parsed?.speakerName || '';
       body = parsed ? parsed.body : body;
@@ -880,13 +888,12 @@ async function enqueueHistoryMessage(rawMsg, { chatFallback = '', surface = 'syn
 }
 
 async function enqueueHistoryMessagesFromChats(chats, surface) {
-  if (!Array.isArray(chats)) return;
-  for (const chat of chats) {
-    const chatFallback = normalizeWhatsAppId(chat?.id || chat?.jid || '');
-    const rows = Array.isArray(chat?.messages) ? chat.messages : [];
-    for (const row of rows) {
-      await enqueueHistoryMessage(row, { chatFallback, surface });
-    }
+  await enqueueHistoryMessages({ chats }, surface);
+}
+
+async function enqueueHistoryMessages(payload, surface) {
+  for (const row of historyMessageSources(payload, normalizeWhatsAppId)) {
+    await enqueueHistoryMessage(row.message, { chatFallback: row.chatFallback, surface });
   }
 }
 
@@ -966,7 +973,7 @@ async function startSocket() {
     });
     rememberKnownChatsFromSnapshot(chats);
     rememberKnownContactsFromSnapshot(contacts);
-    await enqueueHistoryMessagesFromChats(chats, 'messaging-history.set');
+    await enqueueHistoryMessages({ chats, messages }, 'messaging-history.set');
   });
 
   sock.ev.on('connection.update', (update) => {
@@ -1040,7 +1047,7 @@ async function startSocket() {
       let chatId = normalizeWhatsAppId(rawChatId);
       if (!chatId) continue;
       const selfSenderId = normalizeWhatsAppId(sock.user?.id || sock.user?.lid || '');
-      const participantId = normalizeWhatsAppId(msg.key.participant || '');
+      let participantId = normalizeWhatsAppId(msg.key.participant || '');
       if (
         msg.key.fromMe
         && participantId
@@ -1050,16 +1057,22 @@ async function startSocket() {
       ) {
         chatId = participantId;
       }
-      const senderId = msg.key.fromMe
-        ? (selfSenderId || participantId || chatId)
-        : (participantId || chatId);
-      const isGroup = chatId.endsWith('@g.us');
       learnAliasFromMirroredDmMessage({
         chatId,
         messageId: msg.key.id,
         fromMe: !!msg.key.fromMe,
-        isGroup,
+        isGroup: chatId.endsWith('@g.us'),
       });
+      const ids = canonicalizeMessageIds({
+        chatId,
+        participantId,
+        selfSenderId,
+        fromMe: !!msg.key.fromMe,
+      }, normalizeWhatsAppId);
+      chatId = ids.chatId;
+      participantId = ids.participantId;
+      const senderId = ids.senderId;
+      const isGroup = ids.isGroup;
       const senderDisplayName = extractPossibleSenderName(msg);
       appendDiscoveryProbe({
         event: 'discovery_probe',
@@ -1214,7 +1227,18 @@ async function startSocket() {
       let speakerRoleHint = 'user';
       let speakerNameHint = '';
       const decoratedAssistant = msg.key.fromMe ? parseDecoratedAssistantBody(body) : null;
-      const isAgentEcho = msg.key.fromMe && (decoratedAssistant || recentlySentIds.has(msg.key.id));
+      if (isRecentlySentEcho({ fromMe: !!msg.key.fromMe, messageId: msg.key.id }, recentlySentIds)) {
+        if (WHATSAPP_DEBUG) {
+          console.log(JSON.stringify({
+            event: 'ignored',
+            reason: 'recently_sent_agent_echo',
+            chatId,
+            messageId: msg.key.id,
+          }));
+        }
+        continue;
+      }
+      const isAgentEcho = msg.key.fromMe && !!decoratedAssistant;
       if (isAgentEcho) {
         speakerRoleHint = 'assistant';
         speakerNameHint = decoratedAssistant?.speakerName || '';
