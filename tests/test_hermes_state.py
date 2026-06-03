@@ -167,55 +167,6 @@ class TestMessageStorage:
         assert messages[0]["sender_id"] == "15133278228@s.whatsapp.net"
         assert messages[0]["sender_name"] == "Marcos"
 
-    def test_append_message_persists_explicit_timestamp(self, db):
-        db.create_session(session_id="s1", source="cli")
-        db.append_message("s1", role="user", content="Hello", timestamp=1_780_000_000.25)
-
-        messages = db.get_messages("s1")
-        assert messages[0]["timestamp"] == 1_780_000_000.25
-
-    def test_append_message_defaults_timestamp_to_now(self, db, monkeypatch):
-        monkeypatch.setattr("hermes_state.time.time", lambda: 1_780_000_123.5)
-        db.create_session(session_id="s1", source="cli")
-        db.append_message("s1", role="user", content="Hello")
-
-        messages = db.get_messages("s1")
-        assert messages[0]["timestamp"] == 1_780_000_123.5
-
-    def test_append_message_coerces_millisecond_timestamp(self, db):
-        db.create_session(session_id="s1", source="cli")
-        db.append_message("s1", role="user", content="Hello", timestamp=1_780_000_000_250)
-
-        messages = db.get_messages("s1")
-        assert messages[0]["timestamp"] == 1_780_000_000.25
-
-    def test_messages_can_sort_by_explicit_send_time(self, db):
-        db.create_session(session_id="s1", source="cli")
-        db.append_message("s1", role="user", content="newer insert older send", timestamp=200.0)
-        db.append_message("s1", role="user", content="older insert newer send", timestamp=100.0)
-
-        rows = db._conn.execute(
-            "SELECT content FROM messages WHERE session_id = ? ORDER BY timestamp ASC, id ASC",
-            ("s1",),
-        ).fetchall()
-        assert [row["content"] for row in rows] == [
-            "older insert newer send",
-            "newer insert older send",
-        ]
-
-    def test_replace_messages_preserves_message_timestamps(self, db):
-        db.create_session(session_id="s1", source="cli")
-        db.replace_messages(
-            "s1",
-            [
-                {"role": "user", "content": "first", "timestamp": 100.0},
-                {"role": "assistant", "content": "second", "timestamp": "1970-01-01T00:03:20+00:00"},
-            ],
-        )
-
-        messages = db.get_messages("s1")
-        assert [msg["timestamp"] for msg in messages] == [100.0, 200.0]
-
     def test_set_latest_user_sender_updates_only_latest_user_row(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="first")

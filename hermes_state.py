@@ -21,7 +21,6 @@ import re
 import sqlite3
 import threading
 import time
-from datetime import datetime
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
@@ -73,27 +72,6 @@ _last_init_error_lock = threading.Lock()
 # filesystem-incompat warning on every connection, filling errors.log.
 _wal_fallback_warned_paths: set[str] = set()
 _wal_fallback_warned_lock = threading.Lock()
-
-
-def _coerce_message_timestamp(value: Any) -> Optional[float]:
-    if value is None or isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        timestamp = float(value)
-    elif isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return None
-        try:
-            timestamp = float(text)
-        except ValueError:
-            try:
-                return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
-            except ValueError:
-                return None
-    else:
-        return None
-    return timestamp / 1000.0 if timestamp > 10_000_000_000 else timestamp
 
 
 def _set_last_init_error(msg: Optional[str]) -> None:
@@ -1476,7 +1454,6 @@ class SessionDB:
         tool_name: str = None,
         tool_calls: Any = None,
         tool_call_id: str = None,
-        timestamp: Any = None,
         token_count: int = None,
         finish_reason: str = None,
         reasoning: str = None,
@@ -1508,9 +1485,6 @@ class SessionDB:
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
-        stored_timestamp = _coerce_message_timestamp(timestamp)
-        if stored_timestamp is None:
-            stored_timestamp = time.time()
 
         # Pre-compute tool call count
         num_tool_calls = 0
@@ -1535,7 +1509,7 @@ class SessionDB:
                     tool_call_id,
                     tool_calls_json,
                     tool_name,
-                    stored_timestamp,
+                    time.time(),
                     token_count,
                     finish_reason,
                     reasoning,
@@ -1615,9 +1589,6 @@ class SessionDB:
                     json.dumps(codex_message_items) if codex_message_items else None
                 )
                 tool_calls_json = json.dumps(tool_calls) if tool_calls else None
-                message_timestamp = _coerce_message_timestamp(msg.get("timestamp"))
-                if message_timestamp is None:
-                    message_timestamp = now_ts
 
                 conn.execute(
                     """INSERT INTO messages (session_id, role, content, sender_id, sender_name,
@@ -1637,7 +1608,7 @@ class SessionDB:
                         msg.get("tool_call_id"),
                         tool_calls_json,
                         msg.get("tool_name"),
-                        message_timestamp,
+                        now_ts,
                         msg.get("token_count"),
                         msg.get("finish_reason"),
                         msg.get("reasoning") if role == "assistant" else None,

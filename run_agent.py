@@ -4791,7 +4791,6 @@ class AIAgent:
                 sender_name = msg.get("sender_name")
                 source_chat_id = msg.get("source_chat_id")
                 source_message_id = msg.get("source_message_id")
-                timestamp = msg.get("timestamp")
                 # Persist multimodal tool results as their text summary only —
                 # base64 images would bloat the session DB and aren't useful
                 # for cross-session replay.
@@ -4844,7 +4843,6 @@ class AIAgent:
                     tool_name=msg.get("tool_name"),
                     tool_calls=tool_calls_data,
                     tool_call_id=msg.get("tool_call_id"),
-                    timestamp=timestamp,
                     finish_reason=msg.get("finish_reason"),
                     reasoning=msg.get("reasoning") if role == "assistant" else None,
                     reasoning_content=msg.get("reasoning_content") if role == "assistant" else None,
@@ -12395,9 +12393,6 @@ class AIAgent:
             if _source_message_id and _source_chat_id:
                 user_msg["source_message_id"] = _source_message_id
                 user_msg["source_chat_id"] = _source_chat_id
-            _gateway_timestamp = getattr(self, "_gateway_message_timestamp", None)
-            if _gateway_timestamp is not None:
-                user_msg["timestamp"] = _gateway_timestamp
         else:
             _sender_id = str(getattr(self, "_user_id", "") or "").strip()
             _sender_name = str(getattr(self, "_user_name", "") or "").strip()

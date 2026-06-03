@@ -170,7 +170,6 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
             session_id=session_id,
             role=message.get("role", "assistant"),
             content=message.get("content"),
-            timestamp=message.get("timestamp"),
         )
     except Exception as e:
         logger.debug("Mirror SQLite write failed: %s", e)
