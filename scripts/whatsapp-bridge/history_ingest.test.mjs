@@ -1,7 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { canonicalizeMessageIds, historyMessageSources, isRecentlySentEcho } from './history_ingest.js';
+import {
+  canonicalizeMessageIds,
+  historyMessageSources,
+  historyTimestampSeconds,
+  isRecentlySentEcho,
+  shouldTreatChatUpdateAsLive,
+} from './history_ingest.js';
 
 test('historyMessageSources includes top-level messaging-history messages', () => {
   const rows = historyMessageSources({
@@ -47,4 +53,21 @@ test('isRecentlySentEcho only suppresses bridge-sent fromMe echoes', () => {
   assert.equal(isRecentlySentEcho({ fromMe: true, messageId: 'sent-1' }, recentlySentIds), true);
   assert.equal(isRecentlySentEcho({ fromMe: false, messageId: 'sent-1' }, recentlySentIds), false);
   assert.equal(isRecentlySentEcho({ fromMe: true, messageId: 'other' }, recentlySentIds), false);
+});
+
+test('shouldTreatChatUpdateAsLive only accepts fresh WhatsApp timestamps', () => {
+  assert.equal(historyTimestampSeconds({ low: 1780485099, high: 0, unsigned: true }), 1780485099);
+  assert.equal(historyTimestampSeconds(1780485099000), 1780485099);
+  assert.equal(shouldTreatChatUpdateAsLive(1780485099, {
+    nowSeconds: 1780485100,
+    liveWindowSeconds: 300,
+  }), true);
+  assert.equal(shouldTreatChatUpdateAsLive(1780480000, {
+    nowSeconds: 1780485100,
+    liveWindowSeconds: 300,
+  }), false);
+  assert.equal(shouldTreatChatUpdateAsLive('', {
+    nowSeconds: 1780485100,
+    liveWindowSeconds: 300,
+  }), false);
 });

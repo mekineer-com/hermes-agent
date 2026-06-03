@@ -1289,7 +1289,16 @@ class WhatsAppAdapter(BasePlatformAdapter):
             if persist_only and not self._should_persist_bridge_event(data):
                 return None
             if not persist_only and not self._should_process_message(data):
-                return None
+                if (
+                    str(data.get("sourceSurface") or "").strip().lower() == "chats.update"
+                    and self._should_persist_bridge_event(data)
+                ):
+                    data = dict(data)
+                    data["deliveryMode"] = "persist_only"
+                    data["triggerAgent"] = False
+                    persist_only = True
+                else:
+                    return None
 
             # Determine message type
             msg_type = MessageType.TEXT
