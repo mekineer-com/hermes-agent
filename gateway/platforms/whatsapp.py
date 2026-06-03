@@ -1210,7 +1210,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                                 event.raw_message = dict(event.raw_message)
                                 event.raw_message["wal_seq"] = wal_row["wal_seq"]
                                 event.raw_message["bridge_seq"] = wal_row["bridge_seq"]
-                                await self.handle_message(event)
+                                await self._dispatch_built_message_event(event)
                             else:
                                 wal.mark_processed(wal_row["wal_seq"])
             except asyncio.CancelledError:
@@ -1280,7 +1280,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     internal=True,
                 )
 
-            if not self._should_process_message(data):
+            persist_only = self._is_persist_only_bridge_event(data)
+            if persist_only and not self._should_persist_bridge_event(data):
+                return None
+            if not persist_only and not self._should_process_message(data):
                 return None
 
             # Determine message type
@@ -1417,10 +1420,42 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 message_id=data.get("messageId"),
                 media_urls=cached_urls,
                 media_types=media_types,
+                internal=persist_only,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")
             return None
+
+    @staticmethod
+    def _is_persist_only_bridge_event(data: Dict[str, Any]) -> bool:
+        event_type = str(data.get("eventType") or "").strip().lower()
+        delivery_mode = str(data.get("deliveryMode") or "").strip().lower()
+        return (
+            event_type == "history_message"
+            or delivery_mode == "persist_only"
+            or data.get("triggerAgent") is False
+        )
+
+    @staticmethod
+    def _should_persist_bridge_event(data: Dict[str, Any]) -> bool:
+        chat_id = str(data.get("chatId") or "").strip().lower()
+        if not chat_id or chat_id == "status@broadcast" or chat_id.endswith("@newsletter"):
+            return False
+        body = str(data.get("body") or "").strip()
+        return bool(body or data.get("hasMedia"))
+
+    async def _dispatch_built_message_event(self, event: MessageEvent) -> None:
+        raw = event.raw_message if isinstance(event.raw_message, dict) else {}
+        if not self._is_persist_only_bridge_event(raw):
+            await self.handle_message(event)
+            return
+        wal_seq = raw.get("wal_seq")
+        if wal_seq is None:
+            raise ValueError("WhatsApp WAL invariant break: missing wal_seq on persist-only event")
+        if not self._message_handler:
+            raise RuntimeError("WhatsApp persist-only event has no message handler")
+        await self._message_handler(event)
+        self._gateway_wal.mark_processed(wal_seq)
 
     async def _replay_gateway_wal(self) -> None:
         wal = self._gateway_wal
@@ -1435,7 +1470,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 event.raw_message = dict(event.raw_message)
                 event.raw_message["wal_seq"] = wal_seq
                 event.raw_message["bridge_seq"] = bridge_seq
-                await self.handle_message(event)
+                await self._dispatch_built_message_event(event)
             else:
                 wal.mark_processed(wal_seq)
 

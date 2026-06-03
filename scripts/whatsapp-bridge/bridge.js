@@ -88,6 +88,7 @@ const REPLY_PREFIX = HAS_CUSTOM_REPLY_PREFIX
   : DEFAULT_REPLY_PREFIX;
 const MAX_MESSAGE_LENGTH = parseInt(process.env.WHATSAPP_MAX_MESSAGE_LENGTH || '4096', 10);
 const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10);
+const SYNC_HISTORY_WINDOW_DAYS = parseFloat(process.env.WHATSAPP_SYNC_HISTORY_WINDOW_DAYS || '14');
 const DM_ALIAS_EVENT_TTL_MS = 5 * 60 * 1000;
 // Per-call timeout for sock.sendMessage(). Baileys occasionally hangs forever
 // when uploading media to WhatsApp servers (and, less often, on text sends),
@@ -211,6 +212,72 @@ function getContextInfo(messageContent) {
     }
   }
   return {};
+}
+
+function timestampSeconds(value) {
+  if (value === undefined || value === null || value === '') return 0;
+  if (typeof value === 'object') {
+    if (Number.isFinite(Number(value.low))) return Number(value.low);
+    return 0;
+  }
+  const ts = Number(value);
+  if (!Number.isFinite(ts) || ts <= 0) return 0;
+  return ts > 10000000000 ? ts / 1000 : ts;
+}
+
+function syncTimestampAllowed(value) {
+  if (!Number.isFinite(SYNC_HISTORY_WINDOW_DAYS) || SYNC_HISTORY_WINDOW_DAYS <= 0) return true;
+  const ts = timestampSeconds(value);
+  if (!ts) return false;
+  const cutoff = Date.now() / 1000 - (SYNC_HISTORY_WINDOW_DAYS * 24 * 60 * 60);
+  return ts >= cutoff;
+}
+
+function extractTextAndMedia(messageContent) {
+  let body = '';
+  let hasMedia = false;
+  let mediaType = '';
+  if (messageContent.conversation) {
+    body = messageContent.conversation;
+  } else if (messageContent.extendedTextMessage?.text) {
+    body = messageContent.extendedTextMessage.text;
+  } else if (messageContent.imageMessage) {
+    body = messageContent.imageMessage.caption || '';
+    hasMedia = true;
+    mediaType = 'image';
+  } else if (messageContent.videoMessage) {
+    body = messageContent.videoMessage.caption || '';
+    hasMedia = true;
+    mediaType = 'video';
+  } else if (messageContent.audioMessage) {
+    hasMedia = true;
+    mediaType = 'audio';
+  } else if (messageContent.documentMessage) {
+    body = messageContent.documentMessage.caption || '';
+    hasMedia = true;
+    mediaType = 'document';
+  }
+  if (hasMedia && !body) {
+    body = `[${mediaType} received]`;
+  }
+  return { body, hasMedia, mediaType };
+}
+
+function parseDecoratedAssistantBody(body) {
+  const text = String(body || '');
+  if (!text) return null;
+  if (REPLY_PREFIX && text.startsWith(REPLY_PREFIX)) {
+    return {
+      body: text.slice(REPLY_PREFIX.length).trimStart(),
+      speakerName: '',
+    };
+  }
+  const match = text.match(/^\s*✦\s*\*?([^*:\n]{1,80})\*?:\s*(.*)$/s);
+  if (!match) return null;
+  return {
+    body: String(match[2] || '').trimStart(),
+    speakerName: String(match[1] || '').trim(),
+  };
 }
 
 mkdirSync(SESSION_DIR, { recursive: true });
@@ -703,6 +770,126 @@ async function postSendPresenceAndUnreadRestore(chatId, hadUnreadBeforeSend) {
   }
 }
 
+async function enqueueHistoryMessage(rawMsg, { chatFallback = '', surface = 'sync' } = {}) {
+  const msg = rawMsg?.message && rawMsg?.key === undefined ? rawMsg.message : rawMsg;
+  if (!msg?.key) return false;
+  const messageId = String(msg.key.id || '').trim();
+  let chatId = normalizeWhatsAppId(msg.key.remoteJid || chatFallback || '');
+  if (!chatId || !messageId || chatId.toLowerCase() === 'status@broadcast') return false;
+
+  const timestamp = msg.messageTimestamp || msg.messageC2STimestamp || rawMsg?.messageTimestamp;
+  if (!syncTimestampAllowed(timestamp)) return false;
+
+  const isGroup = chatId.endsWith('@g.us');
+  const targetRevokeId = Array.isArray(msg.messageStubParameters)
+    ? String(msg.messageStubParameters[0] || '').trim()
+    : '';
+  if (Number(msg.messageStubType) === WHATSAPP_REVOKE_STUB_TYPE && targetRevokeId) {
+    return durableQueue.enqueue({
+      eventType: 'revoke',
+      messageId: targetRevokeId,
+      chatId,
+      isGroup,
+      timestamp,
+      sourceSurface: surface,
+    });
+  }
+
+  const messageContent = getMessageContent(msg);
+  if (!messageContent || Object.keys(messageContent).length === 0) return false;
+
+  const participantId = normalizeWhatsAppId(msg.key.participant || '');
+  const selfSenderId = normalizeWhatsAppId(sock?.user?.id || sock?.user?.lid || '');
+  if (
+    msg.key.fromMe
+    && participantId
+    && selfSenderId
+    && chatId === selfSenderId
+    && participantId !== selfSenderId
+  ) {
+    chatId = participantId;
+  }
+  learnAliasFromMirroredDmMessage({
+    chatId,
+    messageId,
+    fromMe: !!msg.key.fromMe,
+    isGroup: chatId.endsWith('@g.us'),
+  });
+
+  const senderId = msg.key.fromMe
+    ? (selfSenderId || participantId || chatId)
+    : (participantId || chatId);
+  const { body: extractedBody, hasMedia, mediaType } = extractTextAndMedia(messageContent);
+  let body = extractedBody;
+  let speakerRoleHint = 'user';
+  let speakerNameHint = '';
+  if (msg.key.fromMe) {
+    const parsed = parseDecoratedAssistantBody(body);
+    if (parsed || recentlySentIds.has(messageId)) {
+      speakerRoleHint = 'assistant';
+      speakerNameHint = parsed?.speakerName || '';
+      body = parsed ? parsed.body : body;
+    }
+  }
+  if (!body && !hasMedia) return false;
+
+  const senderNumber = senderId.replace(/@.*/, '');
+  const senderDisplayName = extractPossibleSenderName(msg);
+  if (!msg.key.fromMe) {
+    rememberPushName(senderId, senderDisplayName);
+  }
+  const resolvedSenderName = msg.key.fromMe
+    ? (String(pushNameCache.get(senderId) || sock?.user?.name || '').trim() || senderNumber)
+    : (String(msg.pushName || pushNameCache.get(senderId) || senderDisplayName || senderNumber).trim() || senderNumber);
+  const resolvedChatName = chatId.endsWith('@g.us')
+    ? (await resolveGroupChatName(chatId)) || chatId.split('@')[0]
+    : resolveDmDisplayName(chatId, knownChats.get(chatId));
+  rememberKnownChat(chatId, {
+    isGroup: chatId.endsWith('@g.us'),
+    name: resolvedChatName,
+    lastSenderName: (!chatId.endsWith('@g.us') && !msg.key.fromMe) ? resolvedSenderName : '',
+  });
+
+  const event = {
+    eventType: 'history_message',
+    deliveryMode: 'persist_only',
+    triggerAgent: false,
+    sourceSurface: surface,
+    messageId,
+    chatId,
+    senderId,
+    senderName: resolvedSenderName,
+    chatName: resolvedChatName,
+    isGroup: chatId.endsWith('@g.us'),
+    body,
+    hasMedia,
+    mediaType,
+    mediaUrls: [],
+    mentionedIds: [],
+    quotedMessageId: '',
+    quotedParticipant: '',
+    quotedRemoteJid: '',
+    hasQuotedMessage: false,
+    botIds: [],
+    timestamp,
+    fromMe: !!msg.key.fromMe,
+    speakerRoleHint,
+    speakerNameHint,
+  };
+  return durableQueue.enqueue(event);
+}
+
+async function enqueueHistoryMessagesFromChats(chats, surface) {
+  if (!Array.isArray(chats)) return;
+  for (const chat of chats) {
+    const chatFallback = normalizeWhatsAppId(chat?.id || chat?.jid || '');
+    const rows = Array.isArray(chat?.messages) ? chat.messages : [];
+    for (const row of rows) {
+      await enqueueHistoryMessage(row, { chatFallback, surface });
+    }
+  }
+}
+
 loadKnownState();
 canonicalizeKnownStateWithLidMap();
 persistKnownChats();
@@ -755,10 +942,11 @@ async function startSocket() {
     updateUnreadCountSnapshot(chats);
     rememberKnownChatsFromSnapshot(chats);
   });
-  sock.ev.on('chats.update', (chats) => {
+  sock.ev.on('chats.update', async (chats) => {
     logSyncEvent('chats.update', { count: Array.isArray(chats) ? chats.length : 0, chats });
     updateUnreadCountSnapshot(chats);
     rememberKnownChatsFromSnapshot(chats);
+    await enqueueHistoryMessagesFromChats(chats, 'chats.update');
   });
   sock.ev.on('contacts.upsert', (contacts) => {
     logSyncEvent('contacts.upsert', { count: Array.isArray(contacts) ? contacts.length : 0, contacts });
@@ -768,7 +956,7 @@ async function startSocket() {
     logSyncEvent('contacts.update', { count: Array.isArray(contacts) ? contacts.length : 0, contacts });
     rememberKnownContactsFromSnapshot(contacts);
   });
-  sock.ev.on('messaging-history.set', ({ chats, contacts, messages, isLatest, progress, syncType }) => {
+  sock.ev.on('messaging-history.set', async ({ chats, contacts, messages, isLatest, progress, syncType }) => {
     logSyncEvent('messaging-history.set', {
       chatCount: Array.isArray(chats) ? chats.length : 0,
       contactCount: Array.isArray(contacts) ? contacts.length : 0,
@@ -778,6 +966,7 @@ async function startSocket() {
     });
     rememberKnownChatsFromSnapshot(chats);
     rememberKnownContactsFromSnapshot(contacts);
+    await enqueueHistoryMessagesFromChats(chats, 'messaging-history.set');
   });
 
   sock.ev.on('connection.update', (update) => {
@@ -910,17 +1099,6 @@ async function startSocket() {
       const senderNumber = senderId.replace(/@.*/, '');
       if (!forwardableType) continue;
 
-      // Handle fromMe messages based on mode
-      if (msg.key.fromMe) {
-        if (WHATSAPP_MODE === 'self-chat') {
-          const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
-          const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
-          const chatNumber = chatId.replace(/@.*/, '');
-          const isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
-          if (!isSelfChat) continue;
-        }
-      }
-
       // Handle !fromMe messages (from other people) based on mode.
       // Self-chat mode only responds to the user's own messages to
       // themselves — stranger DMs / group pings must never reach the
@@ -1033,12 +1211,25 @@ async function startSocket() {
         body = `[${mediaType} received]`;
       }
 
-      // Ignore Hermes' own reply messages in self-chat mode to avoid loops.
-      if (msg.key.fromMe && ((REPLY_PREFIX && body.startsWith(REPLY_PREFIX)) || recentlySentIds.has(msg.key.id))) {
-        if (WHATSAPP_DEBUG) {
-          console.log(JSON.stringify({ event: 'ignored', reason: 'agent_echo', chatId, messageId: msg.key.id }));
+      let speakerRoleHint = 'user';
+      let speakerNameHint = '';
+      const decoratedAssistant = msg.key.fromMe ? parseDecoratedAssistantBody(body) : null;
+      const isAgentEcho = msg.key.fromMe && (decoratedAssistant || recentlySentIds.has(msg.key.id));
+      if (isAgentEcho) {
+        speakerRoleHint = 'assistant';
+        speakerNameHint = decoratedAssistant?.speakerName || '';
+        body = decoratedAssistant ? decoratedAssistant.body : body;
+      } else if (msg.key.fromMe && WHATSAPP_MODE === 'self-chat') {
+        const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
+        const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
+        const chatNumber = chatId.replace(/@.*/, '');
+        const isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
+        if (!isSelfChat) {
+          if (WHATSAPP_DEBUG) {
+            console.log(JSON.stringify({ event: 'ignored', reason: 'self_chat_mode_rejects_non_self_from_me', chatId, messageId: msg.key.id }));
+          }
+          continue;
         }
-        continue;
       }
 
       // Skip empty messages
@@ -1085,7 +1276,16 @@ async function startSocket() {
         hasQuotedMessage,
         botIds,
         timestamp: msg.messageTimestamp,
+        fromMe: !!msg.key.fromMe,
+        speakerRoleHint,
+        speakerNameHint,
       };
+      if (isAgentEcho) {
+        event.eventType = 'history_message';
+        event.deliveryMode = 'persist_only';
+        event.triggerAgent = false;
+        event.sourceSurface = 'messages.upsert';
+      }
 
       const queued = durableQueue.enqueue(event);
       if (WHATSAPP_DEBUG && !queued) {

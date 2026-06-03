@@ -5811,6 +5811,9 @@ class GatewayRunner:
         ):
             self._apply_whatsapp_revoke(source, _raw_message)
             return None
+        if source.platform == Platform.WHATSAPP and self._is_whatsapp_persist_only_event(_raw_message):
+            self._persist_whatsapp_history_event(event)
+            return None
 
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
@@ -10091,6 +10094,86 @@ class GatewayRunner:
             source_message_id,
             deleted,
         )
+
+    @staticmethod
+    def _is_whatsapp_persist_only_event(raw: dict[str, Any]) -> bool:
+        event_type = str(raw.get("eventType") or "").strip().lower()
+        delivery_mode = str(raw.get("deliveryMode") or "").strip().lower()
+        return (
+            event_type == "history_message"
+            or delivery_mode == "persist_only"
+            or raw.get("triggerAgent") is False
+        )
+
+    def _resolve_whatsapp_history_soul(self, source: SessionSource) -> dict[str, Any]:
+        try:
+            session_key = self._session_key_for_source(source)
+            return self._resolve_soul_mode_agent_config(_load_gateway_config(), session_key)
+        except Exception:
+            logger.debug("Failed to resolve WhatsApp history soul config", exc_info=True)
+            return {}
+
+    def _persist_whatsapp_history_event(self, event: MessageEvent) -> None:
+        if not self._session_db:
+            raise RuntimeError("Cannot persist WhatsApp history without SessionDB")
+        raw = event.raw_message if isinstance(getattr(event, "raw_message", None), dict) else {}
+        source = event.source
+        source_chat_id = str(raw.get("chatId") or "").strip()
+        source_message_id = str(raw.get("messageId") or "").strip()
+        if not source_chat_id or not source_message_id:
+            raise ValueError("WhatsApp history event missing source key")
+
+        content = str(event.text or "").strip()
+        if not content and not raw.get("hasMedia"):
+            return
+
+        message_timestamp = _coerce_gateway_timestamp(raw.get("timestamp"))
+        soul_cfg = self._resolve_whatsapp_history_soul(source)
+        soul_id = str(soul_cfg.get("soul_id") or "").strip() if soul_cfg.get("enabled") else ""
+        if soul_id and message_timestamp is not None:
+            active_since = self._session_db.get_soul_active_since(soul_id)
+            if active_since is not None and message_timestamp < active_since:
+                logger.debug(
+                    "Skipping WhatsApp history before active_since soul=%s chat=%s message=%s",
+                    soul_id,
+                    source_chat_id,
+                    source_message_id,
+                )
+                return
+
+        role_hint = str(raw.get("speakerRoleHint") or "").strip().lower()
+        if role_hint == "assistant":
+            role = "assistant"
+        elif role_hint == "user":
+            role = "user"
+        else:
+            role = "user"
+
+        if role == "assistant":
+            speaker_name = soul_id or str(raw.get("speakerNameHint") or raw.get("senderName") or "").strip()
+            sender_name = speaker_name or None
+            sender_id = f"soul:{speaker_name}" if speaker_name else None
+        else:
+            sender_id = str(raw.get("senderId") or "").strip() or None
+            sender_name = str(raw.get("senderName") or "").strip() or None
+
+        session_entry = self.session_store.get_or_create_history_session(source)
+        self._session_db.append_message(
+            session_id=session_entry.session_id,
+            role=role,
+            content=content,
+            sender_id=sender_id,
+            sender_name=sender_name,
+            source_chat_id=source_chat_id,
+            source_message_id=source_message_id,
+            timestamp=message_timestamp,
+        )
+        if role == "user" and (sender_id or sender_name):
+            self._session_db.set_latest_user_sender(
+                session_entry.session_id,
+                sender_id=sender_id,
+                sender_name=sender_name,
+            )
 
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
         """Handle /sethome command -- set the current chat as the platform's home channel."""

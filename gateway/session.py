@@ -955,6 +955,44 @@ class SessionStore:
 
         return entry
 
+    def get_or_create_history_session(self, source: SessionSource) -> SessionEntry:
+        """Resolve a session for persisted history without touching activity state."""
+        session_key = self._generate_session_key(source)
+        now = _now()
+        db_create_kwargs = None
+
+        with self._lock:
+            self._ensure_loaded_locked()
+            if session_key in self._entries:
+                return self._entries[session_key]
+
+            session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+            entry = SessionEntry(
+                session_key=session_key,
+                session_id=session_id,
+                created_at=now,
+                updated_at=now,
+                origin=source,
+                display_name=source.chat_name,
+                platform=source.platform,
+                chat_type=source.chat_type,
+            )
+            self._entries[session_key] = entry
+            self._save()
+            db_create_kwargs = {
+                "session_id": session_id,
+                "source": source.platform.value,
+                "user_id": source.user_id,
+            }
+
+        if self._db and db_create_kwargs:
+            try:
+                self._db.create_session(**db_create_kwargs)
+            except Exception as e:
+                print(f"[gateway] Warning: Failed to create SQLite history session: {e}")
+
+        return entry
+
     def update_session(
         self,
         session_key: str,

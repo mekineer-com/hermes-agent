@@ -2341,6 +2341,23 @@ class SessionDB:
                 cursor = self._conn.execute("SELECT COUNT(*) FROM messages")
             return cursor.fetchone()[0]
 
+    def get_soul_active_since(self, soul_id: str) -> Optional[float]:
+        """Return the configured active_since timestamp for a soul, if present."""
+        selected = str(soul_id or "").strip()
+        if not selected:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT active_since FROM souls WHERE soul_id = ?",
+                (selected,),
+            ).fetchone()
+        if not row:
+            return None
+        timestamp = _coerce_message_timestamp(row[0])
+        if timestamp is None:
+            raise ValueError(f"invalid active_since for soul {selected!r}: {row[0]!r}")
+        return timestamp
+
     # =========================================================================
     # Export and cleanup
     # =========================================================================
