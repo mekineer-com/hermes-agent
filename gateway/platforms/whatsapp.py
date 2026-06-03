@@ -949,6 +949,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             chunks = self.truncate_message(formatted, self._outgoing_chunk_limit())
 
             last_message_id = None
+            message_ids = []
             for chunk in chunks:
                 payload: Dict[str, Any] = {
                     "chatId": chat_id,
@@ -966,6 +967,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     if resp.status == 200:
                         data = await resp.json()
                         last_message_id = data.get("messageId")
+                        for message_id in data.get("messageIds") or []:
+                            if message_id:
+                                message_ids.append(str(message_id))
                     else:
                         error = await resp.text()
                         return SendResult(success=False, error=error)
@@ -977,6 +981,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return SendResult(
                 success=True,
                 message_id=last_message_id,
+                raw_response={"message_ids": message_ids},
             )
         except Exception as e:
             return SendResult(success=False, error=str(e))

@@ -1196,6 +1196,7 @@ _RETRYABLE_ERROR_PATTERNS = (
 # reply), an ``EphemeralReply`` to opt the reply into auto-deletion, or
 # ``None`` when the response was already delivered (e.g. via streaming).
 MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply"]]]]
+ResponseDeliveryHandler = Callable[[MessageEvent, "SendResult", str], Awaitable[None] | None]
 
 
 def resolve_channel_prompt(
@@ -1298,6 +1299,7 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+        self._response_delivery_handler: Optional[ResponseDeliveryHandler] = None
         self._running = False
         self._fatal_error_code: Optional[str] = None
         self._fatal_error_message: Optional[str] = None
@@ -1542,9 +1544,29 @@ class BasePlatformAdapter(ABC):
         """
         self._message_handler = handler
 
+    def set_response_delivery_handler(self, handler: Optional[ResponseDeliveryHandler]) -> None:
+        """Set a callback invoked after the main text response is delivered."""
+        self._response_delivery_handler = handler
+
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
+
+    async def _notify_response_delivery(
+        self,
+        event: MessageEvent,
+        result: SendResult,
+        content: str,
+    ) -> None:
+        handler = self._response_delivery_handler
+        if handler is None or result is None or not getattr(result, "success", False):
+            return
+        try:
+            maybe = handler(event, result, content)
+            if inspect.isawaitable(maybe):
+                await maybe
+        except Exception:
+            logger.debug("[%s] response delivery handler failed", self.name, exc_info=True)
     
     def set_session_store(self, session_store: Any) -> None:
         """
@@ -3203,6 +3225,7 @@ class BasePlatformAdapter(ABC):
                         metadata=_thread_metadata,
                     )
                     _record_delivery(result)
+                    await self._notify_response_delivery(event, result, text_content)
 
                     # Schedule auto-deletion of system-notice replies.
                     # Detached so the handler returns immediately; errors

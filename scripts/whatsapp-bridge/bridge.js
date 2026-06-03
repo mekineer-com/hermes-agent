@@ -62,6 +62,7 @@ const KNOWN_CHATS_PATH = path.join(BRIDGE_STATE_DIR, 'known_chats.json');
 const KNOWN_CONTACTS_PATH = path.join(BRIDGE_STATE_DIR, 'known_contacts.json');
 const DISCOVERY_PROBE_LOG_PATH = path.join(BRIDGE_STATE_DIR, 'discovery_probe.log');
 const SYNC_EVENT_LOG_PATH = path.join(BRIDGE_STATE_DIR, 'sync_events.jsonl');
+const RECENTLY_SENT_IDS_PATH = path.join(BRIDGE_STATE_DIR, 'recently_sent_ids.json');
 
 function logSyncEvent(eventName, payload) {
   try {
@@ -91,6 +92,15 @@ const MAX_MESSAGE_LENGTH = parseInt(process.env.WHATSAPP_MAX_MESSAGE_LENGTH || '
 const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10);
 const SYNC_HISTORY_WINDOW_DAYS = parseFloat(process.env.WHATSAPP_SYNC_HISTORY_WINDOW_DAYS || '14');
 const DM_ALIAS_EVENT_TTL_MS = 5 * 60 * 1000;
+const RECENTLY_SENT_RETENTION_DAYS = parseFloat(process.env.WHATSAPP_RECENTLY_SENT_RETENTION_DAYS || '30');
+const RECENTLY_SENT_RETENTION_MS = Math.max(
+  24 * 60 * 60 * 1000,
+  (Number.isFinite(RECENTLY_SENT_RETENTION_DAYS) ? RECENTLY_SENT_RETENTION_DAYS : 30) * 24 * 60 * 60 * 1000,
+);
+const MAX_RECENT_IDS = Math.max(
+  1,
+  parseInt(process.env.WHATSAPP_MAX_RECENT_IDS || '500', 10) || 500,
+);
 // Per-call timeout for sock.sendMessage(). Baileys occasionally hangs forever
 // when uploading media to WhatsApp servers (and, less often, on text sends),
 // which pins the bridge's HTTP handler until the upstream aiohttp timeout
@@ -146,10 +156,15 @@ function splitLongMessage(message, maxLength = MAX_MESSAGE_LENGTH) {
 
 function trackSentMessageId(sent) {
   if (sent?.key?.id) {
-    recentlySentIds.add(sent.key.id);
+    const messageId = String(sent.key.id).trim();
+    recentlySentIds.add(messageId);
+    recentlySentAt.set(messageId, Date.now());
     if (recentlySentIds.size > MAX_RECENT_IDS) {
-      recentlySentIds.delete(recentlySentIds.values().next().value);
+      const oldest = recentlySentAt.keys().next().value;
+      recentlySentIds.delete(oldest);
+      recentlySentAt.delete(oldest);
     }
+    persistRecentlySentIds();
   }
 }
 
@@ -323,7 +338,7 @@ const durableQueue = new DurableQueue({
 
 // Track recently sent message IDs to prevent echo-back loops with media
 const recentlySentIds = new Set();
-const MAX_RECENT_IDS = 50;
+const recentlySentAt = new Map();
 const chatUnreadCounts = new Map();
 const lastInboundMessageByChat = new Map();
 const pushNameCache = new Map();
@@ -357,6 +372,46 @@ function _readJson(filePath) {
     return JSON.parse(readFileSync(filePath, 'utf8'));
   } catch {
     return null;
+  }
+}
+
+function persistRecentlySentIds() {
+  const nowMs = Date.now();
+  const cutoff = nowMs - RECENTLY_SENT_RETENTION_MS;
+  for (const [messageId, ts] of recentlySentAt) {
+    if (!recentlySentIds.has(messageId) || ts < cutoff) {
+      recentlySentIds.delete(messageId);
+      recentlySentAt.delete(messageId);
+    }
+  }
+  while (recentlySentAt.size > MAX_RECENT_IDS) {
+    const oldest = recentlySentAt.keys().next().value;
+    recentlySentIds.delete(oldest);
+    recentlySentAt.delete(oldest);
+  }
+  const ids = [...recentlySentAt.entries()]
+    .sort((a, b) => a[1] - b[1])
+    .map(([id, ts]) => ({ id, ts }));
+  try {
+    _atomicWriteJson(RECENTLY_SENT_IDS_PATH, {
+      updated_at: new Date().toISOString(),
+      ids,
+    });
+  } catch (err) {
+    logger.warn({ err }, 'failed to persist recently sent ids');
+  }
+}
+
+function loadRecentlySentIds() {
+  const data = _readJson(RECENTLY_SENT_IDS_PATH);
+  const rows = Array.isArray(data?.ids) ? data.ids : [];
+  const cutoff = Date.now() - RECENTLY_SENT_RETENTION_MS;
+  for (const row of rows) {
+    const id = String(row?.id || '').trim();
+    const ts = Number(row?.ts || 0);
+    if (!id || !Number.isFinite(ts) || ts < cutoff) continue;
+    recentlySentIds.add(id);
+    recentlySentAt.set(id, ts);
   }
 }
 
@@ -898,6 +953,7 @@ async function enqueueHistoryMessages(payload, surface) {
 }
 
 loadKnownState();
+loadRecentlySentIds();
 canonicalizeKnownStateWithLidMap();
 persistKnownChats();
 persistKnownContacts();

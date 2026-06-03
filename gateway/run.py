@@ -3585,6 +3585,8 @@ class GatewayRunner:
             
             # Set up message + fatal error handlers
             adapter.set_message_handler(self._handle_message)
+            if hasattr(adapter, "set_response_delivery_handler"):
+                adapter.set_response_delivery_handler(self._handle_response_delivery)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -4882,6 +4884,8 @@ class GatewayRunner:
                         continue
 
                     adapter.set_message_handler(self._handle_message)
+                    if hasattr(adapter, "set_response_delivery_handler"):
+                        adapter.set_response_delivery_handler(self._handle_response_delivery)
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -10113,6 +10117,30 @@ class GatewayRunner:
             logger.debug("Failed to resolve WhatsApp history soul config", exc_info=True)
             return {}
 
+    async def _handle_response_delivery(
+        self,
+        event: MessageEvent,
+        result: Any,
+        content: str,
+    ) -> None:
+        source = getattr(event, "source", None)
+        if not source or source.platform != Platform.WHATSAPP or not self._session_db:
+            return
+        message_id = str(getattr(result, "message_id", "") or "").strip()
+        chat_id = str(getattr(source, "chat_id", "") or "").strip()
+        if not message_id or not chat_id:
+            return
+        try:
+            session_entry = self.session_store.get_or_create_session(source)
+            self._session_db.stamp_latest_assistant_source_key(
+                session_id=session_entry.session_id,
+                source_chat_id=chat_id,
+                source_message_id=message_id,
+                content=content,
+            )
+        except Exception:
+            logger.debug("Failed to stamp WhatsApp delivered assistant source key", exc_info=True)
+
     def _persist_whatsapp_history_event(self, event: MessageEvent) -> None:
         if not self._session_db:
             raise RuntimeError("Cannot persist WhatsApp history without SessionDB")
@@ -10128,9 +10156,16 @@ class GatewayRunner:
             return
 
         message_timestamp = _coerce_gateway_timestamp(raw.get("timestamp"))
+        if message_timestamp is None:
+            logger.debug(
+                "Skipping WhatsApp history with missing/invalid timestamp chat=%s message=%s",
+                source_chat_id,
+                source_message_id,
+            )
+            return
         soul_cfg = self._resolve_whatsapp_history_soul(source)
         soul_id = str(soul_cfg.get("soul_id") or "").strip() if soul_cfg.get("enabled") else ""
-        if soul_id and message_timestamp is not None:
+        if soul_id:
             active_since = self._session_db.get_soul_active_since(soul_id)
             if active_since is not None and message_timestamp < active_since:
                 logger.debug(

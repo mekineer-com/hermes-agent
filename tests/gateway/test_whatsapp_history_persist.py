@@ -109,6 +109,64 @@ def test_whatsapp_history_respects_soul_active_since(tmp_path, monkeypatch):
     assert db.message_count() == 0
 
 
+def test_whatsapp_history_drops_missing_timestamp(tmp_path, monkeypatch):
+    runner, db = _runner(tmp_path, monkeypatch, active_since=1780230000)
+
+    runner._persist_whatsapp_history_event(
+        _event(text="missing ts", role_hint="user", timestamp=None)
+    )
+
+    assert db.message_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_response_delivery_stamps_assistant_source_key(tmp_path, monkeypatch):
+    runner, db = _runner(tmp_path, monkeypatch, active_since=1780160400)
+    event = _event(text="fresh user", role_hint="user", timestamp=1780233002)
+    session_entry = runner.session_store.get_or_create_session(event.source)
+    db.append_message(
+        session_entry.session_id,
+        role="assistant",
+        content="fresh answer",
+        sender_id="soul:Siri",
+        sender_name="Siri",
+    )
+
+    await runner._handle_response_delivery(
+        event,
+        SimpleNamespace(success=True, message_id="sent-wa-id"),
+        "fresh answer",
+    )
+
+    messages = db.get_messages(session_entry.session_id)
+    assert messages[-1]["source_chat_id"] == "15133278228@s.whatsapp.net"
+    assert messages[-1]["source_message_id"] == "sent-wa-id"
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_response_delivery_does_not_stamp_unmatched_assistant(tmp_path, monkeypatch):
+    runner, db = _runner(tmp_path, monkeypatch, active_since=1780160400)
+    event = _event(text="fresh user", role_hint="user", timestamp=1780233002)
+    session_entry = runner.session_store.get_or_create_session(event.source)
+    db.append_message(
+        session_entry.session_id,
+        role="assistant",
+        content="previous answer",
+        sender_id="soul:Siri",
+        sender_name="Siri",
+    )
+
+    await runner._handle_response_delivery(
+        event,
+        SimpleNamespace(success=True, message_id="command-reply-id"),
+        "New session started.",
+    )
+
+    messages = db.get_messages(session_entry.session_id)
+    assert messages[-1]["source_chat_id"] is None
+    assert messages[-1]["source_message_id"] is None
+
+
 @pytest.mark.asyncio
 async def test_whatsapp_persist_only_dispatch_marks_wal_only_after_success():
     from gateway.platforms.whatsapp import WhatsAppAdapter
