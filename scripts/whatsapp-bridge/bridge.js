@@ -652,22 +652,22 @@ function pruneRecentDmMessageCache(nowMs) {
 }
 
 function learnAliasFromMirroredDmMessage({ chatId, messageId, fromMe, isGroup }) {
-  if (isGroup) return;
+  if (isGroup) return { duplicate: false };
   const normalizedChatId = normalizeWhatsAppId(chatId);
   const id = String(messageId || '').trim();
-  if (!normalizedChatId || !id) return;
+  if (!normalizedChatId || !id) return { duplicate: false };
   const domain = extractJidDomain(normalizedChatId);
-  if (domain !== 'lid' && domain !== 's.whatsapp.net') return;
+  if (domain !== 'lid' && domain !== 's.whatsapp.net') return { duplicate: false };
 
   const nowMs = Date.now();
   pruneRecentDmMessageCache(nowMs);
   const key = `${fromMe ? '1' : '0'}:${id}`;
   const previous = recentDmMessageById.get(key);
   recentDmMessageById.set(key, { chatId: normalizedChatId, ts: nowMs });
-  if (!previous || previous.chatId === normalizedChatId) return;
+  if (!previous || previous.chatId === normalizedChatId) return { duplicate: false };
 
   const previousDomain = extractJidDomain(previous.chatId);
-  if (previousDomain === domain) return;
+  if (previousDomain === domain) return { duplicate: false };
 
   const lidLocal = domain === 'lid'
     ? extractJidLocal(normalizedChatId)
@@ -675,10 +675,11 @@ function learnAliasFromMirroredDmMessage({ chatId, messageId, fromMe, isGroup })
   const phoneLocal = domain === 's.whatsapp.net'
     ? extractJidLocal(normalizedChatId)
     : extractJidLocal(previous.chatId);
-  if (!lidLocal || !phoneLocal || lidLocal === phoneLocal) return;
-  if (String(lidToPhone[lidLocal] || '') === phoneLocal) return;
+  if (!lidLocal || !phoneLocal || lidLocal === phoneLocal) return { duplicate: false };
 
-  learnLidPhoneShare(`${lidLocal}@lid`, `${phoneLocal}@s.whatsapp.net`);
+  if (String(lidToPhone[lidLocal] || '') !== phoneLocal) {
+    learnLidPhoneShare(`${lidLocal}@lid`, `${phoneLocal}@s.whatsapp.net`);
+  }
   if (WHATSAPP_DEBUG) {
     console.log(JSON.stringify({
       event: 'discovery_alias_learned',
@@ -688,6 +689,7 @@ function learnAliasFromMirroredDmMessage({ chatId, messageId, fromMe, isGroup })
       phone: phoneLocal,
     }));
   }
+  return { duplicate: true, previousChatId: previous.chatId };
 }
 
 function resolveDmDisplayName(chatId, row) {
@@ -865,12 +867,24 @@ async function enqueueHistoryMessage(rawMsg, { chatFallback = '', surface = 'syn
   ) {
     chatId = participantId;
   }
-  learnAliasFromMirroredDmMessage({
+  const mirrorInfo = learnAliasFromMirroredDmMessage({
     chatId,
     messageId,
     fromMe: !!msg.key.fromMe,
     isGroup: chatId.endsWith('@g.us'),
   });
+  if (mirrorInfo?.duplicate) {
+    if (WHATSAPP_DEBUG) {
+      console.log(JSON.stringify({
+        event: 'ignored',
+        reason: 'mirrored_dm_history_duplicate',
+        chatId,
+        previousChatId: mirrorInfo.previousChatId,
+        messageId,
+      }));
+    }
+    return false;
+  }
 
   const ids = canonicalizeMessageIds({
     chatId,
