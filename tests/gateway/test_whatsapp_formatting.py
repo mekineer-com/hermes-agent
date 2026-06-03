@@ -367,53 +367,6 @@ class TestBridgeEventMetadata:
         assert event.source.chat_name == "18322935409-1579788049"
         assert event.raw_message["chatName"] == "18322935409-1579788049"
 
-    @pytest.mark.asyncio
-    async def test_fresh_chats_update_dm_remains_agent_triggering(self):
-        adapter = _make_adapter()
-        data = {
-            "messageId": "incoming-dm",
-            "chatId": "15551234567@s.whatsapp.net",
-            "senderId": "15551234567@s.whatsapp.net",
-            "senderName": "Tester",
-            "chatName": "Tester",
-            "isGroup": False,
-            "body": "hello siri",
-            "hasMedia": False,
-            "mediaUrls": [],
-            "sourceSurface": "chats.update",
-        }
-
-        event = await adapter._build_message_event(data)
-
-        assert event is not None
-        assert event.internal is False
-        assert "deliveryMode" not in event.raw_message
-        assert "triggerAgent" not in event.raw_message
-
-    @pytest.mark.asyncio
-    async def test_fresh_chats_update_group_non_trigger_stays_persist_only(self):
-        adapter = _make_adapter()
-        adapter.config.extra = {"require_mention": True}
-        data = {
-            "messageId": "incoming-group",
-            "chatId": "18322935409-1579788049@g.us",
-            "senderId": "18322935409@s.whatsapp.net",
-            "senderName": "Raquel",
-            "chatName": "Familia",
-            "isGroup": True,
-            "body": "ordinary group chatter",
-            "hasMedia": False,
-            "mediaUrls": [],
-            "sourceSurface": "chats.update",
-        }
-
-        event = await adapter._build_message_event(data)
-
-        assert event is not None
-        assert event.internal is True
-        assert event.raw_message["deliveryMode"] == "persist_only"
-        assert event.raw_message["triggerAgent"] is False
-
 
 # ---------------------------------------------------------------------------
 # display_config tier classification

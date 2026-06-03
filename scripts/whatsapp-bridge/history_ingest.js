@@ -41,25 +41,3 @@ export function canonicalizeMessageIds({
 export function isRecentlySentEcho({ fromMe = false, messageId = '' } = {}, recentlySentIds = new Set()) {
   return !!fromMe && !!String(messageId || '').trim() && recentlySentIds.has(messageId);
 }
-
-export function historyTimestampSeconds(value) {
-  if (value === undefined || value === null || value === '') return 0;
-  if (typeof value === 'object') {
-    if (Number.isFinite(Number(value.low))) return Number(value.low);
-    return 0;
-  }
-  const ts = Number(value);
-  if (!Number.isFinite(ts) || ts <= 0) return 0;
-  return ts > 10000000000 ? ts / 1000 : ts;
-}
-
-export function shouldTreatChatUpdateAsLive(value, {
-  nowSeconds = Date.now() / 1000,
-  liveWindowSeconds = 5 * 60,
-} = {}) {
-  const ts = historyTimestampSeconds(value);
-  if (!ts) return false;
-  const window = Number(liveWindowSeconds);
-  if (!Number.isFinite(window) || window <= 0) return false;
-  return Math.abs(Number(nowSeconds) - ts) <= window;
-}

@@ -33,13 +33,7 @@ import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { DurableQueue } from './durable_queue.js';
 import { buildMediaRetryCachePayload } from './media_retry_cache.js';
-import {
-  canonicalizeMessageIds,
-  historyMessageSources,
-  historyTimestampSeconds,
-  isRecentlySentEcho,
-  shouldTreatChatUpdateAsLive,
-} from './history_ingest.js';
+import { canonicalizeMessageIds, historyMessageSources, isRecentlySentEcho } from './history_ingest.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -97,7 +91,6 @@ const REPLY_PREFIX = HAS_CUSTOM_REPLY_PREFIX
 const MAX_MESSAGE_LENGTH = parseInt(process.env.WHATSAPP_MAX_MESSAGE_LENGTH || '4096', 10);
 const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10);
 const SYNC_HISTORY_WINDOW_DAYS = parseFloat(process.env.WHATSAPP_SYNC_HISTORY_WINDOW_DAYS || '14');
-const CHATS_UPDATE_LIVE_WINDOW_SECONDS = parseFloat(process.env.WHATSAPP_CHATS_UPDATE_LIVE_WINDOW_SECONDS || '300');
 const DM_ALIAS_EVENT_TTL_MS = 5 * 60 * 1000;
 const RECENTLY_SENT_RETENTION_DAYS = parseFloat(process.env.WHATSAPP_RECENTLY_SENT_RETENTION_DAYS || '30');
 const RECENTLY_SENT_RETENTION_MS = Math.max(
@@ -238,7 +231,14 @@ function getContextInfo(messageContent) {
 }
 
 function timestampSeconds(value) {
-  return historyTimestampSeconds(value);
+  if (value === undefined || value === null || value === '') return 0;
+  if (typeof value === 'object') {
+    if (Number.isFinite(Number(value.low))) return Number(value.low);
+    return 0;
+  }
+  const ts = Number(value);
+  if (!Number.isFinite(ts) || ts <= 0) return 0;
+  return ts > 10000000000 ? ts / 1000 : ts;
 }
 
 function syncTimestampAllowed(value) {
@@ -837,12 +837,6 @@ async function enqueueHistoryMessage(rawMsg, { chatFallback = '', surface = 'syn
 
   const timestamp = msg.messageTimestamp || msg.messageC2STimestamp || rawMsg?.messageTimestamp;
   if (!syncTimestampAllowed(timestamp)) return false;
-  const treatAsLive = (
-    surface === 'chats.update'
-    && shouldTreatChatUpdateAsLive(timestamp, {
-      liveWindowSeconds: CHATS_UPDATE_LIVE_WINDOW_SECONDS,
-    })
-  );
 
   const isGroup = chatId.endsWith('@g.us');
   const targetRevokeId = Array.isArray(msg.messageStubParameters)
@@ -934,6 +928,9 @@ async function enqueueHistoryMessage(rawMsg, { chatFallback = '', surface = 'syn
   });
 
   const event = {
+    eventType: 'history_message',
+    deliveryMode: 'persist_only',
+    triggerAgent: false,
     sourceSurface: surface,
     messageId,
     chatId,
@@ -956,11 +953,6 @@ async function enqueueHistoryMessage(rawMsg, { chatFallback = '', surface = 'syn
     speakerRoleHint,
     speakerNameHint,
   };
-  if (!treatAsLive || speakerRoleHint === 'assistant') {
-    event.eventType = 'history_message';
-    event.deliveryMode = 'persist_only';
-    event.triggerAgent = false;
-  }
   return durableQueue.enqueue(event);
 }
 
