@@ -289,7 +289,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
     def _effective_reply_prefix(self) -> str:
         """Return the prefix the Node bridge will add in self-chat mode."""
-        whatsapp_mode = os.getenv("WHATSAPP_MODE", "self-chat")
+        whatsapp_mode = self._whatsapp_mode()
         if whatsapp_mode != "self-chat":
             return ""
         if self._reply_prefix is not None:
@@ -313,6 +313,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 return configured.lower() in {"true", "1", "yes", "on"}
             return bool(configured)
         return os.getenv("WHATSAPP_REQUIRE_MENTION", "false").lower() in {"true", "1", "yes", "on"}
+
+    def _whatsapp_mode(self) -> str:
+        configured = str(self.config.extra.get("mode") or "").strip().lower()
+        if configured in {"bot", "self-chat"}:
+            return configured
+        return os.getenv("WHATSAPP_MODE", "self-chat")
 
     def _whatsapp_free_response_chats(self) -> set[str]:
         raw = self.config.extra.get("free_response_chats")
@@ -596,7 +602,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
             # Ensure session directory exists
             self._session_path.mkdir(parents=True, exist_ok=True)
-            whatsapp_mode = os.getenv("WHATSAPP_MODE", "self-chat")
+            whatsapp_mode = self._whatsapp_mode()
             
             # Check if bridge is already running and connected
             import aiohttp
