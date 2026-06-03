@@ -1566,6 +1566,7 @@ class TestSchemaInit:
         assert "sessions" in tables
         assert "messages" in tables
         assert "schema_version" in tables
+        assert "souls" in tables
 
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
