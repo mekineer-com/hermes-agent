@@ -7979,6 +7979,7 @@ class GatewayRunner:
             _sender_name = str(_raw_message.get("senderName") or "").strip() or None
             _source_message_id = str(_raw_message.get("messageId") or "").strip() or None
             _source_chat_id = str(_raw_message.get("chatId") or "").strip() or None
+            _message_timestamp = _coerce_gateway_timestamp(_raw_message.get("timestamp"))
             _user_sender_fields = (
                 {"sender_id": _sender_id, "sender_name": _sender_name}
                 if source.platform == Platform.WHATSAPP and (_sender_id or _sender_name)
@@ -7988,6 +7989,11 @@ class GatewayRunner:
                 {"source_message_id": _source_message_id, "source_chat_id": _source_chat_id}
                 if source.platform == Platform.WHATSAPP and _source_message_id and _source_chat_id
                 else {}
+            )
+            _user_timestamp_fields = (
+                {"timestamp": _message_timestamp}
+                if source.platform == Platform.WHATSAPP and _message_timestamp is not None
+                else {"timestamp": ts}
             )
             
             # If this is a fresh session (no history), write the full tool
@@ -8024,7 +8030,7 @@ class GatewayRunner:
                     {
                         "role": "user",
                         "content": message_text,
-                        "timestamp": ts,
+                        **_user_timestamp_fields,
                         **_user_sender_fields,
                         **_user_source_fields,
                     },
@@ -8040,7 +8046,7 @@ class GatewayRunner:
                         {
                             "role": "user",
                             "content": message_text,
-                            "timestamp": ts,
+                            **_user_timestamp_fields,
                             **_user_sender_fields,
                             **_user_source_fields,
                         }
@@ -8061,7 +8067,9 @@ class GatewayRunner:
                         if msg.get("role") == "system":
                             continue
                         # Add timestamp to each message for debugging
-                        entry = {**msg, "timestamp": ts}
+                        entry = {**msg}
+                        if "timestamp" not in entry:
+                            entry["timestamp"] = ts
                         self.session_store.append_to_transcript(
                             session_entry.session_id, entry,
                             skip_db=agent_persisted,
@@ -12025,6 +12033,7 @@ class GatewayRunner:
                     tool_name=msg.get("tool_name") or msg.get("name"),
                     tool_calls=msg.get("tool_calls"),
                     tool_call_id=msg.get("tool_call_id"),
+                    timestamp=msg.get("timestamp"),
                     finish_reason=msg.get("finish_reason"),
                     reasoning=msg.get("reasoning"),
                     reasoning_content=msg.get("reasoning_content"),
@@ -14229,6 +14238,7 @@ class GatewayRunner:
         agent._gateway_message_sender_name = None
         agent._gateway_source_message_id = None
         agent._gateway_source_chat_id = None
+        agent._gateway_message_timestamp = None
 
     def _release_evicted_agent_soft(self, agent: Any) -> None:
         """Soft cleanup for cache-evicted agents — preserves session tool state.
@@ -15867,13 +15877,15 @@ class GatewayRunner:
             )
             if source.platform == Platform.WHATSAPP:
                 _sender_id = str(_event_raw.get("senderId") or "").strip()
-                _sender_name = str(_event_raw.get("senderName") or "").strip()
-                _source_message_id = str(_event_raw.get("messageId") or "").strip()
-                _source_chat_id = str(_event_raw.get("chatId") or "").strip()
-                agent._gateway_message_sender_id = _sender_id or None
-                agent._gateway_message_sender_name = _sender_name or None
-                agent._gateway_source_message_id = _source_message_id or None
-                agent._gateway_source_chat_id = _source_chat_id or None
+            _sender_name = str(_event_raw.get("senderName") or "").strip()
+            _source_message_id = str(_event_raw.get("messageId") or "").strip()
+            _source_chat_id = str(_event_raw.get("chatId") or "").strip()
+            _message_timestamp = _coerce_gateway_timestamp(_event_raw.get("timestamp"))
+            agent._gateway_message_sender_id = _sender_id or None
+            agent._gateway_message_sender_name = _sender_name or None
+            agent._gateway_source_message_id = _source_message_id or None
+            agent._gateway_source_chat_id = _source_chat_id or None
+            agent._gateway_message_timestamp = _message_timestamp
 
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
