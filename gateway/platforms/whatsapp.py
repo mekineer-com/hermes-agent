@@ -983,12 +983,19 @@ class WhatsAppAdapter(BasePlatformAdapter):
             and not self._web_source_pairing_headful
         ):
             logger.info("[%s] WhatsApp web-source needs pairing; opening Chromium window", self.name)
-            self._stop_web_source()
+            if not self._stop_web_source():
+                self._web_source_error = (
+                    "WhatsApp web-source could not stop cleanly before opening pairing window"
+                )
+                logger.warning("[%s] %s", self.name, self._web_source_error)
+                self._write_whatsapp_runtime_status(force=True)
+                return
             self._web_source_pairing_headful = True
             self._start_web_source()
 
-    def _stop_web_source(self) -> None:
+    def _stop_web_source(self) -> bool:
         proc = self._web_source_process
+        stopped = True
         if proc and proc.poll() is None:
             try:
                 _terminate_bridge_process(proc, force=False)
@@ -997,16 +1004,21 @@ class WhatsAppAdapter(BasePlatformAdapter):
             except Exception:
                 try:
                     _terminate_bridge_process(proc, force=True)
+                    if proc.poll() is None:
+                        proc.wait(timeout=2)
                 except Exception:
                     pass
-        self._web_source_process = None
-        self._web_source_intentionally_stopped = True
-        if self._web_source_log_fh:
+            stopped = proc.poll() is not None
+        if stopped:
+            self._web_source_process = None
+        self._web_source_intentionally_stopped = stopped
+        if stopped and self._web_source_log_fh:
             try:
                 self._web_source_log_fh.close()
             except Exception:
                 pass
             self._web_source_log_fh = None
+        return stopped
 
     async def _check_managed_bridge_exit(self) -> Optional[str]:
         """Return a fatal error message if the managed bridge child exited."""

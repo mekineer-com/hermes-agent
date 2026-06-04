@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import subprocess
+
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 from gateway.platforms.whatsapp import WhatsAppAdapter
 from gateway.status import read_runtime_status
@@ -84,7 +86,19 @@ def test_whatsapp_web_source_pairing_restarts_headful(tmp_path, monkeypatch):
     script.write_text("'use strict';\n", encoding="utf-8")
     (tmp_path / "node_modules").mkdir()
     status_path = tmp_path / "source-status.json"
-    proc1 = SimpleNamespace(pid=1, poll=lambda: None, wait=lambda timeout=None: None)
+
+    class ExitingProcess:
+        pid = 1
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.returncode = 0
+            return self.returncode
+
+    proc1 = ExitingProcess()
     proc2 = SimpleNamespace(pid=2, poll=lambda: None)
     adapter = WhatsAppAdapter(
         PlatformConfig(
@@ -110,6 +124,51 @@ def test_whatsapp_web_source_pairing_restarts_headful(tmp_path, monkeypatch):
     assert adapter._web_source_pairing_headful is True
     assert "--headful" not in popen.call_args_list[0].args[0]
     assert "--headful" in popen.call_args_list[1].args[0]
+
+
+def test_whatsapp_web_source_pairing_does_not_duplicate_when_stop_fails(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    script = tmp_path / "source-daemon.js"
+    script.write_text("'use strict';\n", encoding="utf-8")
+    (tmp_path / "node_modules").mkdir()
+    status_path = tmp_path / "source-status.json"
+
+    class StubbornProcess:
+        pid = 1
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired("node", timeout)
+
+    adapter = WhatsAppAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "web_source_enabled": True,
+                "web_source_script": str(script),
+                "web_source_status": str(status_path),
+                "web_source_auth": str(tmp_path / "auth"),
+            },
+        )
+    )
+    adapter._running = True
+    adapter._http_session = object()
+    adapter._bridge_health = {"status": "connected", "mode": "bot"}
+
+    with patch("subprocess.Popen", return_value=StubbornProcess()) as popen, \
+         patch("gateway.platforms.whatsapp._terminate_bridge_process"):
+        assert adapter._start_web_source() is True
+        status_path.write_text('{"state":"pairing"}', encoding="utf-8")
+        adapter._check_web_source_exit()
+
+    assert popen.call_count == 1
+    assert adapter._web_source_pairing_headful is False
+    assert adapter._web_source_process is not None
+    assert "could not stop cleanly" in adapter._web_source_error
+    whatsapp = read_runtime_status()["platforms"]["whatsapp"]
+    assert whatsapp["web_source"]["state"] == "degraded"
 
 
 def test_whatsapp_web_source_missing_script_marks_degraded(tmp_path, monkeypatch):
