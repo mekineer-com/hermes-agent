@@ -125,6 +125,12 @@ def init_schema(con: sqlite3.Connection) -> None:
           reason text,
           updated_at integer not null
         );
+
+        create table if not exists whatsapp_metadata (
+          key text primary key,
+          value text not null,
+          updated_at integer not null
+        );
         """
     )
     con.commit()
@@ -253,6 +259,32 @@ def update_ack(con: sqlite3.Connection, row: dict[str, Any]) -> dict[str, Any]:
     return {"status": "ok", "action": "ack", "msg_key": msg_key, "matched": cur.rowcount}
 
 
+def get_metadata(con: sqlite3.Connection, key: str) -> dict[str, Any]:
+    row = con.execute(
+        "select value, updated_at from whatsapp_metadata where key = ?",
+        (key,),
+    ).fetchone()
+    if row is None:
+        return {"status": "ok", "value": None, "updated_at": None}
+    return {"status": "ok", "value": row["value"], "updated_at": row["updated_at"]}
+
+
+def set_metadata(con: sqlite3.Connection, key: str, value: str) -> dict[str, Any]:
+    ts = now()
+    con.execute(
+        """
+        insert into whatsapp_metadata (key, value, updated_at)
+        values (?, ?, ?)
+        on conflict(key) do update set
+          value=excluded.value,
+          updated_at=excluded.updated_at
+        """,
+        (key, value, ts),
+    )
+    con.commit()
+    return {"status": "ok", "action": "set_metadata", "key": key}
+
+
 def upsert_chat(con: sqlite3.Connection, row: dict[str, Any]) -> dict[str, Any]:
     ts = now()
     con.execute(
@@ -330,6 +362,10 @@ def handle(con: sqlite3.Connection, command: dict[str, Any]) -> dict[str, Any]:
         return mark_revoked(con, command["row"])
     if op == "update_ack":
         return update_ack(con, command["row"])
+    if op == "get_metadata":
+        return get_metadata(con, str(command["key"]))
+    if op == "set_metadata":
+        return set_metadata(con, str(command["key"]), str(command["value"]))
     if op == "upsert_chat":
         return upsert_chat(con, command["row"])
     if op == "upsert_contact":

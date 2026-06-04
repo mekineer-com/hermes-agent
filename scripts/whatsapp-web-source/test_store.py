@@ -136,6 +136,15 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(got["ack"], 2)
         self.assertEqual(got["revoked"], 1)
 
+    def test_metadata_round_trip(self):
+        self.assertIsNone(store.get_metadata(self.con, "backfill:k")["value"])
+
+        store.set_metadata(self.con, "backfill:k", "1")
+        got = store.get_metadata(self.con, "backfill:k")
+
+        self.assertEqual(got["value"], "1")
+        self.assertIsInstance(got["updated_at"], int)
+
     def test_contact_upsert_keeps_existing_names_when_later_snapshot_is_sparse(self):
         store.upsert_contact(
             self.con,

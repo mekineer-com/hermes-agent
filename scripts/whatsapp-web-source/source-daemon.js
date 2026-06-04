@@ -501,6 +501,10 @@ async function main() {
     return oldest;
   }
 
+  function backfillMetadataKey(chatId, since) {
+    return `backfill_complete:${since}:${backfillLimit}:${chatId}`;
+  }
+
   async function backfillChatMessages(chat, chatId, since) {
     await store.command('upsert_chat', { row: normalizeChat(chat) });
     const messages = await chat.fetchMessages({ limit: backfillLimit });
@@ -508,6 +512,18 @@ async function main() {
     const oldest = oldestMessageTimestamp(messages);
     const incomplete = since > 0 && messages.length >= backfillLimit && oldest !== null && oldest >= since;
     return { ...result, fetched: messages.length, chatId, incomplete };
+  }
+
+  async function backfillChatAlreadyComplete(chatId, since) {
+    const result = await store.command('get_metadata', { key: backfillMetadataKey(chatId, since) });
+    return result.value === '1';
+  }
+
+  async function markBackfillChatComplete(chatId, since) {
+    await store.command('set_metadata', {
+      key: backfillMetadataKey(chatId, since),
+      value: '1',
+    });
   }
 
   async function backfillChatsSince(since) {
@@ -525,12 +541,17 @@ async function main() {
     let inserted = 0;
     let updated = 0;
     let skippedBeforeSince = 0;
+    let skippedAlreadyComplete = 0;
     const incompleteChatIds = [];
     for (const chat of chats) {
       const chatId = idSerialized(chat.id);
       if (!isConversationChatId(chatId)) continue;
       scannedChats += 1;
       try {
+        if (await backfillChatAlreadyComplete(chatId, since)) {
+          skippedAlreadyComplete += 1;
+          continue;
+        }
         const result = await backfillChatMessages(chat, chatId, since);
         fetched += result.fetched;
         inserted += result.inserted;
@@ -538,11 +559,21 @@ async function main() {
         skippedBeforeSince += result.skippedBeforeSince;
         if (result.inserted || result.updated) backfilledChats += 1;
         if (result.incomplete) incompleteChatIds.push(chatId);
+        else await markBackfillChatComplete(chatId, since);
       } catch (error) {
         console.error(`backfill ${chatId} failed:`, error);
       }
     }
-    return { scannedChats, backfilledChats, fetched, inserted, updated, skippedBeforeSince, incompleteChatIds };
+    return {
+      scannedChats,
+      backfilledChats,
+      fetched,
+      inserted,
+      updated,
+      skippedBeforeSince,
+      skippedAlreadyComplete,
+      incompleteChatIds,
+    };
   }
 
   function persistFailed(label, error) {
@@ -617,6 +648,7 @@ async function main() {
           last_backfill_inserted: result.inserted,
           last_backfill_updated: result.updated,
           last_backfill_skipped_before_since: result.skippedBeforeSince,
+          last_backfill_skipped_already_complete: result.skippedAlreadyComplete,
         };
         if (result.incompleteChatIds.length > 0) {
           backfillStatus.state = 'degraded';
