@@ -39,6 +39,8 @@ def test_resolve_soul_mode_agent_config_reads_main_agent():
                     "memu_base_url": "http://127.0.0.1:8099",
                     "use_memu_turn": True,
                     "timeout_seconds": 12,
+                    # WhatsApp history source is owned by mcp-memu-server.
+                    # Legacy Hermes-side keys are ignored if still present.
                     "whatsapp_history_source": "web_source",
                     "whatsapp_web_source_db": "/tmp/web_source.db",
                     "whatsapp_history_limit": 42,
@@ -52,9 +54,9 @@ def test_resolve_soul_mode_agent_config_reads_main_agent():
     assert out["soul_id"] == "Echo"
     assert out["user_id"] == "marcos"
     assert out["timeout_seconds"] == 12.0
-    assert out["whatsapp_history_source"] == "web_source"
-    assert out["whatsapp_web_source_db"] == "/tmp/web_source.db"
-    assert out["whatsapp_history_limit"] == 42
+    assert "whatsapp_history_source" not in out
+    assert "whatsapp_web_source_db" not in out
+    assert "whatsapp_history_limit" not in out
     assert out["whatsapp_reply_prefix"] == "✦ *Echo*: "
 
 
