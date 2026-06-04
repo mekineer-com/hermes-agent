@@ -77,3 +77,6 @@ docs/superpowers/*
 gateway*.log
 nohup.out
 scripts/*/nohup.out
+
+# WhatsApp Web source runtime cache
+scripts/whatsapp-web-source/.wwebjs_cache/

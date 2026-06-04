@@ -7742,6 +7742,11 @@ class GatewayRunner:
                 session_key=session_key,
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
+                event_raw_message=(
+                    event.raw_message
+                    if isinstance(getattr(event, "raw_message", None), dict)
+                    else None
+                ),
                 channel_prompt=event.channel_prompt,
             )
 
@@ -14821,6 +14826,7 @@ class GatewayRunner:
         run_generation: Optional[int] = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
+        event_raw_message: Optional[Dict[str, Any]] = None,
         channel_prompt: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
@@ -15989,8 +15995,8 @@ class GatewayRunner:
                     message = _srn + "\n\n" + message
 
             _event_raw = (
-                event.raw_message
-                if isinstance(getattr(event, "raw_message", None), dict)
+                event_raw_message
+                if isinstance(event_raw_message, dict)
                 else {}
             )
             _sender_id = ""
@@ -16767,6 +16773,11 @@ class GatewayRunner:
                     run_generation=run_generation,
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
+                    event_raw_message=(
+                        pending_event.raw_message
+                        if isinstance(getattr(pending_event, "raw_message", None), dict)
+                        else None
+                    ),
                     channel_prompt=next_channel_prompt,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
