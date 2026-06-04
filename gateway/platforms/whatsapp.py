@@ -295,7 +295,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         whatsapp_home = get_hermes_home() / "whatsapp"
         self._web_source_enabled = _coerce_bool(
             config.extra.get("web_source_enabled", os.getenv("WHATSAPP_WEB_SOURCE_ENABLED")),
-            False,
+            True,
         )
         self._web_source_script = _expand_user_path(
             config.extra.get("web_source_script", self._DEFAULT_WEB_SOURCE_DIR / "source-daemon.js")
@@ -321,6 +321,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._web_source_user_agent = config.extra.get("web_source_user_agent")
         self._web_source_chromium_path = str(config.extra.get("web_source_chromium_path") or "").strip()
         self._web_source_headful = _coerce_bool(config.extra.get("web_source_headful"), False)
+        self._web_source_pairing_headful = False
         self._web_source_process: Optional[subprocess.Popen] = None
         self._web_source_log_fh = None
         self._web_source_log: Optional[Path] = None
@@ -837,7 +838,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             command.append("--no-contact-snapshot")
         if self._web_source_user_agent:
             command.extend(["--user-agent", str(self._web_source_user_agent)])
-        if self._web_source_headful:
+        if self._web_source_headful or self._web_source_pairing_headful:
             command.append("--headful")
         return command
 
@@ -974,6 +975,17 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return
         if self._web_source_process.poll() is not None:
             self._write_whatsapp_runtime_status(force=True)
+            return
+        status = self._read_web_source_status()
+        if (
+            status.get("state") == "pairing"
+            and not self._web_source_headful
+            and not self._web_source_pairing_headful
+        ):
+            logger.info("[%s] WhatsApp web-source needs pairing; opening Chromium window", self.name)
+            self._stop_web_source()
+            self._web_source_pairing_headful = True
+            self._start_web_source()
 
     def _stop_web_source(self) -> None:
         proc = self._web_source_process
