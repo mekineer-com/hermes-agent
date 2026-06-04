@@ -509,6 +509,7 @@ def write_runtime_status(
     active_agents: Any = _UNSET,
     platform: Any = _UNSET,
     platform_state: Any = _UNSET,
+    platform_details: Any = _UNSET,
     error_code: Any = _UNSET,
     error_message: Any = _UNSET,
 ) -> None:
@@ -536,6 +537,11 @@ def write_runtime_status(
         platform_payload = payload["platforms"].get(platform, {})
         if platform_state is not _UNSET:
             platform_payload["state"] = platform_state
+        if platform_details is not _UNSET:
+            if isinstance(platform_details, dict):
+                platform_payload.update(platform_details)
+            else:
+                platform_payload["details"] = platform_details
         if error_code is not _UNSET:
             platform_payload["error_code"] = error_code
         if error_message is not _UNSET:

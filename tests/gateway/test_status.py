@@ -330,6 +330,24 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["telegram"]["error_code"] == "telegram_polling_conflict"
         assert payload["platforms"]["telegram"]["error_message"] == "another poller is active"
 
+    def test_write_runtime_status_merges_platform_details(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            platform="whatsapp",
+            platform_state="degraded",
+            platform_details={
+                "bridge": {"state": "ready", "mode": "bot"},
+                "web_source": {"state": "degraded", "error": "exited"},
+            },
+        )
+
+        payload = status.read_runtime_status()
+        whatsapp = payload["platforms"]["whatsapp"]
+        assert whatsapp["state"] == "degraded"
+        assert whatsapp["bridge"] == {"state": "ready", "mode": "bot"}
+        assert whatsapp["web_source"] == {"state": "degraded", "error": "exited"}
+
     def test_write_runtime_status_explicit_none_clears_stale_fields(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 

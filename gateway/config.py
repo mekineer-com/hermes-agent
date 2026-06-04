@@ -817,6 +817,24 @@ def load_gateway_config() -> GatewayConfig:
                     )
                 if "reply_prefix" in platform_cfg:
                     bridged["reply_prefix"] = platform_cfg["reply_prefix"]
+                for key in (
+                    "bridge_port",
+                    "bridge_script",
+                    "session_path",
+                    "web_source_enabled",
+                    "web_source_script",
+                    "web_source_db",
+                    "web_source_status",
+                    "web_source_auth",
+                    "web_source_client_id",
+                    "web_source_backfill_limit",
+                    "web_source_contact_snapshot_interval",
+                    "web_source_contact_snapshot",
+                    "web_source_user_agent",
+                    "web_source_headful",
+                ):
+                    if key in platform_cfg:
+                        bridged[key] = platform_cfg[key]
                 if "reply_in_thread" in platform_cfg:
                     bridged["reply_in_thread"] = platform_cfg["reply_in_thread"]
                 if "require_mention" in platform_cfg:
