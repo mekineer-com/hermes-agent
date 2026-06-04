@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
+import sqlite3
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.memu_client import MemuClientError, MemuHttpClient
@@ -26,6 +30,9 @@ class SoulModeConfig:
     memu_base_url: str = "http://127.0.0.1:8099"
     use_memu_turn: bool = True
     timeout_seconds: float = 90.0
+    whatsapp_history_source: str = "state_db"
+    whatsapp_web_source_db: str = "~/.hermes/whatsapp/web_source.db"
+    whatsapp_history_limit: int = 250
     _client: MemuHttpClient | None = field(default=None, repr=False)
     _session_started: bool = field(default=False, repr=False)
 
@@ -78,6 +85,9 @@ def resolve_agent_config(user_config: dict | None, session_key: str) -> dict[str
         "memu_base_url": "http://127.0.0.1:8099",
         "use_memu_turn": True,
         "timeout_seconds": 90.0,
+        "whatsapp_history_source": "state_db",
+        "whatsapp_web_source_db": "~/.hermes/whatsapp/web_source.db",
+        "whatsapp_history_limit": 250,
     }
     cfg = user_config if isinstance(user_config, dict) else {}
     soul_mode = cfg.get("soul_mode")
@@ -116,6 +126,17 @@ def resolve_agent_config(user_config: dict | None, session_key: str) -> dict[str
         out["timeout_seconds"] = float(agent_cfg.get("timeout_seconds", 90.0))
     except (TypeError, ValueError):
         out["timeout_seconds"] = 90.0
+    history_source = str(agent_cfg.get("whatsapp_history_source") or "state_db").strip().lower()
+    if history_source not in {"state_db", "web_source"}:
+        history_source = "state_db"
+    out["whatsapp_history_source"] = history_source
+    web_source_db = str(agent_cfg.get("whatsapp_web_source_db") or "").strip()
+    if web_source_db:
+        out["whatsapp_web_source_db"] = web_source_db
+    try:
+        out["whatsapp_history_limit"] = max(int(agent_cfg.get("whatsapp_history_limit", 250)), 1)
+    except (TypeError, ValueError):
+        out["whatsapp_history_limit"] = 250
     return out
 
 
@@ -128,12 +149,22 @@ def configure(
     memu_base_url: str = "http://127.0.0.1:8099",
     use_memu_turn: bool = True,
     timeout_seconds: float = 90.0,
+    whatsapp_history_source: str = "state_db",
+    whatsapp_web_source_db: str = "~/.hermes/whatsapp/web_source.db",
+    whatsapp_history_limit: int = 250,
 ) -> SoulModeConfig:
     role_norm = str(role or "standard").strip().lower()
     try:
         timeout = float(timeout_seconds)
     except (TypeError, ValueError):
         timeout = 90.0
+    history_source = str(whatsapp_history_source or "state_db").strip().lower()
+    if history_source not in {"state_db", "web_source"}:
+        history_source = "state_db"
+    try:
+        history_limit = max(int(whatsapp_history_limit), 1)
+    except (TypeError, ValueError):
+        history_limit = 250
     return SoulModeConfig(
         enabled=bool(enabled),
         role="soul" if role_norm == "soul" else "standard",
@@ -142,6 +173,9 @@ def configure(
         memu_base_url=str(memu_base_url or "http://127.0.0.1:8099").strip(),
         use_memu_turn=bool(use_memu_turn),
         timeout_seconds=timeout,
+        whatsapp_history_source=history_source,
+        whatsapp_web_source_db=str(whatsapp_web_source_db or "~/.hermes/whatsapp/web_source.db").strip(),
+        whatsapp_history_limit=history_limit,
     )
 
 
@@ -214,7 +248,178 @@ def coerce_message_text(user_message: Any) -> str:
     return str(user_message or "").strip()
 
 
-def _load_history(agent: Any, conversation_history: List[Dict[str, Any]] | None) -> list[dict[str, Any]]:
+def _expand_path(value: str) -> Path:
+    return Path(os.path.expandvars(os.path.expanduser(str(value or "")))).resolve()
+
+
+def _jid_local(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    return re.sub(r":.*@", "@", raw).split("@", 1)[0]
+
+
+def _strip_soul_prefix(body: str, soul_id: str) -> tuple[bool, str]:
+    text = str(body or "")
+    soul = str(soul_id or "").strip()
+    if not soul:
+        return False, text
+    escaped = re.escape(soul)
+    patterns = [
+        rf"^\s*(?:✦\s*)?\*{{0,2}}{escaped}\*{{0,2}}\s*:\s*",
+        rf"^\s*\[{escaped}\]\s*",
+    ]
+    for pattern in patterns:
+        match = re.match(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return True, text[match.end():].strip()
+    return False, text
+
+
+def _contact_name(row: sqlite3.Row, prefix: str) -> str:
+    for suffix in ("short_name", "name", "push_name", "verified_name"):
+        value = row[f"{prefix}_{suffix}"] if f"{prefix}_{suffix}" in row.keys() else None
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _web_source_row_to_history(row: sqlite3.Row, *, soul_id: str, fallback_user_name: str) -> dict[str, Any] | None:
+    body = str(row["body"] or "").strip()
+    if not body:
+        return None
+
+    from_me = bool(row["from_me"])
+    is_soul, stripped = _strip_soul_prefix(body, soul_id)
+    if from_me and is_soul:
+        role = "assistant"
+        content = stripped or body
+        sender_id = f"soul:{soul_id}" if soul_id else None
+        sender_name = soul_id or None
+    else:
+        role = "user"
+        content = body
+        sender_id = row["author_id"] or row["from_id"] or None
+        sender_name = ""
+        if row["author_id"]:
+            sender_name = _contact_name(row, "author")
+        if not sender_name and row["from_id"]:
+            sender_name = _contact_name(row, "from")
+        if not sender_name and from_me:
+            sender_name = str(fallback_user_name or "").strip()
+        sender_name = sender_name or None
+
+    return {
+        "role": role,
+        "content": content,
+        "timestamp": float(row["timestamp"]),
+        "sender_id": sender_id,
+        "sender_name": sender_name,
+        "source_chat_id": row["chat_id"],
+        "source_message_id": row["msg_key"],
+    }
+
+
+def _load_whatsapp_web_source_history(
+    agent: Any,
+    config: SoulModeConfig,
+    *,
+    active_since: float | None,
+    current_source_message_id: str,
+) -> list[dict[str, Any]]:
+    db_path = _expand_path(config.whatsapp_web_source_db)
+    if not db_path.exists():
+        raise FileNotFoundError(str(db_path))
+
+    chat_id = str(getattr(agent, "_chat_id", "") or "").strip()
+    chat_local_id = _jid_local(chat_id)
+    if not chat_id and not chat_local_id:
+        return []
+
+    limit = max(int(config.whatsapp_history_limit or 250), 1)
+    where = [
+        "m.revoked = 0",
+        "m.body IS NOT NULL",
+        "trim(m.body) != ''",
+        "(m.chat_id = ? OR m.chat_local_id = ?)",
+    ]
+    params: list[Any] = [chat_id, chat_local_id]
+    if active_since is not None:
+        where.append("m.timestamp >= ?")
+        params.append(float(active_since))
+    current_key = str(current_source_message_id or "").strip()
+    if current_key:
+        where.append("m.msg_key != ?")
+        params.append(current_key)
+        # Baileys often exposes the inner WhatsApp id while whatsapp-web.js
+        # stores a composite msg_key. Exclude both forms for the current turn.
+        where.append("m.msg_key NOT LIKE ?")
+        params.append(f"%{current_key}%")
+    params.append(limit)
+
+    sql = f"""
+        SELECT *
+        FROM (
+          SELECT
+            m.msg_key, m.chat_id, m.from_me, m.timestamp, m.body,
+            m.author_id, m.from_id,
+            ca.name AS author_name, ca.short_name AS author_short_name,
+            ca.push_name AS author_push_name, ca.verified_name AS author_verified_name,
+            cf.name AS from_name, cf.short_name AS from_short_name,
+            cf.push_name AS from_push_name, cf.verified_name AS from_verified_name
+          FROM whatsapp_messages m
+          LEFT JOIN whatsapp_contacts ca ON ca.contact_id = m.author_id
+          LEFT JOIN whatsapp_contacts cf ON cf.contact_id = m.from_id
+          WHERE {" AND ".join(where)}
+          ORDER BY m.timestamp DESC, m.msg_key DESC
+          LIMIT ?
+        )
+        ORDER BY timestamp ASC, msg_key ASC
+    """
+
+    con = sqlite3.connect(str(db_path))
+    con.row_factory = sqlite3.Row
+    try:
+        rows = con.execute(sql, params).fetchall()
+    finally:
+        con.close()
+
+    history: list[dict[str, Any]] = []
+    for row in rows:
+        item = _web_source_row_to_history(
+            row,
+            soul_id=config.soul_id,
+            fallback_user_name=str(getattr(agent, "_user_name", "") or ""),
+        )
+        if item is not None:
+            history.append(item)
+    return history
+
+
+def _load_history(
+    agent: Any,
+    conversation_history: List[Dict[str, Any]] | None,
+    config: SoulModeConfig,
+) -> list[dict[str, Any]]:
+    platform = str(getattr(agent, "platform", "") or "").strip().lower()
+    db = getattr(agent, "_session_db", None)
+    active_since: float | None = None
+    if db and config.soul_id:
+        active_since = db.get_soul_active_since(config.soul_id)
+
+    if platform == "whatsapp" and config.whatsapp_history_source == "web_source":
+        try:
+            history = _load_whatsapp_web_source_history(
+                agent,
+                config,
+                active_since=active_since,
+                current_source_message_id=str(getattr(agent, "_gateway_source_message_id", "") or ""),
+            )
+            if history:
+                return history
+        except Exception:
+            logger.debug("memU: failed to load WhatsApp web-source history", exc_info=True)
+
     db = getattr(agent, "_session_db", None)
     if db and agent.session_id:
         try:
@@ -400,7 +605,7 @@ def handle_turn(
             canonical_whatsapp_fn=canonical_whatsapp_identifier,
         )
 
-        history = _load_history(agent, conversation_history)
+        history = _load_history(agent, conversation_history, config)
         memu_message = coerce_message_text(user_message)
         if not memu_message:
             raise MemuClientError("memU turn requires non-empty user message")

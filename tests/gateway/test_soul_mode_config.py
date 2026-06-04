@@ -36,6 +36,9 @@ def test_resolve_soul_mode_agent_config_reads_main_agent():
                     "memu_base_url": "http://127.0.0.1:8099",
                     "use_memu_turn": True,
                     "timeout_seconds": 12,
+                    "whatsapp_history_source": "web_source",
+                    "whatsapp_web_source_db": "/tmp/web_source.db",
+                    "whatsapp_history_limit": 42,
                 }
             }
         }
@@ -46,6 +49,9 @@ def test_resolve_soul_mode_agent_config_reads_main_agent():
     assert out["soul_id"] == "Echo"
     assert out["user_id"] == "marcos"
     assert out["timeout_seconds"] == 12.0
+    assert out["whatsapp_history_source"] == "web_source"
+    assert out["whatsapp_web_source_db"] == "/tmp/web_source.db"
+    assert out["whatsapp_history_limit"] == 42
 
 
 def test_resolve_soul_mode_agent_config_is_explicit_per_agent():
