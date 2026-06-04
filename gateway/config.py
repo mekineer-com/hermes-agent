@@ -831,6 +831,7 @@ def load_gateway_config() -> GatewayConfig:
                     "web_source_contact_snapshot_interval",
                     "web_source_contact_snapshot",
                     "web_source_user_agent",
+                    "web_source_chromium_path",
                     "web_source_headful",
                 ):
                     if key in platform_cfg:

@@ -350,6 +350,7 @@ async function main() {
   const contactSnapshotEnabled = args['no-contact-snapshot'] !== true;
   const contactSnapshotInterval = Math.max(parseInt(args['contact-snapshot-interval'] || '900', 10) || 0, 0);
   const exitAfterBackfill = Boolean(args['exit-after-backfill']);
+  const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
   const userAgent = args['user-agent'] ? String(args['user-agent']) : defaultUserAgent();
   const headless = args.headful ? false : true;
   let wwebjsReady = false;
@@ -376,6 +377,7 @@ async function main() {
     ...(userAgent ? { userAgent } : {}),
     puppeteer: {
       headless,
+      ...(executablePath ? { executablePath } : {}),
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',

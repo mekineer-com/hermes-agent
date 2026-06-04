@@ -319,6 +319,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             True,
         )
         self._web_source_user_agent = config.extra.get("web_source_user_agent")
+        self._web_source_chromium_path = str(config.extra.get("web_source_chromium_path") or "").strip()
         self._web_source_headful = _coerce_bool(config.extra.get("web_source_headful"), False)
         self._web_source_process: Optional[subprocess.Popen] = None
         self._web_source_log_fh = None
@@ -954,13 +955,16 @@ class WhatsAppAdapter(BasePlatformAdapter):
             self._web_source_status_path.unlink()
         except OSError:
             pass
+        env = os.environ.copy()
+        if self._web_source_chromium_path:
+            env["PUPPETEER_EXECUTABLE_PATH"] = self._web_source_chromium_path
         self._web_source_process = subprocess.Popen(
             self._web_source_command(),
             cwd=str(web_source_dir),
             stdout=self._web_source_log_fh,
             stderr=self._web_source_log_fh,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
-            env=os.environ.copy(),
+            env=env,
         )
         self._write_whatsapp_runtime_status(force=True)
         return True

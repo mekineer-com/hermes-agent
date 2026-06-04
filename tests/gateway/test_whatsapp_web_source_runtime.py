@@ -12,6 +12,7 @@ def test_whatsapp_web_source_config_bridged_from_yaml(tmp_path, monkeypatch):
         "whatsapp:\n"
         "  web_source_enabled: true\n"
         "  web_source_db: /tmp/web-source.db\n"
+        "  web_source_chromium_path: /usr/bin/chromium\n"
         "  web_source_contact_snapshot_interval: 30\n",
         encoding="utf-8",
     )
@@ -22,6 +23,7 @@ def test_whatsapp_web_source_config_bridged_from_yaml(tmp_path, monkeypatch):
     extra = config.platforms[Platform.WHATSAPP].extra
     assert extra["web_source_enabled"] is True
     assert extra["web_source_db"] == "/tmp/web-source.db"
+    assert extra["web_source_chromium_path"] == "/usr/bin/chromium"
     assert extra["web_source_contact_snapshot_interval"] == 30
 
 
@@ -47,6 +49,7 @@ def test_whatsapp_web_source_command_uses_configured_paths(tmp_path, monkeypatch
                 "web_source_client_id": "siri-source",
                 "web_source_backfill_limit": 25,
                 "web_source_contact_snapshot_interval": 60,
+                "web_source_chromium_path": "/usr/bin/chromium",
             },
         )
     )
@@ -65,6 +68,7 @@ def test_whatsapp_web_source_command_uses_configured_paths(tmp_path, monkeypatch
     assert command[command.index("--client-id") + 1] == "siri-source"
     assert command[command.index("--backfill-limit") + 1] == "25"
     assert command[command.index("--contact-snapshot-interval") + 1] == "60"
+    assert popen.call_args.kwargs["env"]["PUPPETEER_EXECUTABLE_PATH"] == "/usr/bin/chromium"
 
 
 def test_whatsapp_web_source_missing_script_marks_degraded(tmp_path, monkeypatch):
