@@ -4,6 +4,8 @@ Experimental production-facing WhatsApp Web source daemon.
 
 It uses `whatsapp-web.js` to read decrypted WhatsApp Web messages and projects a normalized subset to SQLite. It does not send replies, does not mark chats seen, and is not wired into Hermes prompt history yet.
 
+After WhatsApp Web is ready, it snapshots contact/name models into `whatsapp_contacts`. This uses WhatsApp Web's internal contact collection directly instead of `client.getContacts()`, because one malformed device WID can make the higher-level API fail the whole batch.
+
 ## Install
 
 ```sh
@@ -29,6 +31,12 @@ Backfill one bounded chat window:
 
 ```sh
 node source-daemon.js --backfill-chat 16467326349@c.us --backfill-limit 100 --exit-after-backfill
+```
+
+Skip the contact/name snapshot for debugging:
+
+```sh
+node source-daemon.js --no-contact-snapshot
 ```
 
 ## Safety

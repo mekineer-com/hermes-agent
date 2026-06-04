@@ -140,6 +140,68 @@ function normalizeChat(chat) {
   };
 }
 
+function normalizeContactRow(contact) {
+  const contactId = idSerialized(contact.id || contact.contactId || contact);
+  if (!contactId) return null;
+  return {
+    contact_id: contactId,
+    contact_local_id: jidLocal(contactId),
+    name: contact.name || null,
+    short_name: contact.shortName || contact.short_name || null,
+    push_name: contact.pushname || contact.pushName || contact.push_name || null,
+    verified_name: contact.verifiedName || contact.verified_name || null,
+    is_me: Boolean(contact.isMe),
+    is_user: Boolean(contact.isUser),
+    is_group: Boolean(contact.isGroup),
+    raw: contact.raw || contact,
+  };
+}
+
+async function readContactSnapshot(page) {
+  const rows = await page.evaluate(() => {
+    const serializeId = (value) => {
+      if (!value) return null;
+      if (typeof value === 'string') return value;
+      if (value._serialized) return value._serialized;
+      if (value.id && value.id._serialized) return value.id._serialized;
+      if (value.user && value.server) return `${value.user}@${value.server}`;
+      return null;
+    };
+    const pick = (model, keys) => {
+      for (const key of keys) {
+        const value = model && model[key];
+        if (typeof value === 'string' && value.trim()) return value;
+      }
+      return null;
+    };
+    const requireFn = window.require || window.Store?.require;
+    const collections = typeof requireFn === 'function' ? requireFn('WAWebCollections') : null;
+    const contacts = collections?.Contact?.getModelsArray?.() || [];
+    const out = [];
+    for (const contact of contacts) {
+      try {
+        const id = serializeId(contact.id);
+        if (!id) continue;
+        const row = {
+          id,
+          name: pick(contact, ['name', 'formattedName']),
+          shortName: pick(contact, ['shortName', 'displayName']),
+          pushname: pick(contact, ['pushname', 'pushName', 'notifyName']),
+          verifiedName: pick(contact, ['verifiedName', 'verifiedLevelName']),
+          isMe: Boolean(contact.isMe),
+          isUser: Boolean(contact.isUser),
+          isGroup: Boolean(contact.isGroup),
+        };
+        out.push({ ...row, raw: row });
+      } catch (_error) {
+        // Internal WhatsApp models can include device WIDs that break higher-level APIs.
+      }
+    }
+    return out;
+  });
+  return rows.map(normalizeContactRow).filter(Boolean);
+}
+
 class StoreWriter {
   constructor(dbPath, onExit) {
     this.nextId = 1;
@@ -274,7 +336,7 @@ async function configureResourceBlocking(page) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help || args.h) {
-    console.log(`Usage: node source-daemon.js [options]\n\nOptions:\n  --db PATH                 SQLite projection DB (default ~/.hermes/whatsapp/web_source.db)\n  --status PATH             JSON status path (default ~/.hermes/whatsapp/web_source_status.json)\n  --auth PATH               LocalAuth data dir (default ~/.hermes/whatsapp/wwebjs_auth)\n  --client-id ID            LocalAuth client id (default memu-web-source)\n  --backfill-chat JID       Backfill one chat after ready\n  --backfill-limit N        Backfill limit (default 100, max 500)\n  --user-agent UA           Override WhatsApp Web browser user-agent\n  --headful                 Show Chromium instead of running headless\n  --exit-after-backfill     Exit after bounded backfill\n  --no-resource-block       Do not block image/media/font requests after ready\n`);
+    console.log(`Usage: node source-daemon.js [options]\n\nOptions:\n  --db PATH                 SQLite projection DB (default ~/.hermes/whatsapp/web_source.db)\n  --status PATH             JSON status path (default ~/.hermes/whatsapp/web_source_status.json)\n  --auth PATH               LocalAuth data dir (default ~/.hermes/whatsapp/wwebjs_auth)\n  --client-id ID            LocalAuth client id (default memu-web-source)\n  --backfill-chat JID       Backfill one chat after ready\n  --backfill-limit N        Backfill limit (default 100, max 500)\n  --no-contact-snapshot     Do not snapshot WhatsApp contact/name models after ready\n  --user-agent UA           Override WhatsApp Web browser user-agent\n  --headful                 Show Chromium instead of running headless\n  --exit-after-backfill     Exit after bounded backfill\n  --no-resource-block       Do not block image/media/font requests after ready\n`);
     return;
   }
   const { Client, LocalAuth, Events } = loadWWebJS();
@@ -285,6 +347,7 @@ async function main() {
   const clientId = String(args['client-id'] || 'memu-web-source');
   const backfillChat = args['backfill-chat'] ? String(args['backfill-chat']) : null;
   const backfillLimit = Math.min(Math.max(parseInt(args['backfill-limit'] || '100', 10) || 100, 1), 500);
+  const contactSnapshotEnabled = args['no-contact-snapshot'] !== true;
   const exitAfterBackfill = Boolean(args['exit-after-backfill']);
   const userAgent = args['user-agent'] ? String(args['user-agent']) : defaultUserAgent();
   const headless = args.headful ? false : true;
@@ -357,6 +420,24 @@ async function main() {
     return result;
   }
 
+  async function snapshotContacts() {
+    if (!contactSnapshotEnabled) return;
+    const rows = await readContactSnapshot(client.pupPage);
+    let persisted = 0;
+    for (const row of rows) {
+      await store.command('upsert_contact', { row });
+      persisted += 1;
+    }
+    status.write({
+      state: 'ready',
+      wwebjs_ready: true,
+      db_writeable: true,
+      last_contact_snapshot_at: Math.floor(Date.now() / 1000),
+      last_contact_snapshot_rows: persisted,
+    });
+    console.log(`contact snapshot: ${persisted} rows`);
+  }
+
   function persistFailed(label, error) {
     console.error(`${label} failed:`, error);
     status.write(
@@ -392,6 +473,8 @@ async function main() {
         console.warn('resource blocking not enabled:', error.message);
       }
     }
+
+    await snapshotContacts().catch((error) => persistFailed('contact snapshot', error));
 
     if (backfillChat) {
       try {

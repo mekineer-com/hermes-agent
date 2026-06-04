@@ -107,6 +107,49 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(got["ack"], 2)
         self.assertEqual(got["revoked"], 1)
 
+    def test_contact_upsert_keeps_existing_names_when_later_snapshot_is_sparse(self):
+        store.upsert_contact(
+            self.con,
+            {
+                "contact_id": "140063262396533@lid",
+                "contact_local_id": "140063262396533",
+                "name": "Raquel Scarone",
+                "short_name": "Raquel",
+                "push_name": "Raquel",
+                "verified_name": None,
+                "is_me": False,
+                "is_user": True,
+                "is_group": False,
+                "raw": {"id": "140063262396533@lid", "name": "Raquel Scarone"},
+            },
+        )
+        store.upsert_contact(
+            self.con,
+            {
+                "contact_id": "140063262396533@lid",
+                "contact_local_id": "140063262396533",
+                "name": None,
+                "short_name": None,
+                "push_name": None,
+                "verified_name": None,
+                "is_me": False,
+                "is_user": True,
+                "is_group": False,
+                "raw": {"id": "140063262396533@lid"},
+            },
+        )
+
+        got = self.con.execute(
+            """
+            select contact_id, contact_local_id, name, short_name, push_name
+            from whatsapp_contacts where contact_id = '140063262396533@lid'
+            """
+        ).fetchone()
+        self.assertEqual(got["contact_local_id"], "140063262396533")
+        self.assertEqual(got["name"], "Raquel Scarone")
+        self.assertEqual(got["short_name"], "Raquel")
+        self.assertEqual(got["push_name"], "Raquel")
+
     def test_malformed_json_returns_error_without_stale_request_id(self):
         proc = subprocess.Popen(
             [sys.executable, str(Path(__file__).with_name("store.py")), "--db", str(Path(self.tmp.name) / "writer.db")],

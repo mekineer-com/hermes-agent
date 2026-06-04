@@ -99,6 +99,23 @@ def init_schema(con: sqlite3.Connection) -> None:
         create index if not exists whatsapp_chats_local
           on whatsapp_chats(chat_local_id);
 
+        create table if not exists whatsapp_contacts (
+          contact_id text primary key,
+          contact_local_id text not null,
+          name text,
+          short_name text,
+          push_name text,
+          verified_name text,
+          is_me integer not null default 0,
+          is_user integer not null default 0,
+          is_group integer not null default 0,
+          raw_json text,
+          updated_at integer not null
+        );
+
+        create index if not exists whatsapp_contacts_local
+          on whatsapp_contacts(contact_local_id);
+
         create table if not exists whatsapp_routing_status (
           inbound_msg_key text primary key,
           chat_id text not null,
@@ -254,6 +271,45 @@ def upsert_chat(con: sqlite3.Connection, row: dict[str, Any]) -> dict[str, Any]:
     return {"status": "ok", "action": "upsert_chat", "chat_id": row["chat_id"]}
 
 
+def upsert_contact(con: sqlite3.Connection, row: dict[str, Any]) -> dict[str, Any]:
+    ts = now()
+    con.execute(
+        """
+        insert into whatsapp_contacts (
+          contact_id, contact_local_id, name, short_name, push_name, verified_name,
+          is_me, is_user, is_group, raw_json, updated_at
+        )
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(contact_id) do update set
+          contact_local_id=excluded.contact_local_id,
+          name=coalesce(excluded.name, whatsapp_contacts.name),
+          short_name=coalesce(excluded.short_name, whatsapp_contacts.short_name),
+          push_name=coalesce(excluded.push_name, whatsapp_contacts.push_name),
+          verified_name=coalesce(excluded.verified_name, whatsapp_contacts.verified_name),
+          is_me=excluded.is_me,
+          is_user=excluded.is_user,
+          is_group=excluded.is_group,
+          raw_json=excluded.raw_json,
+          updated_at=excluded.updated_at
+        """,
+        (
+            row["contact_id"],
+            row["contact_local_id"],
+            row.get("name"),
+            row.get("short_name"),
+            row.get("push_name"),
+            row.get("verified_name"),
+            int(bool(row.get("is_me"))),
+            int(bool(row.get("is_user"))),
+            int(bool(row.get("is_group"))),
+            json.dumps(row.get("raw", row), ensure_ascii=False, sort_keys=True),
+            ts,
+        ),
+    )
+    con.commit()
+    return {"status": "ok", "action": "upsert_contact", "contact_id": row["contact_id"]}
+
+
 def handle(con: sqlite3.Connection, command: dict[str, Any]) -> dict[str, Any]:
     op = command.get("op")
     if op == "ping":
@@ -266,6 +322,8 @@ def handle(con: sqlite3.Connection, command: dict[str, Any]) -> dict[str, Any]:
         return update_ack(con, command["row"])
     if op == "upsert_chat":
         return upsert_chat(con, command["row"])
+    if op == "upsert_contact":
+        return upsert_contact(con, command["row"])
     raise ValueError(f"unknown op: {op}")
 
 
