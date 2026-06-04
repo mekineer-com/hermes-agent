@@ -589,19 +589,15 @@ class WhatsAppAdapter(BasePlatformAdapter):
             )
             return False
 
-        # Pre-flight: skip the 30s bridge bootstrap entirely if the user
-        # never finished pairing.  Without creds.json the bridge prints
-        # QR codes to its log file and never reaches status:connected,
-        # so every gateway restart paid the 30s timeout + queued WhatsApp
-        # for indefinite retries.  Mark non-retryable so the user gets a
-        # clear "run hermes whatsapp" message instead of the watcher
-        # silently hammering an unconfigured platform.
+        # Pre-flight: if the live reply bridge was never paired, keep the
+        # adapter alive only as a setup/status owner. This avoids the old
+        # 30s Baileys timeout loop while still letting the web-source open
+        # its pairing browser from a normal memU Stack launch.
         creds_path = self._session_path / "creds.json"
         if not creds_path.exists():
             logger.warning(
                 "[%s] WhatsApp is enabled but not paired (no creds.json at %s). "
-                "Run `hermes whatsapp` to pair, or remove WHATSAPP_ENABLED from "
-                "your .env to disable.",
+                "Use memU Stack's Pair reply bridge action or run `hermes whatsapp`.",
                 self.name, creds_path,
             )
             self._set_fatal_error(
@@ -609,7 +605,17 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 "WhatsApp enabled but not paired — run `hermes whatsapp` to pair.",
                 retryable=False,
             )
-            return False
+            self._bridge_health = {
+                "status": "not_paired",
+                "mode": os.getenv("WHATSAPP_MODE", "self-chat"),
+            }
+            self._running = True
+            if self._web_source_enabled and not self._web_source_headful:
+                self._web_source_pairing_headful = True
+            self._start_web_source()
+            self._write_whatsapp_runtime_status(force=True)
+            self._poll_task = asyncio.create_task(self._monitor_web_source_setup())
+            return True
 
         logger.info("[%s] Bridge found at %s", self.name, bridge_path)
         
@@ -892,19 +898,23 @@ class WhatsAppAdapter(BasePlatformAdapter):
             not bridge_status or bridge_status == "connected"
         )
         bridge_process = getattr(self, "_bridge_process", None)
+        setup_needed = self.fatal_error_code == "whatsapp_not_paired"
+        bridge_state = "ready" if bridge_connected else ("setup_needed" if setup_needed else "starting")
         bridge_details = {
-            "state": "ready" if bridge_connected else "starting",
+            "state": bridge_state,
             "pid": bridge_process.pid if bridge_process else None,
             "managed": bridge_process is not None,
             "port": self._bridge_port,
             "status": bridge_status or None,
             "mode": bridge_health.get("mode"),
         }
+        if setup_needed:
+            bridge_details["error"] = self.fatal_error_message
         web_source = self._web_source_status_details()
-        if self.has_fatal_error:
+        if self.has_fatal_error and not setup_needed:
             aggregate_state = "fatal"
         elif not bridge_connected:
-            aggregate_state = "starting" if self._running else "disconnected"
+            aggregate_state = "degraded" if setup_needed else ("starting" if self._running else "disconnected")
         elif self._web_source_enabled and web_source.get("state") not in {"ready"}:
             aggregate_state = "degraded" if web_source.get("state") == "degraded" else "starting"
         else:
@@ -992,6 +1002,21 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 return
             self._web_source_pairing_headful = True
             self._start_web_source()
+        elif (
+            status.get("state") == "ready"
+            and self._web_source_pairing_headful
+            and not self._web_source_headful
+        ):
+            logger.info("[%s] WhatsApp web-source paired; returning Chromium to headless mode", self.name)
+            if not self._stop_web_source():
+                self._web_source_error = (
+                    "WhatsApp web-source could not stop cleanly before returning to headless mode"
+                )
+                logger.warning("[%s] %s", self.name, self._web_source_error)
+                self._write_whatsapp_runtime_status(force=True)
+                return
+            self._web_source_pairing_headful = False
+            self._start_web_source()
 
     def _stop_web_source(self) -> bool:
         proc = self._web_source_process
@@ -1019,6 +1044,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 pass
             self._web_source_log_fh = None
         return stopped
+
+    async def _monitor_web_source_setup(self) -> None:
+        while self._running and self._web_source_enabled and not self._http_session:
+            self._check_web_source_exit()
+            self._write_whatsapp_runtime_status()
+            await asyncio.sleep(2)
 
     async def _check_managed_bridge_exit(self) -> Optional[str]:
         """Return a fatal error message if the managed bridge child exited."""

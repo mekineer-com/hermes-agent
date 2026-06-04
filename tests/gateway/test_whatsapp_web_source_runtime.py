@@ -126,6 +126,53 @@ def test_whatsapp_web_source_pairing_restarts_headful(tmp_path, monkeypatch):
     assert "--headful" in popen.call_args_list[1].args[0]
 
 
+def test_whatsapp_web_source_ready_returns_to_headless(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    script = tmp_path / "source-daemon.js"
+    script.write_text("'use strict';\n", encoding="utf-8")
+    (tmp_path / "node_modules").mkdir()
+    status_path = tmp_path / "source-status.json"
+
+    class ExitingProcess:
+        pid = 1
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.returncode = 0
+            return self.returncode
+
+    proc1 = ExitingProcess()
+    proc2 = SimpleNamespace(pid=2, poll=lambda: None)
+    adapter = WhatsAppAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "web_source_enabled": True,
+                "web_source_script": str(script),
+                "web_source_status": str(status_path),
+                "web_source_auth": str(tmp_path / "auth"),
+            },
+        )
+    )
+    adapter._running = True
+    adapter._http_session = object()
+    adapter._bridge_health = {"status": "connected", "mode": "bot"}
+    adapter._web_source_pairing_headful = True
+
+    with patch("subprocess.Popen", side_effect=[proc1, proc2]) as popen, \
+         patch("gateway.platforms.whatsapp._terminate_bridge_process"):
+        assert adapter._start_web_source() is True
+        status_path.write_text('{"state":"ready"}', encoding="utf-8")
+        adapter._check_web_source_exit()
+
+    assert adapter._web_source_pairing_headful is False
+    assert "--headful" in popen.call_args_list[0].args[0]
+    assert "--headful" not in popen.call_args_list[1].args[0]
+
+
 def test_whatsapp_web_source_pairing_does_not_duplicate_when_stop_fails(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     script = tmp_path / "source-daemon.js"

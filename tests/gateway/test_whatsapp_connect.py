@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import ProcessingOutcome
 from gateway.platforms.whatsapp_wal import WhatsAppGatewayWal
 
@@ -633,50 +633,54 @@ class TestHttpSessionLifecycle:
 
 
 class TestNoCredsPreflight:
-    """Verify ``connect()`` fast-fails as non-retryable when WhatsApp is
-    enabled but the user never finished pairing (no ``creds.json``).
-
-    Without this guard, every gateway boot:
-      • spawned the bridge subprocess
-      • waited 30s for status:connected (never happens without creds)
-      • queued WhatsApp for indefinite retries that would just repeat
-    With the guard, ``connect()`` returns False immediately with a
-    non-retryable fatal error so the reconnect watcher drops the platform
-    and the gateway gets a single clear log line telling the user to run
-    ``hermes whatsapp``.
-    """
+    """Verify missing bridge creds enter setup mode without booting Baileys."""
 
     @pytest.mark.asyncio
-    async def test_connect_returns_false_when_no_creds(self, tmp_path):
+    async def test_connect_starts_web_source_setup_when_no_creds(self, tmp_path, monkeypatch):
         from gateway.platforms.whatsapp import WhatsAppAdapter
 
-        adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
-        adapter.platform = Platform.WHATSAPP
-        adapter.config = MagicMock()
-        adapter._bridge_port = 19876
-        # Point bridge_script at a real existing file so the earlier
-        # bridge-missing check doesn't trip — we want to exercise the
-        # creds.json check specifically.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         bridge = tmp_path / "bridge.js"
         bridge.write_text("// stub")
-        adapter._bridge_script = str(bridge)
-        adapter._session_path = tmp_path / "session"  # no creds.json inside
-        adapter._session_path.mkdir()
-        adapter._bridge_log_fh = None
-        adapter._fatal_error_code = None
-        adapter._fatal_error_message = None
-        adapter._fatal_error_retryable = True
+        web_source = tmp_path / "source-daemon.js"
+        web_source.write_text("'use strict';\n", encoding="utf-8")
+        (tmp_path / "node_modules").mkdir()
+        session_path = tmp_path / "session"
+        session_path.mkdir()
+        adapter = WhatsAppAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "bridge_script": str(bridge),
+                    "session_path": str(session_path),
+                    "web_source_enabled": True,
+                    "web_source_script": str(web_source),
+                    "web_source_status": str(tmp_path / "web-source-status.json"),
+                    "web_source_auth": str(tmp_path / "auth"),
+                },
+            )
+        )
+        proc = MagicMock()
+        proc.pid = 123
+        proc.poll.return_value = None
 
-        with patch(
-            "gateway.platforms.whatsapp.check_whatsapp_requirements",
-            return_value=True,
-        ):
+        def _close_monitor_task(coro):
+            coro.close()
+            return MagicMock()
+
+        with patch("gateway.platforms.whatsapp.check_whatsapp_requirements", return_value=True), \
+             patch("subprocess.Popen", return_value=proc) as popen, \
+             patch("gateway.platforms.whatsapp.asyncio.create_task", side_effect=_close_monitor_task):
             result = await adapter.connect()
 
-        assert result is False
-        # Non-retryable so the reconnect watcher drops it cleanly
+        assert result is True
         assert adapter._fatal_error_code == "whatsapp_not_paired"
         assert adapter._fatal_error_retryable is False
+        assert adapter._running is True
+        assert adapter._web_source_pairing_headful is True
+        command = popen.call_args.args[0]
+        assert str(web_source) in command
+        assert "--headful" in command
 
     @pytest.mark.asyncio
     async def test_connect_proceeds_when_creds_present(self, tmp_path):
