@@ -336,7 +336,7 @@ async function configureResourceBlocking(page) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help || args.h) {
-    console.log(`Usage: node source-daemon.js [options]\n\nOptions:\n  --db PATH                 SQLite projection DB (default ~/.hermes/whatsapp/web_source.db)\n  --status PATH             JSON status path (default ~/.hermes/whatsapp/web_source_status.json)\n  --auth PATH               LocalAuth data dir (default ~/.hermes/whatsapp/wwebjs_auth)\n  --client-id ID            LocalAuth client id (default memu-web-source)\n  --backfill-chat JID       Backfill one chat after ready\n  --backfill-limit N        Backfill limit (default 100, max 500)\n  --no-contact-snapshot     Do not snapshot WhatsApp contact/name models after ready\n  --user-agent UA           Override WhatsApp Web browser user-agent\n  --headful                 Show Chromium instead of running headless\n  --exit-after-backfill     Exit after bounded backfill\n  --no-resource-block       Do not block image/media/font requests after ready\n`);
+    console.log(`Usage: node source-daemon.js [options]\n\nOptions:\n  --db PATH                 SQLite projection DB (default ~/.hermes/whatsapp/web_source.db)\n  --status PATH             JSON status path (default ~/.hermes/whatsapp/web_source_status.json)\n  --auth PATH               LocalAuth data dir (default ~/.hermes/whatsapp/wwebjs_auth)\n  --client-id ID            LocalAuth client id (default memu-web-source)\n  --backfill-chat JID       Backfill one chat after ready\n  --backfill-limit N        Backfill limit (default 100, max 500)\n  --no-contact-snapshot     Do not snapshot WhatsApp contact/name models after ready\n  --contact-snapshot-interval SECONDS\n                            Refresh contacts periodically (default 900, 0 disables)\n  --user-agent UA           Override WhatsApp Web browser user-agent\n  --headful                 Show Chromium instead of running headless\n  --exit-after-backfill     Exit after bounded backfill\n  --no-resource-block       Do not block image/media/font requests after ready\n`);
     return;
   }
   const { Client, LocalAuth, Events } = loadWWebJS();
@@ -348,10 +348,13 @@ async function main() {
   const backfillChat = args['backfill-chat'] ? String(args['backfill-chat']) : null;
   const backfillLimit = Math.min(Math.max(parseInt(args['backfill-limit'] || '100', 10) || 100, 1), 500);
   const contactSnapshotEnabled = args['no-contact-snapshot'] !== true;
+  const contactSnapshotInterval = Math.max(parseInt(args['contact-snapshot-interval'] || '900', 10) || 0, 0);
   const exitAfterBackfill = Boolean(args['exit-after-backfill']);
   const userAgent = args['user-agent'] ? String(args['user-agent']) : defaultUserAgent();
   const headless = args.headful ? false : true;
   let wwebjsReady = false;
+  let contactSnapshotRunning = false;
+  let contactSnapshotTimer = null;
 
   ensureDir(dbPath);
   ensureDir(statusPath);
@@ -398,6 +401,7 @@ async function main() {
       { state: 'degraded', wwebjs_ready: wwebjsReady, db_writeable: !store.exitedError, error: error?.message || String(error) },
       { immediate: true },
     );
+    if (contactSnapshotTimer) clearInterval(contactSnapshotTimer);
     await client.destroy().catch(() => {});
     store.close();
     status.flush();
@@ -422,20 +426,35 @@ async function main() {
 
   async function snapshotContacts() {
     if (!contactSnapshotEnabled) return;
-    const rows = await readContactSnapshot(client.pupPage);
-    let persisted = 0;
-    for (const row of rows) {
-      await store.command('upsert_contact', { row });
-      persisted += 1;
+    if (contactSnapshotRunning) return;
+    contactSnapshotRunning = true;
+    try {
+      const rows = await readContactSnapshot(client.pupPage);
+      let persisted = 0;
+      for (const row of rows) {
+        await store.command('upsert_contact', { row });
+        persisted += 1;
+      }
+      status.write({
+        state: 'ready',
+        wwebjs_ready: true,
+        db_writeable: true,
+        last_contact_snapshot_at: Math.floor(Date.now() / 1000),
+        last_contact_snapshot_rows: persisted,
+      });
+      console.log(`contact snapshot: ${persisted} rows`);
+    } finally {
+      contactSnapshotRunning = false;
     }
-    status.write({
-      state: 'ready',
-      wwebjs_ready: true,
-      db_writeable: true,
-      last_contact_snapshot_at: Math.floor(Date.now() / 1000),
-      last_contact_snapshot_rows: persisted,
-    });
-    console.log(`contact snapshot: ${persisted} rows`);
+  }
+
+  function scheduleContactSnapshots() {
+    if (!contactSnapshotEnabled || contactSnapshotInterval <= 0 || contactSnapshotTimer) return;
+    contactSnapshotTimer = setInterval(() => {
+      if (!wwebjsReady) return;
+      snapshotContacts().catch((error) => persistFailed('contact snapshot', error));
+    }, contactSnapshotInterval * 1000);
+    if (contactSnapshotTimer.unref) contactSnapshotTimer.unref();
   }
 
   function persistFailed(label, error) {
@@ -475,6 +494,7 @@ async function main() {
     }
 
     await snapshotContacts().catch((error) => persistFailed('contact snapshot', error));
+    scheduleContactSnapshots();
 
     if (backfillChat) {
       try {
@@ -557,11 +577,16 @@ async function main() {
   client.on('disconnected', (reason) => {
     console.warn('WhatsApp Web source disconnected:', reason);
     wwebjsReady = false;
+    if (contactSnapshotTimer) {
+      clearInterval(contactSnapshotTimer);
+      contactSnapshotTimer = null;
+    }
     status.write({ state: 'disconnected', wwebjs_ready: false, db_writeable: !store.exitedError, error: String(reason) }, { immediate: true });
   });
 
   process.on('SIGINT', async () => {
     status.write({ state: 'stopping', wwebjs_ready: false, db_writeable: !store.exitedError }, { immediate: true });
+    if (contactSnapshotTimer) clearInterval(contactSnapshotTimer);
     await client.destroy().catch(() => {});
     store.close();
     status.flush();
@@ -569,6 +594,7 @@ async function main() {
   });
   process.on('SIGTERM', async () => {
     status.write({ state: 'stopping', wwebjs_ready: false, db_writeable: !store.exitedError }, { immediate: true });
+    if (contactSnapshotTimer) clearInterval(contactSnapshotTimer);
     await client.destroy().catch(() => {});
     store.close();
     status.flush();

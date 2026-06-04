@@ -39,6 +39,13 @@ Skip the contact/name snapshot for debugging:
 node source-daemon.js --no-contact-snapshot
 ```
 
+Contacts are refreshed every 15 minutes by default. Tune or disable the refresh:
+
+```sh
+node source-daemon.js --contact-snapshot-interval 300
+node source-daemon.js --contact-snapshot-interval 0
+```
+
 ## Safety
 
 - Never use unlimited backfill in normal operation.

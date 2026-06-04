@@ -145,6 +145,27 @@ def test_whatsapp_exception_turn_persists_visible_error_pair(tmp_path, monkeypat
     assert messages[1]["source_message_id"] is None
 
 
+def test_whatsapp_exception_turn_dedupes_user_if_history_already_persisted(tmp_path, monkeypatch):
+    runner, db = _runner(tmp_path, monkeypatch, active_since=1780160400)
+    event = _event(text="Testing yet another way to connect to WhatsApp")
+    session_entry = runner.session_store.get_or_create_session(event.source)
+
+    runner._persist_whatsapp_history_event(event)
+    runner._persist_whatsapp_exception_turn(
+        session_entry=session_entry,
+        source=event.source,
+        raw_message=event.raw_message,
+        message_text=event.text,
+        error_response="Sorry, I encountered an error (NameError).\nname 'event' is not defined\nTry again.",
+    )
+
+    messages = db.get_messages(session_entry.session_id)
+    assert [m["role"] for m in messages] == ["user", "assistant"]
+    assert messages[0]["content"] == "Testing yet another way to connect to WhatsApp"
+    assert messages[0]["source_message_id"] == "m1"
+    assert "NameError" in messages[1]["content"]
+
+
 @pytest.mark.asyncio
 async def test_whatsapp_response_delivery_stamps_assistant_source_key(tmp_path, monkeypatch):
     runner, db = _runner(tmp_path, monkeypatch, active_since=1780160400)
