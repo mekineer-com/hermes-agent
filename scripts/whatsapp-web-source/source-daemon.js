@@ -322,6 +322,7 @@ class StatusWriter {
     ensureDir(this.statusPath);
     const status = {
       service: 'whatsapp-web-source',
+      pid: process.pid,
       ...this.current,
       ...this.pending,
       updated_at: Math.floor(Date.now() / 1000),
@@ -467,7 +468,7 @@ async function main() {
     if (!contactSnapshotEnabled || contactSnapshotInterval <= 0 || contactSnapshotTimer) return;
     contactSnapshotTimer = setInterval(() => {
       if (!wwebjsReady) return;
-      snapshotContacts().catch((error) => persistFailed('contact snapshot', error));
+      snapshotContacts().catch((error) => contactSnapshotFailed(error));
     }, contactSnapshotInterval * 1000);
     if (contactSnapshotTimer.unref) contactSnapshotTimer.unref();
   }
@@ -536,6 +537,20 @@ async function main() {
     );
   }
 
+  function contactSnapshotFailed(error) {
+    console.error('contact snapshot failed:', error);
+    status.write(
+      {
+        state: wwebjsReady ? 'ready' : 'degraded',
+        wwebjs_ready: wwebjsReady,
+        db_writeable: !store.exitedError,
+        last_contact_snapshot_error: error.message,
+        last_contact_snapshot_error_at: Math.floor(Date.now() / 1000),
+      },
+      { immediate: true },
+    );
+  }
+
   client.on('qr', (qr) => {
     console.log('Pair WhatsApp Web with this QR payload:');
     console.log(qr);
@@ -564,7 +579,7 @@ async function main() {
       }
     }
 
-    await snapshotContacts().catch((error) => persistFailed('contact snapshot', error));
+    await snapshotContacts().catch((error) => contactSnapshotFailed(error));
     scheduleContactSnapshots();
 
     if (backfillSince > 0) {
