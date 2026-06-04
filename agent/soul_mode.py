@@ -63,6 +63,23 @@ def _is_truthy(val: Any, default: bool = False) -> bool:
     return bool(val)
 
 
+def _normalize_whatsapp_history_config(
+    *,
+    source: Any,
+    web_source_db: Any,
+    history_limit: Any,
+) -> tuple[str, str, int]:
+    history_source = str(source or "state_db").strip().lower()
+    if history_source not in {"state_db", "web_source"}:
+        history_source = "state_db"
+    try:
+        limit = max(int(history_limit), 1)
+    except (TypeError, ValueError):
+        limit = 250
+    db_path = str(web_source_db or "~/.hermes/whatsapp/web_source.db").strip()
+    return history_source, db_path, limit
+
+
 def resolve_agent_config(user_config: dict | None, session_key: str) -> dict[str, Any]:
     """Resolve per-agent soul-mode config from the user's config.yaml.
 
@@ -128,17 +145,14 @@ def resolve_agent_config(user_config: dict | None, session_key: str) -> dict[str
         out["timeout_seconds"] = float(agent_cfg.get("timeout_seconds", 90.0))
     except (TypeError, ValueError):
         out["timeout_seconds"] = 90.0
-    history_source = str(agent_cfg.get("whatsapp_history_source") or "state_db").strip().lower()
-    if history_source not in {"state_db", "web_source"}:
-        history_source = "state_db"
+    history_source, web_source_db, history_limit = _normalize_whatsapp_history_config(
+        source=agent_cfg.get("whatsapp_history_source"),
+        web_source_db=agent_cfg.get("whatsapp_web_source_db"),
+        history_limit=agent_cfg.get("whatsapp_history_limit", 250),
+    )
     out["whatsapp_history_source"] = history_source
-    web_source_db = str(agent_cfg.get("whatsapp_web_source_db") or "").strip()
-    if web_source_db:
-        out["whatsapp_web_source_db"] = web_source_db
-    try:
-        out["whatsapp_history_limit"] = max(int(agent_cfg.get("whatsapp_history_limit", 250)), 1)
-    except (TypeError, ValueError):
-        out["whatsapp_history_limit"] = 250
+    out["whatsapp_web_source_db"] = web_source_db
+    out["whatsapp_history_limit"] = history_limit
     whatsapp_cfg = cfg.get("whatsapp")
     if isinstance(whatsapp_cfg, dict) and "reply_prefix" in whatsapp_cfg:
         out["whatsapp_reply_prefix"] = str(whatsapp_cfg.get("reply_prefix") or "")
@@ -164,13 +178,11 @@ def configure(
         timeout = float(timeout_seconds)
     except (TypeError, ValueError):
         timeout = 90.0
-    history_source = str(whatsapp_history_source or "state_db").strip().lower()
-    if history_source not in {"state_db", "web_source"}:
-        history_source = "state_db"
-    try:
-        history_limit = max(int(whatsapp_history_limit), 1)
-    except (TypeError, ValueError):
-        history_limit = 250
+    history_source, web_source_db, history_limit = _normalize_whatsapp_history_config(
+        source=whatsapp_history_source,
+        web_source_db=whatsapp_web_source_db,
+        history_limit=whatsapp_history_limit,
+    )
     return SoulModeConfig(
         enabled=bool(enabled),
         role="soul" if role_norm == "soul" else "standard",
@@ -180,7 +192,7 @@ def configure(
         use_memu_turn=bool(use_memu_turn),
         timeout_seconds=timeout,
         whatsapp_history_source=history_source,
-        whatsapp_web_source_db=str(whatsapp_web_source_db or "~/.hermes/whatsapp/web_source.db").strip(),
+        whatsapp_web_source_db=web_source_db,
         whatsapp_history_limit=history_limit,
         whatsapp_reply_prefix=str(whatsapp_reply_prefix or ""),
     )
@@ -458,12 +470,7 @@ def _filter_history_by_active_since(
         return history
     out: list[dict[str, Any]] = []
     for msg in history:
-        if not isinstance(msg, dict):
-            continue
-        timestamp = msg.get("timestamp")
-        if not isinstance(timestamp, (int, float)):
-            continue
-        if float(timestamp) >= float(active_since):
+        if float(msg["timestamp"]) >= float(active_since):
             out.append(msg)
     return out
 

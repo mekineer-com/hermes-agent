@@ -3585,8 +3585,7 @@ class GatewayRunner:
             
             # Set up message + fatal error handlers
             adapter.set_message_handler(self._handle_message)
-            if hasattr(adapter, "set_response_delivery_handler"):
-                adapter.set_response_delivery_handler(self._handle_response_delivery)
+            adapter.set_response_delivery_handler(self._handle_response_delivery)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -4884,8 +4883,7 @@ class GatewayRunner:
                         continue
 
                     adapter.set_message_handler(self._handle_message)
-                    if hasattr(adapter, "set_response_delivery_handler"):
-                        adapter.set_response_delivery_handler(self._handle_response_delivery)
+                    adapter.set_response_delivery_handler(self._handle_response_delivery)
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -10252,12 +10250,7 @@ class GatewayRunner:
                 return
 
         role_hint = str(raw.get("speakerRoleHint") or "").strip().lower()
-        if role_hint == "assistant":
-            role = "assistant"
-        elif role_hint == "user":
-            role = "user"
-        else:
-            role = "user"
+        role = "assistant" if role_hint == "assistant" else "user"
 
         if role == "assistant":
             speaker_name = soul_id or str(raw.get("speakerNameHint") or raw.get("senderName") or "").strip()

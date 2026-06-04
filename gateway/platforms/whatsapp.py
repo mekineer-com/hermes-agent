@@ -868,28 +868,28 @@ class WhatsAppAdapter(BasePlatformAdapter):
         return data if isinstance(data, dict) else {}
 
     def _web_source_status_details(self) -> Dict[str, Any]:
-        if not getattr(self, "_web_source_enabled", False):
+        if not self._web_source_enabled:
             return {"enabled": False, "state": "disabled"}
 
         status = self._read_web_source_status()
-        process = getattr(self, "_web_source_process", None)
+        process = self._web_source_process
         returncode = process.poll() if process else None
         pid = process.pid if process else None
         state = str(status.get("state") or "starting")
-        error = getattr(self, "_web_source_error", None)
+        error = self._web_source_error
         if error:
             state = "degraded"
         elif returncode is not None:
             state = "degraded"
-        elif process is None and getattr(self, "_web_source_intentionally_stopped", False):
+        elif process is None and self._web_source_intentionally_stopped:
             state = "stopped"
         return {
             "enabled": True,
             "state": state,
             "pid": pid,
             "returncode": returncode,
-            "db_path": str(getattr(self, "_web_source_db", "")),
-            "status_path": str(getattr(self, "_web_source_status_path", "")),
+            "db_path": str(self._web_source_db),
+            "status_path": str(self._web_source_status_path),
             "wwebjs_ready": bool(status.get("wwebjs_ready")),
             "db_writeable": bool(status.get("db_writeable")),
             "last_persist_at": status.get("last_persist_at"),
@@ -923,10 +923,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
             aggregate_state = "fatal"
         elif not bridge_connected:
             aggregate_state = "starting" if self._running else "disconnected"
-        elif getattr(self, "_web_source_enabled", False) and web_source.get("state") not in {"ready"}:
+        elif self._web_source_enabled and web_source.get("state") not in {"ready"}:
             aggregate_state = "degraded" if web_source.get("state") == "degraded" else "starting"
         else:
-            aggregate_state = "healthy" if getattr(self, "_web_source_enabled", False) else "connected"
+            aggregate_state = "healthy" if self._web_source_enabled else "connected"
 
         self._write_runtime_status_safe(
             "whatsapp_runtime",
@@ -940,11 +940,11 @@ class WhatsAppAdapter(BasePlatformAdapter):
         )
 
     def _start_web_source(self) -> bool:
-        if not getattr(self, "_web_source_enabled", False):
+        if not self._web_source_enabled:
             self._web_source_error = None
             self._write_whatsapp_runtime_status(force=True)
             return True
-        process = getattr(self, "_web_source_process", None)
+        process = self._web_source_process
         if process and process.poll() is None:
             self._write_whatsapp_runtime_status(force=True)
             return True
@@ -1000,13 +1000,13 @@ class WhatsAppAdapter(BasePlatformAdapter):
         return True
 
     def _check_web_source_exit(self) -> None:
-        if not getattr(self, "_web_source_enabled", False) or not getattr(self, "_web_source_process", None):
+        if not self._web_source_enabled or not self._web_source_process:
             return
         if self._web_source_process.poll() is not None:
             self._write_whatsapp_runtime_status(force=True)
 
     def _stop_web_source(self) -> None:
-        proc = getattr(self, "_web_source_process", None)
+        proc = self._web_source_process
         if proc and proc.poll() is None:
             try:
                 _terminate_bridge_process(proc, force=False)
@@ -1019,7 +1019,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     pass
         self._web_source_process = None
         self._web_source_intentionally_stopped = True
-        if getattr(self, "_web_source_log_fh", None):
+        if self._web_source_log_fh:
             try:
                 self._web_source_log_fh.close()
             except Exception:

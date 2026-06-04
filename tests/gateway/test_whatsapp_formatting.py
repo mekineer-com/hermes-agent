@@ -7,6 +7,7 @@ Covers:
 """
 
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -32,6 +33,13 @@ def _make_adapter():
     adapter._bridge_log_fh = None
     adapter._bridge_log = None
     adapter._bridge_process = None
+    adapter._web_source_enabled = False
+    adapter._web_source_process = None
+    adapter._web_source_db = Path("/tmp/test-web-source.db")
+    adapter._web_source_status_path = Path("/tmp/test-web-source-status.json")
+    adapter._web_source_error = None
+    adapter._web_source_intentionally_stopped = False
+    adapter._web_source_log_fh = None
     adapter._reply_prefix = None
     adapter._running = True
     adapter._message_handler = None
