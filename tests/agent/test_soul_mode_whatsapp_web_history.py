@@ -145,7 +145,7 @@ def test_whatsapp_web_history_applies_active_since_and_contact_names(tmp_path):
     assert history[0]["sender_name"] == "Raquel"
 
 
-def test_whatsapp_web_history_excludes_current_turn_and_splits_soul_prefix(tmp_path):
+def test_whatsapp_web_history_excludes_current_turn_and_uses_delivered_assistant_id(tmp_path):
     web_db = tmp_path / "web_source.db"
     con = _init_web_source_db(web_db)
     _insert_message(
@@ -168,15 +168,46 @@ def test_whatsapp_web_history_excludes_current_turn_and_splits_soul_prefix(tmp_p
     con.close()
 
     config = _web_config(web_db)
+    agent = _agent(tmp_path, web_db, current_source_message_id="3EB0CURRENT")
+    agent._session_db.create_session(session_id="s1", source="whatsapp", user_id="marcos")
+    agent._session_db.append_message(
+        session_id="s1",
+        role="assistant",
+        content="I am listening.",
+        source_chat_id="18322935409-1579788049@g.us",
+        source_message_id="3EB0SIRI",
+        timestamp=203,
+    )
 
     history = _load_history(
-        _agent(tmp_path, web_db, current_source_message_id="3EB0CURRENT"),
+        agent,
         [],
         config,
     )
 
     assert [(m["role"], m["content"], m["sender_name"]) for m in history] == [
         ("assistant", "I am listening.", "Siri")
+    ]
+
+
+def test_whatsapp_web_history_does_not_infer_soul_from_prefix_without_delivery_id(tmp_path):
+    web_db = tmp_path / "web_source.db"
+    con = _init_web_source_db(web_db)
+    _insert_message(
+        con,
+        msg_key="true_18322935409-1579788049@g.us_3EB0UNKNOWN_114628432556258@lid",
+        body="✦ *Siri*: I was typed from the phone.",
+        timestamp=203,
+        from_me=True,
+        from_id="114628432556258@lid",
+    )
+    con.commit()
+    con.close()
+
+    history = _load_history(_agent(tmp_path, web_db), [], _web_config(web_db))
+
+    assert [(m["role"], m["content"], m["sender_name"]) for m in history] == [
+        ("user", "✦ *Siri*: I was typed from the phone.", "Marcos")
     ]
 
 
@@ -223,12 +254,33 @@ def test_whatsapp_web_history_missing_db_fails_loud_and_marks_health(tmp_path, m
     assert whatsapp["soul_history"]["source"] == "web_source"
 
 
-def test_whatsapp_web_history_rejects_unmatched_reply_prefix(tmp_path):
+def test_whatsapp_web_history_allows_reply_prefix_changes_when_delivery_id_matches(tmp_path):
     web_db = tmp_path / "web_source.db"
     con = _init_web_source_db(web_db)
+    _insert_message(
+        con,
+        msg_key="true_18322935409-1579788049@g.us_3EB0SIRI_114628432556258@lid",
+        body="old prefix: I still know this is Siri.",
+        timestamp=203,
+        from_me=True,
+        from_id="114628432556258@lid",
+    )
     con.commit()
     con.close()
     config = _web_config(web_db, whatsapp_reply_prefix="⚕ *Hermes Agent*\n────────────\n")
+    agent = _agent(tmp_path, web_db)
+    agent._session_db.create_session(session_id="s1", source="whatsapp", user_id="marcos")
+    agent._session_db.append_message(
+        session_id="s1",
+        role="assistant",
+        content="I still know this is Siri.",
+        source_chat_id="18322935409-1579788049@g.us",
+        source_message_id="3EB0SIRI",
+        timestamp=203,
+    )
 
-    with pytest.raises(MemuClientError, match="reply_prefix to match"):
-        _load_history(_agent(tmp_path, web_db), [], config)
+    history = _load_history(agent, [], config)
+
+    assert [(m["role"], m["content"], m["sender_name"]) for m in history] == [
+        ("assistant", "old prefix: I still know this is Siri.", "Siri")
+    ]

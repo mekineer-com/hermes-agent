@@ -278,34 +278,32 @@ def _jid_local(value: Any) -> str:
     return re.sub(r":.*@", "@", raw).split("@", 1)[0]
 
 
-def _strip_soul_prefix(body: str, soul_id: str) -> tuple[bool, str]:
+def _strip_configured_reply_prefix(body: str, prefix: str) -> str:
     text = str(body or "")
-    soul = str(soul_id or "").strip()
-    if not soul:
-        return False, text
-    escaped = re.escape(soul)
-    patterns = [
-        rf"^\s*(?:✦\s*)?\*{{0,2}}{escaped}\*{{0,2}}\s*:\s*",
-        rf"^\s*\[{escaped}\]\s*",
-    ]
-    for pattern in patterns:
-        match = re.match(pattern, text, flags=re.IGNORECASE)
-        if match:
-            return True, text[match.end():].strip()
-    return False, text
+    marker = str(prefix or "").replace("\\n", "\n")
+    if marker and text.startswith(marker):
+        return text[len(marker):].strip()
+    return text
 
 
-def _validate_whatsapp_web_source_prefix(config: SoulModeConfig) -> None:
-    prefix = str(config.whatsapp_reply_prefix or "").replace("\\n", "\n")
-    if not prefix.strip():
-        raise MemuClientError(
-            "WhatsApp web_source history requires whatsapp.reply_prefix so from_me rows can be split safely"
-        )
-    matched, stripped = _strip_soul_prefix(f"{prefix}probe", config.soul_id)
-    if not matched or stripped != "probe":
-        raise MemuClientError(
-            "WhatsApp web_source history requires whatsapp.reply_prefix to match the configured soul_id"
-        )
+def _source_id_matches_msg_key(source_id: str, msg_key: str) -> bool:
+    source = str(source_id or "").strip()
+    key = str(msg_key or "").strip()
+    return bool(source and key and (source == key or source in key))
+
+
+def _assistant_source_message_ids(agent: Any) -> set[str]:
+    db = getattr(agent, "_session_db", None)
+    session_id = str(getattr(agent, "session_id", "") or "").strip()
+    if not db or not session_id:
+        return set()
+    out: set[str] = set()
+    for msg in db.get_messages(session_id):
+        if msg.get("role") == "assistant":
+            source_message_id = str(msg.get("source_message_id") or "").strip()
+            if source_message_id:
+                out.add(source_message_id)
+    return out
 
 
 def _write_whatsapp_soul_history_status(
@@ -349,16 +347,27 @@ def _contact_name(row: sqlite3.Row, prefix: str) -> str:
     return ""
 
 
-def _web_source_row_to_history(row: sqlite3.Row, *, soul_id: str, fallback_user_name: str) -> dict[str, Any] | None:
+def _web_source_row_to_history(
+    row: sqlite3.Row,
+    *,
+    soul_id: str,
+    fallback_user_name: str,
+    reply_prefix: str,
+    assistant_source_message_ids: set[str],
+) -> dict[str, Any] | None:
     body = str(row["body"] or "").strip()
     if not body:
         return None
 
     from_me = bool(row["from_me"])
-    is_soul, stripped = _strip_soul_prefix(body, soul_id)
+    msg_key = str(row["msg_key"] or "")
+    is_soul = from_me and any(
+        _source_id_matches_msg_key(source_id, msg_key)
+        for source_id in assistant_source_message_ids
+    )
     if from_me and is_soul:
         role = "assistant"
-        content = stripped or body
+        content = _strip_configured_reply_prefix(body, reply_prefix) or body
         sender_id = f"soul:{soul_id}" if soul_id else None
         sender_name = soul_id or None
     else:
@@ -396,6 +405,7 @@ def _load_whatsapp_web_source_history(
     if not db_path.exists():
         raise FileNotFoundError(str(db_path))
 
+    assistant_source_message_ids = _assistant_source_message_ids(agent)
     chat_id = str(getattr(agent, "_chat_id", "") or "").strip()
     chat_local_id = _jid_local(chat_id)
     if not chat_id and not chat_local_id:
@@ -455,6 +465,8 @@ def _load_whatsapp_web_source_history(
             row,
             soul_id=config.soul_id,
             fallback_user_name=str(getattr(agent, "_user_name", "") or ""),
+            reply_prefix=config.whatsapp_reply_prefix,
+            assistant_source_message_ids=assistant_source_message_ids,
         )
         if item is not None:
             history.append(item)
@@ -489,7 +501,6 @@ def _load_history(
     if platform == "whatsapp" and config.whatsapp_history_source == "web_source":
         db_path = _expand_path(config.whatsapp_web_source_db)
         try:
-            _validate_whatsapp_web_source_prefix(config)
             history = _load_whatsapp_web_source_history(
                 agent,
                 config,
