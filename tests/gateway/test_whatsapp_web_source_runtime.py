@@ -5,8 +5,28 @@ import subprocess
 import sqlite3
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
+from gateway.platforms import whatsapp as whatsapp_module
 from gateway.platforms.whatsapp import WhatsAppAdapter
 from gateway.status import read_runtime_status
+
+
+def test_whatsapp_process_termination_uses_posix_process_group(monkeypatch):
+    calls = []
+    monkeypatch.setattr(whatsapp_module, "_IS_WINDOWS", False)
+    monkeypatch.setattr(whatsapp_module.os, "getpgid", lambda pid: 4321)
+    monkeypatch.setattr(
+        whatsapp_module.os,
+        "killpg",
+        lambda pgid, sig: calls.append((pgid, sig)),
+    )
+
+    whatsapp_module._terminate_bridge_process(SimpleNamespace(pid=1234), force=False)
+    whatsapp_module._terminate_bridge_process(SimpleNamespace(pid=1234), force=True)
+
+    assert calls == [
+        (4321, whatsapp_module.signal.SIGTERM),
+        (4321, whatsapp_module.signal.SIGKILL),
+    ]
 
 
 def test_whatsapp_web_source_defaults_enabled_headless():

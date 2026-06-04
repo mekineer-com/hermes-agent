@@ -157,6 +157,13 @@ def _terminate_bridge_process(proc, *, force: bool = False) -> None:
             raise OSError(details or f"taskkill failed for PID {proc.pid}")
         return
 
+    # POSIX branch after the _IS_WINDOWS return above: children are launched with os.setsid().
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL if force else signal.SIGTERM)
+        return
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
     import psutil
     try:
         parent = psutil.Process(proc.pid)
