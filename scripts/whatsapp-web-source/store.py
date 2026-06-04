@@ -153,17 +153,19 @@ def upsert_message(con: sqlite3.Connection, row: dict[str, Any]) -> dict[str, An
           timestamp=case when ? then excluded.timestamp else whatsapp_messages.timestamp end,
           type=case when ? then excluded.type else whatsapp_messages.type end,
           body=case
-            when excluded.body is not null and excluded.body != '' then excluded.body
+            when ? and excluded.body is not null and excluded.body != '' then excluded.body
+            when (whatsapp_messages.body is null or whatsapp_messages.body = '')
+                 and excluded.body is not null and excluded.body != '' then excluded.body
             else whatsapp_messages.body
           end,
-          author_id=coalesce(excluded.author_id, whatsapp_messages.author_id),
-          author_local_id=coalesce(excluded.author_local_id, whatsapp_messages.author_local_id),
-          from_id=coalesce(excluded.from_id, whatsapp_messages.from_id),
-          from_local_id=coalesce(excluded.from_local_id, whatsapp_messages.from_local_id),
-          to_id=coalesce(excluded.to_id, whatsapp_messages.to_id),
-          to_local_id=coalesce(excluded.to_local_id, whatsapp_messages.to_local_id),
+          author_id=case when ? then coalesce(excluded.author_id, whatsapp_messages.author_id) else coalesce(whatsapp_messages.author_id, excluded.author_id) end,
+          author_local_id=case when ? then coalesce(excluded.author_local_id, whatsapp_messages.author_local_id) else coalesce(whatsapp_messages.author_local_id, excluded.author_local_id) end,
+          from_id=case when ? then coalesce(excluded.from_id, whatsapp_messages.from_id) else coalesce(whatsapp_messages.from_id, excluded.from_id) end,
+          from_local_id=case when ? then coalesce(excluded.from_local_id, whatsapp_messages.from_local_id) else coalesce(whatsapp_messages.from_local_id, excluded.from_local_id) end,
+          to_id=case when ? then coalesce(excluded.to_id, whatsapp_messages.to_id) else coalesce(whatsapp_messages.to_id, excluded.to_id) end,
+          to_local_id=case when ? then coalesce(excluded.to_local_id, whatsapp_messages.to_local_id) else coalesce(whatsapp_messages.to_local_id, excluded.to_local_id) end,
           has_media=case when ? then excluded.has_media else whatsapp_messages.has_media end,
-          media_placeholder=coalesce(excluded.media_placeholder, whatsapp_messages.media_placeholder),
+          media_placeholder=case when ? then coalesce(excluded.media_placeholder, whatsapp_messages.media_placeholder) else coalesce(whatsapp_messages.media_placeholder, excluded.media_placeholder) end,
           ack=coalesce(excluded.ack, whatsapp_messages.ack),
           revoked=case when whatsapp_messages.revoked = 1 then 1 else excluded.revoked end,
           revoke_source=coalesce(whatsapp_messages.revoke_source, excluded.revoke_source),
@@ -194,6 +196,14 @@ def upsert_message(con: sqlite3.Connection, row: dict[str, Any]) -> dict[str, An
             ts,
             ts,
             json.dumps(row.get("raw", row), ensure_ascii=False, sort_keys=True),
+            int(incoming_wins),
+            int(incoming_wins),
+            int(incoming_wins),
+            int(incoming_wins),
+            int(incoming_wins),
+            int(incoming_wins),
+            int(incoming_wins),
+            int(incoming_wins),
             int(incoming_wins),
             int(incoming_wins),
             int(incoming_wins),

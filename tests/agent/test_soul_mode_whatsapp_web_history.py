@@ -175,3 +175,36 @@ def test_whatsapp_web_history_excludes_current_turn_and_splits_soul_prefix(tmp_p
         ("assistant", "I am listening.", "Siri")
     ]
 
+
+def test_whatsapp_web_history_state_db_fallback_still_applies_active_since(tmp_path):
+    web_db = tmp_path / "web_source.db"
+    con = _init_web_source_db(web_db)
+    con.commit()
+    con.close()
+    agent = _agent(tmp_path, web_db)
+    agent._session_db.create_session(session_id="s1", source="whatsapp", user_id="marcos")
+    agent._session_db.append_message(
+        session_id="s1",
+        role="user",
+        content="before Siri joined WhatsApp",
+        timestamp=100,
+    )
+    agent._session_db.append_message(
+        session_id="s1",
+        role="user",
+        content="after Siri joined WhatsApp",
+        timestamp=201,
+    )
+
+    config = configure(
+        enabled=True,
+        role="soul",
+        soul_id="Siri",
+        user_id="marcos",
+        whatsapp_history_source="web_source",
+        whatsapp_web_source_db=str(web_db),
+    )
+
+    history = _load_history(agent, [], config)
+
+    assert [m["content"] for m in history] == ["after Siri joined WhatsApp"]

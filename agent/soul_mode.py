@@ -396,6 +396,25 @@ def _load_whatsapp_web_source_history(
     return history
 
 
+def _filter_history_by_active_since(
+    history: list[dict[str, Any]],
+    *,
+    active_since: float | None,
+) -> list[dict[str, Any]]:
+    if active_since is None:
+        return history
+    out: list[dict[str, Any]] = []
+    for msg in history:
+        if not isinstance(msg, dict):
+            continue
+        timestamp = msg.get("timestamp")
+        if not isinstance(timestamp, (int, float)):
+            continue
+        if float(timestamp) >= float(active_since):
+            out.append(msg)
+    return out
+
+
 def _load_history(
     agent: Any,
     conversation_history: List[Dict[str, Any]] | None,
@@ -425,6 +444,11 @@ def _load_history(
         try:
             db_history = db.get_messages(agent.session_id)
             if isinstance(db_history, list) and db_history:
+                if platform == "whatsapp":
+                    db_history = _filter_history_by_active_since(
+                        db_history,
+                        active_since=active_since,
+                    )
                 return db_history
         except Exception:
             logger.debug("memU: failed to load SessionDB history for %s", agent.session_id, exc_info=True)

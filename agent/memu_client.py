@@ -93,6 +93,8 @@ def normalize_history_for_memu(
         # scenarios that can stamp the wrong person across a DM transcript.
         name = str(msg.get("name") or "").strip()
         if not name:
+            name = str(msg.get("sender_name") or "").strip()
+        if not name:
             name = role_to_name.get(role, "")
         if name:
             out["name"] = name

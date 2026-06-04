@@ -48,7 +48,7 @@ class StoreTest(unittest.TestCase):
         return self.con.execute(
             """
             select msg_key, chat_id, chat_local_id, from_me, timestamp, type, body,
-                   has_media, source, ack, revoked
+                   author_id, from_id, to_id, has_media, source, ack, revoked
             from whatsapp_messages where msg_key = 'm1'
             """
         ).fetchone()
@@ -96,6 +96,35 @@ class StoreTest(unittest.TestCase):
 
         got = self.fetch_message()
         self.assertEqual(got["body"], "edited")
+        self.assertEqual(got["source"], "event:message_edit")
+
+    def test_lower_rank_event_cannot_clobber_edited_body_or_sender_ids(self):
+        store.upsert_message(
+            self.con,
+            row(
+                source="event:message_edit",
+                body="edited",
+                author_id="author-phone@c.us",
+                from_id="from-phone@c.us",
+                to_id="to-phone@c.us",
+            ),
+        )
+        store.upsert_message(
+            self.con,
+            row(
+                source="event:message_create",
+                body="stale",
+                author_id="author-lid@lid",
+                from_id="from-lid@lid",
+                to_id="to-lid@lid",
+            ),
+        )
+
+        got = self.fetch_message()
+        self.assertEqual(got["body"], "edited")
+        self.assertEqual(got["author_id"], "author-phone@c.us")
+        self.assertEqual(got["from_id"], "from-phone@c.us")
+        self.assertEqual(got["to_id"], "to-phone@c.us")
         self.assertEqual(got["source"], "event:message_edit")
 
     def test_ack_and_revoke_update_existing_row(self):

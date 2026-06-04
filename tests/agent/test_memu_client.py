@@ -116,6 +116,14 @@ def test_normalize_history_for_memu_still_fills_assistant_name_from_soul_name():
     assert out == [{"role": "assistant", "content": "hi", "name": "Echo"}]
 
 
+def test_normalize_history_for_memu_preserves_sender_name():
+    out = normalize_history_for_memu(
+        [{"role": "user", "content": "hello", "sender_name": "Raquel"}],
+        soul_name="Siri",
+    )
+    assert out == [{"role": "user", "content": "hello", "name": "Raquel"}]
+
+
 def test_memu_turn_passes_user_name_for_current_message_speaker(monkeypatch):
     client = MemuHttpClient(base_url="http://127.0.0.1:8099")
     captured = {}
