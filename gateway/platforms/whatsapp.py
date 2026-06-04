@@ -23,6 +23,7 @@ import platform
 import re
 import shutil
 import signal
+import sqlite3
 import subprocess
 import time
 
@@ -194,6 +195,60 @@ def _coerce_bool(value: Any, default: bool = False) -> bool:
 def _expand_user_path(value: Any) -> Path:
     return Path(os.path.expandvars(os.path.expanduser(str(value))))
 
+
+def _coerce_optional_float(value: Any) -> Optional[float]:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_configured_soul_active_since() -> Optional[float]:
+    config_path = get_hermes_home() / "config.yaml"
+    try:
+        import yaml
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return None
+    soul_mode = data.get("soul_mode")
+    agents = soul_mode.get("agents") if isinstance(soul_mode, dict) else None
+    if not isinstance(agents, dict):
+        return None
+    soul_ids = []
+    for agent_cfg in agents.values():
+        if not isinstance(agent_cfg, dict):
+            continue
+        if str(agent_cfg.get("role") or "").strip().lower() != "soul":
+            continue
+        if str(agent_cfg.get("enabled", "true")).strip().lower() in {"false", "0", "no", "off"}:
+            continue
+        soul_id = str(agent_cfg.get("soul_id") or "").strip()
+        if soul_id:
+            soul_ids.append(soul_id)
+    if not soul_ids:
+        return None
+    state_path = get_hermes_home() / "state.db"
+    if not state_path.exists():
+        return None
+    try:
+        with sqlite3.connect(str(state_path)) as con:
+            placeholders = ",".join("?" for _ in soul_ids)
+            rows = con.execute(
+                f"SELECT active_since FROM souls WHERE soul_id IN ({placeholders})",
+                soul_ids,
+            ).fetchall()
+    except sqlite3.Error:
+        return None
+    values = []
+    for row in rows:
+        parsed = _coerce_optional_float(row[0])
+        if parsed is not None:
+            values.append(parsed)
+    return min(values) if values else None
+
+
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -311,6 +366,11 @@ class WhatsAppAdapter(BasePlatformAdapter):
         )
         self._web_source_client_id = str(config.extra.get("web_source_client_id", "memu-web-source"))
         self._web_source_backfill_limit = int(config.extra.get("web_source_backfill_limit", 100))
+        self._web_source_backfill_since = _coerce_optional_float(
+            config.extra.get("web_source_backfill_since")
+        )
+        if self._web_source_backfill_since is None:
+            self._web_source_backfill_since = _resolve_configured_soul_active_since()
         self._web_source_contact_snapshot_interval = int(
             config.extra.get("web_source_contact_snapshot_interval", 900)
         )
@@ -840,6 +900,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
             "--backfill-limit", str(self._web_source_backfill_limit),
             "--contact-snapshot-interval", str(self._web_source_contact_snapshot_interval),
         ]
+        if self._web_source_backfill_since is not None:
+            command.extend(["--backfill-since", str(int(self._web_source_backfill_since))])
         if not self._web_source_contact_snapshot:
             command.append("--no-contact-snapshot")
         if self._web_source_user_agent:

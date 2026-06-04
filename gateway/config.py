@@ -828,6 +828,7 @@ def load_gateway_config() -> GatewayConfig:
                     "web_source_auth",
                     "web_source_client_id",
                     "web_source_backfill_limit",
+                    "web_source_backfill_since",
                     "web_source_contact_snapshot_interval",
                     "web_source_contact_snapshot",
                     "web_source_user_agent",

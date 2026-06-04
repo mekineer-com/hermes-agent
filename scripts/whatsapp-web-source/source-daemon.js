@@ -94,6 +94,10 @@ function mediaPlaceholder(message) {
   }
 }
 
+function messageTimestamp(message) {
+  return Number(message.timestamp || message.rawData?.t || 0);
+}
+
 function normalizeMessage(message, source) {
   const msgKey = messageKey(message);
   const chatId = messageChatId(message);
@@ -109,7 +113,7 @@ function normalizeMessage(message, source) {
     chat_id: chatId,
     chat_local_id: jidLocal(chatId),
     from_me: Boolean(message.fromMe),
-    timestamp: Number(message.timestamp || message.rawData?.t || 0),
+    timestamp: messageTimestamp(message),
     type: String(message.type || 'unknown'),
     body,
     author_id: authorId,
@@ -138,6 +142,14 @@ function normalizeChat(chat) {
     last_timestamp: chat.timestamp || null,
     raw: chat.rawData || {},
   };
+}
+
+function isConversationChatId(chatId) {
+  const value = String(chatId || '').trim().toLowerCase();
+  if (!value) return false;
+  if (value === 'status@broadcast') return false;
+  if (value.endsWith('@newsletter')) return false;
+  return true;
 }
 
 function normalizeContactRow(contact) {
@@ -336,7 +348,7 @@ async function configureResourceBlocking(page) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help || args.h) {
-    console.log(`Usage: node source-daemon.js [options]\n\nOptions:\n  --db PATH                 SQLite projection DB (default ~/.hermes/whatsapp/web_source.db)\n  --status PATH             JSON status path (default ~/.hermes/whatsapp/web_source_status.json)\n  --auth PATH               LocalAuth data dir (default ~/.hermes/whatsapp/wwebjs_auth)\n  --client-id ID            LocalAuth client id (default memu-web-source)\n  --backfill-chat JID       Backfill one chat after ready\n  --backfill-limit N        Backfill limit (default 100, max 500)\n  --no-contact-snapshot     Do not snapshot WhatsApp contact/name models after ready\n  --contact-snapshot-interval SECONDS\n                            Refresh contacts periodically (default 900, 0 disables)\n  --user-agent UA           Override WhatsApp Web browser user-agent\n  --headful                 Show Chromium instead of running headless\n  --exit-after-backfill     Exit after bounded backfill\n  --no-resource-block       Do not block image/media/font requests after ready\n`);
+    console.log(`Usage: node source-daemon.js [options]\n\nOptions:\n  --db PATH                 SQLite projection DB (default ~/.hermes/whatsapp/web_source.db)\n  --status PATH             JSON status path (default ~/.hermes/whatsapp/web_source_status.json)\n  --auth PATH               LocalAuth data dir (default ~/.hermes/whatsapp/wwebjs_auth)\n  --client-id ID            LocalAuth client id (default memu-web-source)\n  --backfill-chat JID       Backfill one chat after ready\n  --backfill-since EPOCH    Backfill all chats at/after this Unix timestamp\n  --backfill-limit N        Backfill limit per chat (default 100, max 500)\n  --no-contact-snapshot     Do not snapshot WhatsApp contact/name models after ready\n  --contact-snapshot-interval SECONDS\n                            Refresh contacts periodically (default 900, 0 disables)\n  --user-agent UA           Override WhatsApp Web browser user-agent\n  --headful                 Show Chromium instead of running headless\n  --exit-after-backfill     Exit after bounded backfill\n  --no-resource-block       Do not block image/media/font requests after ready\n`);
     return;
   }
   const { Client, LocalAuth, Events } = loadWWebJS();
@@ -346,6 +358,7 @@ async function main() {
   const authPath = path.resolve(expandPath(args.auth || '~/.hermes/whatsapp/wwebjs_auth'));
   const clientId = String(args['client-id'] || 'memu-web-source');
   const backfillChat = args['backfill-chat'] ? String(args['backfill-chat']) : null;
+  const backfillSince = Math.max(parseInt(args['backfill-since'] || '0', 10) || 0, 0);
   const backfillLimit = Math.min(Math.max(parseInt(args['backfill-limit'] || '100', 10) || 100, 1), 500);
   const contactSnapshotEnabled = args['no-contact-snapshot'] !== true;
   const contactSnapshotInterval = Math.max(parseInt(args['contact-snapshot-interval'] || '900', 10) || 0, 0);
@@ -459,6 +472,62 @@ async function main() {
     if (contactSnapshotTimer.unref) contactSnapshotTimer.unref();
   }
 
+  async function persistBackfillMessages(messages, source, since) {
+    let inserted = 0;
+    let updated = 0;
+    let skippedBeforeSince = 0;
+    for (const message of messages) {
+      if (since > 0 && messageTimestamp(message) < since) {
+        skippedBeforeSince += 1;
+        continue;
+      }
+      const result = await persistMessage(message, source);
+      if (result.action === 'insert') inserted += 1;
+      else updated += 1;
+    }
+    return { inserted, updated, skippedBeforeSince };
+  }
+
+  async function backfillChatMessages(chat, chatId, since) {
+    await store.command('upsert_chat', { row: normalizeChat(chat) });
+    const messages = await chat.fetchMessages({ limit: backfillLimit });
+    const result = await persistBackfillMessages(messages, 'backfill:fetchMessages', since);
+    return { ...result, fetched: messages.length, chatId };
+  }
+
+  async function backfillChatsSince(since) {
+    if (!since) return null;
+    status.write({
+      state: 'backfilling',
+      wwebjs_ready: true,
+      db_writeable: true,
+      backfill_since: since,
+    }, { immediate: true });
+    const chats = await client.getChats();
+    let scannedChats = 0;
+    let backfilledChats = 0;
+    let fetched = 0;
+    let inserted = 0;
+    let updated = 0;
+    let skippedBeforeSince = 0;
+    for (const chat of chats) {
+      const chatId = idSerialized(chat.id);
+      if (!isConversationChatId(chatId)) continue;
+      scannedChats += 1;
+      try {
+        const result = await backfillChatMessages(chat, chatId, since);
+        fetched += result.fetched;
+        inserted += result.inserted;
+        updated += result.updated;
+        skippedBeforeSince += result.skippedBeforeSince;
+        if (result.inserted || result.updated) backfilledChats += 1;
+      } catch (error) {
+        console.error(`backfill ${chatId} failed:`, error);
+      }
+    }
+    return { scannedChats, backfilledChats, fetched, inserted, updated, skippedBeforeSince };
+  }
+
   function persistFailed(label, error) {
     console.error(`${label} failed:`, error);
     status.write(
@@ -498,33 +567,25 @@ async function main() {
     await snapshotContacts().catch((error) => persistFailed('contact snapshot', error));
     scheduleContactSnapshots();
 
-    if (backfillChat) {
+    if (backfillSince > 0) {
       try {
-        const chat = await client.getChatById(backfillChat);
-        await store.command('upsert_chat', { row: normalizeChat(chat) });
-        const messages = await chat.fetchMessages({ limit: backfillLimit });
-        let inserted = 0;
-        let updated = 0;
-        for (const message of messages) {
-          const result = await persistMessage(message, 'backfill:fetchMessages');
-          if (result.action === 'insert') inserted += 1;
-          else updated += 1;
-        }
-        console.log(`backfill ${backfillChat}: ${messages.length} rows (${inserted} inserted, ${updated} updated)`);
+        const result = await backfillChatsSince(backfillSince);
+        console.log(
+          `backfill since ${backfillSince}: ${result.scannedChats} chats, ${result.fetched} fetched ` +
+          `(${result.inserted} inserted, ${result.updated} updated)`,
+        );
         status.write({
           state: 'ready',
           wwebjs_ready: true,
           db_writeable: true,
           last_backfill_at: Math.floor(Date.now() / 1000),
-          last_backfill_chat: backfillChat,
-          last_backfill_rows: messages.length,
+          last_backfill_since: backfillSince,
+          last_backfill_chats: result.backfilledChats,
+          last_backfill_rows: result.fetched,
+          last_backfill_inserted: result.inserted,
+          last_backfill_updated: result.updated,
+          last_backfill_skipped_before_since: result.skippedBeforeSince,
         }, { immediate: true });
-        if (exitAfterBackfill) {
-          await client.destroy();
-          store.close();
-          status.flush();
-          process.exit(0);
-        }
       } catch (error) {
         console.error('backfill failed:', error);
         status.write(
@@ -532,6 +593,40 @@ async function main() {
           { immediate: true },
         );
       }
+    }
+
+    if (backfillChat) {
+      try {
+        const chat = await client.getChatById(backfillChat);
+        const result = await backfillChatMessages(chat, backfillChat, backfillSince);
+        console.log(
+          `backfill ${backfillChat}: ${result.fetched} rows ` +
+          `(${result.inserted} inserted, ${result.updated} updated)`,
+        );
+        status.write({
+          state: 'ready',
+          wwebjs_ready: true,
+          db_writeable: true,
+          last_backfill_at: Math.floor(Date.now() / 1000),
+          last_backfill_chat: backfillChat,
+          last_backfill_rows: result.fetched,
+          last_backfill_inserted: result.inserted,
+          last_backfill_updated: result.updated,
+        }, { immediate: true });
+      } catch (error) {
+        console.error('backfill failed:', error);
+        status.write(
+          { state: 'degraded', wwebjs_ready: true, db_writeable: !store.exitedError, error: error.message },
+          { immediate: true },
+        );
+      }
+    }
+
+    if (exitAfterBackfill && (backfillSince > 0 || backfillChat)) {
+      await client.destroy();
+      store.close();
+      status.flush();
+      process.exit(0);
     }
   });
 

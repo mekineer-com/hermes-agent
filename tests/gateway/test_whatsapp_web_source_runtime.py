@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import subprocess
+import sqlite3
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 from gateway.platforms.whatsapp import WhatsAppAdapter
@@ -57,6 +58,7 @@ def test_whatsapp_web_source_command_uses_configured_paths(tmp_path, monkeypatch
                 "web_source_auth": str(auth_path),
                 "web_source_client_id": "siri-source",
                 "web_source_backfill_limit": 25,
+                "web_source_backfill_since": 123,
                 "web_source_contact_snapshot_interval": 60,
                 "web_source_chromium_path": "/usr/bin/chromium",
             },
@@ -77,7 +79,31 @@ def test_whatsapp_web_source_command_uses_configured_paths(tmp_path, monkeypatch
     assert command[command.index("--client-id") + 1] == "siri-source"
     assert command[command.index("--backfill-limit") + 1] == "25"
     assert command[command.index("--contact-snapshot-interval") + 1] == "60"
+    assert command[command.index("--backfill-since") + 1] == "123"
     assert popen.call_args.kwargs["env"]["PUPPETEER_EXECUTABLE_PATH"] == "/usr/bin/chromium"
+
+
+def test_whatsapp_web_source_command_uses_soul_active_since(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "soul_mode:\n"
+        "  agents:\n"
+        "    main:\n"
+        "      enabled: true\n"
+        "      role: soul\n"
+        "      soul_id: Siri\n",
+        encoding="utf-8",
+    )
+    with sqlite3.connect(hermes_home / "state.db") as con:
+        con.execute("create table souls(soul_id text primary key, active_since real not null)")
+        con.execute("insert into souls values (?, ?)", ("Siri", 1780160400.0))
+    adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={}))
+
+    command = adapter._web_source_command()
+
+    assert command[command.index("--backfill-since") + 1] == "1780160400"
 
 
 def test_whatsapp_web_source_pairing_restarts_headful(tmp_path, monkeypatch):
