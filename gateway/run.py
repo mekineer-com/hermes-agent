@@ -8210,12 +8210,25 @@ class GatewayRunner:
                     )
                 elif status_code == 400:
                     status_hint = " The request was rejected by the API."
-            return (
+            error_response = (
                 f"Sorry, I encountered an error ({error_type}).\n"
                 f"{error_detail}\n"
                 f"{status_hint}"
                 "Try again or use /reset to start a fresh session."
             )
+            if source.platform == Platform.WHATSAPP:
+                self._persist_whatsapp_exception_turn(
+                    session_entry=session_entry,
+                    source=source,
+                    raw_message=(
+                        event.raw_message
+                        if isinstance(getattr(event, "raw_message", None), dict)
+                        else {}
+                    ),
+                    message_text=message_text,
+                    error_response=error_response,
+                )
+            return error_response
         finally:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
@@ -10145,6 +10158,63 @@ class GatewayRunner:
             )
         except Exception:
             logger.debug("Failed to stamp WhatsApp delivered assistant source key", exc_info=True)
+
+    def _persist_whatsapp_exception_turn(
+        self,
+        *,
+        session_entry: Any,
+        source: SessionSource,
+        raw_message: dict[str, Any],
+        message_text: str,
+        error_response: str,
+    ) -> None:
+        if not session_entry or not getattr(session_entry, "session_id", None):
+            return
+        ts = datetime.now().isoformat()
+        raw = raw_message if isinstance(raw_message, dict) else {}
+        source_chat_id = str(raw.get("chatId") or "").strip() or None
+        source_message_id = str(raw.get("messageId") or "").strip() or None
+        sender_id = str(raw.get("senderId") or "").strip() or None
+        sender_name = str(raw.get("senderName") or "").strip() or None
+        message_timestamp = _coerce_gateway_timestamp(raw.get("timestamp"))
+        user_entry: dict[str, Any] = {
+            "role": "user",
+            "content": message_text,
+            "timestamp": message_timestamp if message_timestamp is not None else ts,
+        }
+        if sender_id or sender_name:
+            user_entry.update({"sender_id": sender_id, "sender_name": sender_name})
+        if source_chat_id and source_message_id:
+            user_entry.update({
+                "source_chat_id": source_chat_id,
+                "source_message_id": source_message_id,
+            })
+        try:
+            self.session_store.append_to_transcript(session_entry.session_id, user_entry)
+            if self._session_db and (sender_id or sender_name):
+                try:
+                    self._session_db.set_latest_user_sender(
+                        session_entry.session_id,
+                        sender_id=sender_id,
+                        sender_name=sender_name,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to stamp latest user sender for failed WhatsApp session %s",
+                        session_entry.session_id,
+                        exc_info=True,
+                    )
+            self.session_store.append_to_transcript(
+                session_entry.session_id,
+                {
+                    "role": "assistant",
+                    "content": error_response,
+                    "timestamp": ts,
+                    "source_chat_id": source.chat_id,
+                },
+            )
+        except Exception:
+            logger.debug("Failed to persist failed WhatsApp turn", exc_info=True)
 
     def _persist_whatsapp_history_event(self, event: MessageEvent) -> None:
         if not self._session_db:
