@@ -228,22 +228,23 @@ class TestConnectCleanup:
     """Verify failure paths release the scoped session lock."""
 
     @pytest.mark.asyncio
-    async def test_releases_lock_when_npm_install_fails(self):
+    async def test_releases_lock_when_bridge_dependencies_missing(self):
         adapter = _make_adapter()
 
         def _path_exists(path_obj):
             return not str(path_obj).endswith("node_modules")
 
-        install_result = MagicMock(returncode=1, stderr="install failed")
-
         with patch("gateway.platforms.whatsapp.check_whatsapp_requirements", return_value=True), \
              patch.object(Path, "exists", autospec=True, side_effect=_path_exists), \
-             patch("subprocess.run", return_value=install_result), \
+             patch("subprocess.run") as mock_run, \
              patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
              patch("gateway.status.release_scoped_lock") as mock_release:
             result = await adapter.connect()
 
         assert result is False
+        mock_run.assert_not_called()
+        assert adapter.fatal_error_code == "whatsapp_bridge_dependencies_missing"
+        assert adapter.fatal_error_retryable is False
         mock_release.assert_called_once_with("whatsapp-session", str(adapter._session_path))
         assert adapter._platform_lock_identity is None
 
@@ -636,7 +637,7 @@ class TestNoCredsPreflight:
     enabled but the user never finished pairing (no ``creds.json``).
 
     Without this guard, every gateway boot:
-      • spawned the bridge subprocess (npm install if needed)
+      • spawned the bridge subprocess
       • waited 30s for status:connected (never happens without creds)
       • queued WhatsApp for indefinite retries that would just repeat
     With the guard, ``connect()`` returns False immediately with a

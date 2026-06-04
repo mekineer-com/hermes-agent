@@ -621,32 +621,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
             logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
 
         try:
-            # Auto-install npm dependencies if node_modules doesn't exist
             bridge_dir = bridge_path.parent
             if not (bridge_dir / "node_modules").exists():
-                print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
-                # Resolve npm path so Windows can execute the .cmd shim.
-                # shutil.which honours PATHEXT; on POSIX it returns the
-                # plain executable path.
-                _npm_bin = shutil.which("npm") or "npm"
-                try:
-                    # Read timeout from environment variable, default to 300 seconds (5 minutes)
-                    # to accommodate slower systems like Unraid NAS
-                    npm_install_timeout = int(os.environ.get("WHATSAPP_NPM_INSTALL_TIMEOUT", "300"))
-                    install_result = subprocess.run(
-                        [_npm_bin, "install", "--silent"],
-                        cwd=str(bridge_dir),
-                        capture_output=True,
-                        text=True,
-                        timeout=npm_install_timeout,
-                    )
-                    if install_result.returncode != 0:
-                        print(f"[{self.name}] npm install failed: {install_result.stderr}")
-                        return False
-                    print(f"[{self.name}] Dependencies installed")
-                except Exception as e:
-                    print(f"[{self.name}] Failed to install dependencies: {e}")
-                    return False
+                message = f"WhatsApp bridge dependencies missing — run `npm install` in {bridge_dir}"
+                logger.warning("[%s] %s", self.name, message)
+                self._set_fatal_error("whatsapp_bridge_dependencies_missing", message, retryable=False)
+                return False
 
             # Ensure session directory exists
             self._session_path.mkdir(parents=True, exist_ok=True)
@@ -956,26 +936,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
         web_source_dir = self._web_source_script.parent
         if not (web_source_dir / "node_modules").exists():
-            _npm_bin = shutil.which("npm") or "npm"
-            try:
-                npm_install_timeout = int(os.environ.get("WHATSAPP_NPM_INSTALL_TIMEOUT", "300"))
-                install_result = subprocess.run(
-                    [_npm_bin, "install", "--silent"],
-                    cwd=str(web_source_dir),
-                    capture_output=True,
-                    text=True,
-                    timeout=npm_install_timeout,
-                )
-            except Exception as exc:
-                self._web_source_error = f"Failed to install WhatsApp web-source dependencies: {exc}"
-                logger.warning("[%s] %s", self.name, self._web_source_error)
-                self._write_whatsapp_runtime_status(force=True)
-                return False
-            if install_result.returncode != 0:
-                self._web_source_error = f"npm install failed for WhatsApp web-source: {install_result.stderr}"
-                logger.warning("[%s] %s", self.name, self._web_source_error)
-                self._write_whatsapp_runtime_status(force=True)
-                return False
+            self._web_source_error = (
+                f"WhatsApp web-source dependencies missing — run `npm install` in {web_source_dir}"
+            )
+            logger.warning("[%s] %s", self.name, self._web_source_error)
+            self._write_whatsapp_runtime_status(force=True)
+            return False
 
         self._web_source_db.parent.mkdir(parents=True, exist_ok=True)
         self._web_source_status_path.parent.mkdir(parents=True, exist_ok=True)

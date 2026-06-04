@@ -92,3 +92,33 @@ def test_whatsapp_web_source_missing_script_marks_degraded(tmp_path, monkeypatch
     assert whatsapp["bridge"]["state"] == "ready"
     assert whatsapp["web_source"]["state"] == "degraded"
     assert "missing.js" in whatsapp["web_source"]["error"]
+
+
+def test_whatsapp_web_source_missing_dependencies_marks_degraded_without_install(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    script = tmp_path / "source-daemon.js"
+    script.write_text("'use strict';\n", encoding="utf-8")
+    adapter = WhatsAppAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "web_source_enabled": True,
+                "web_source_script": str(script),
+                "web_source_status": str(tmp_path / "status.json"),
+            },
+        )
+    )
+    adapter._running = True
+    adapter._http_session = object()
+    adapter._bridge_health = {"status": "connected", "mode": "bot"}
+
+    with patch("subprocess.run") as mock_run:
+        assert adapter._start_web_source() is False
+
+    mock_run.assert_not_called()
+    state = read_runtime_status()
+    whatsapp = state["platforms"]["whatsapp"]
+    assert whatsapp["state"] == "degraded"
+    assert whatsapp["web_source"]["state"] == "degraded"
+    assert "npm install" in whatsapp["web_source"]["error"]
