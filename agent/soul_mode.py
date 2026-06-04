@@ -33,6 +33,7 @@ class SoulModeConfig:
     whatsapp_history_source: str = "state_db"
     whatsapp_web_source_db: str = "~/.hermes/whatsapp/web_source.db"
     whatsapp_history_limit: int = 250
+    whatsapp_reply_prefix: str = ""
     _client: MemuHttpClient | None = field(default=None, repr=False)
     _session_started: bool = field(default=False, repr=False)
 
@@ -88,6 +89,7 @@ def resolve_agent_config(user_config: dict | None, session_key: str) -> dict[str
         "whatsapp_history_source": "state_db",
         "whatsapp_web_source_db": "~/.hermes/whatsapp/web_source.db",
         "whatsapp_history_limit": 250,
+        "whatsapp_reply_prefix": "",
     }
     cfg = user_config if isinstance(user_config, dict) else {}
     soul_mode = cfg.get("soul_mode")
@@ -137,6 +139,9 @@ def resolve_agent_config(user_config: dict | None, session_key: str) -> dict[str
         out["whatsapp_history_limit"] = max(int(agent_cfg.get("whatsapp_history_limit", 250)), 1)
     except (TypeError, ValueError):
         out["whatsapp_history_limit"] = 250
+    whatsapp_cfg = cfg.get("whatsapp")
+    if isinstance(whatsapp_cfg, dict) and "reply_prefix" in whatsapp_cfg:
+        out["whatsapp_reply_prefix"] = str(whatsapp_cfg.get("reply_prefix") or "")
     return out
 
 
@@ -152,6 +157,7 @@ def configure(
     whatsapp_history_source: str = "state_db",
     whatsapp_web_source_db: str = "~/.hermes/whatsapp/web_source.db",
     whatsapp_history_limit: int = 250,
+    whatsapp_reply_prefix: str = "",
 ) -> SoulModeConfig:
     role_norm = str(role or "standard").strip().lower()
     try:
@@ -176,6 +182,7 @@ def configure(
         whatsapp_history_source=history_source,
         whatsapp_web_source_db=str(whatsapp_web_source_db or "~/.hermes/whatsapp/web_source.db").strip(),
         whatsapp_history_limit=history_limit,
+        whatsapp_reply_prefix=str(whatsapp_reply_prefix or ""),
     )
 
 
@@ -274,6 +281,52 @@ def _strip_soul_prefix(body: str, soul_id: str) -> tuple[bool, str]:
         if match:
             return True, text[match.end():].strip()
     return False, text
+
+
+def _validate_whatsapp_web_source_prefix(config: SoulModeConfig) -> None:
+    prefix = str(config.whatsapp_reply_prefix or "").replace("\\n", "\n")
+    if not prefix.strip():
+        raise MemuClientError(
+            "WhatsApp web_source history requires whatsapp.reply_prefix so from_me rows can be split safely"
+        )
+    matched, stripped = _strip_soul_prefix(f"{prefix}probe", config.soul_id)
+    if not matched or stripped != "probe":
+        raise MemuClientError(
+            "WhatsApp web_source history requires whatsapp.reply_prefix to match the configured soul_id"
+        )
+
+
+def _write_whatsapp_soul_history_status(
+    *,
+    state: str,
+    db_path: Path,
+    error: str | None = None,
+    rows: int | None = None,
+) -> None:
+    try:
+        from gateway.status import write_runtime_status
+        details: dict[str, Any] = {
+            "soul_history": {
+                "state": state,
+                "source": "web_source",
+                "db_path": str(db_path),
+            }
+        }
+        if error:
+            details["soul_history"]["error"] = error
+        if rows is not None:
+            details["soul_history"]["rows"] = rows
+        kwargs: dict[str, Any] = {
+            "platform": "whatsapp",
+            "platform_details": details,
+        }
+        if state == "degraded":
+            kwargs["platform_state"] = "degraded"
+            kwargs["error_code"] = "whatsapp_web_source_history_failed"
+            kwargs["error_message"] = error
+        write_runtime_status(**kwargs)
+    except Exception:
+        logger.debug("memU: failed to write WhatsApp soul history status", exc_info=True)
 
 
 def _contact_name(row: sqlite3.Row, prefix: str) -> str:
@@ -427,17 +480,28 @@ def _load_history(
         active_since = db.get_soul_active_since(config.soul_id)
 
     if platform == "whatsapp" and config.whatsapp_history_source == "web_source":
+        db_path = _expand_path(config.whatsapp_web_source_db)
         try:
+            _validate_whatsapp_web_source_prefix(config)
             history = _load_whatsapp_web_source_history(
                 agent,
                 config,
                 active_since=active_since,
                 current_source_message_id=str(getattr(agent, "_gateway_source_message_id", "") or ""),
             )
-            if history:
-                return history
-        except Exception:
-            logger.debug("memU: failed to load WhatsApp web-source history", exc_info=True)
+            _write_whatsapp_soul_history_status(state="ready", db_path=db_path, rows=len(history))
+            return history
+        except Exception as exc:
+            error = str(exc) or type(exc).__name__
+            logger.warning(
+                "memU: WhatsApp web_source history failed; refusing state_db fallback: %s",
+                error,
+                exc_info=True,
+            )
+            _write_whatsapp_soul_history_status(state="degraded", db_path=db_path, error=error)
+            if isinstance(exc, MemuClientError):
+                raise
+            raise MemuClientError(f"WhatsApp web_source history failed: {error}") from exc
 
     db = getattr(agent, "_session_db", None)
     if db and agent.session_id:

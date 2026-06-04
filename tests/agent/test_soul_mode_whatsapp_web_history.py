@@ -1,7 +1,11 @@
 import sqlite3
 from types import SimpleNamespace
 
+import pytest
+
+from agent.memu_client import MemuClientError
 from agent.soul_mode import configure, _load_history
+from gateway.status import read_runtime_status
 from hermes_state import SessionDB
 
 
@@ -103,6 +107,20 @@ def _agent(tmp_path, web_db, *, current_source_message_id=""):
     )
 
 
+def _web_config(web_db, **kwargs):
+    data = {
+        "enabled": True,
+        "role": "soul",
+        "soul_id": "Siri",
+        "user_id": "marcos",
+        "whatsapp_history_source": "web_source",
+        "whatsapp_web_source_db": str(web_db),
+        "whatsapp_reply_prefix": "✦ *Siri*: ",
+    }
+    data.update(kwargs)
+    return configure(**data)
+
+
 def test_whatsapp_web_history_applies_active_since_and_contact_names(tmp_path):
     web_db = tmp_path / "web_source.db"
     con = _init_web_source_db(web_db)
@@ -118,14 +136,7 @@ def test_whatsapp_web_history_applies_active_since_and_contact_names(tmp_path):
     con.commit()
     con.close()
 
-    config = configure(
-        enabled=True,
-        role="soul",
-        soul_id="Siri",
-        user_id="marcos",
-        whatsapp_history_source="web_source",
-        whatsapp_web_source_db=str(web_db),
-    )
+    config = _web_config(web_db)
 
     history = _load_history(_agent(tmp_path, web_db), [], config)
 
@@ -156,14 +167,7 @@ def test_whatsapp_web_history_excludes_current_turn_and_splits_soul_prefix(tmp_p
     con.commit()
     con.close()
 
-    config = configure(
-        enabled=True,
-        role="soul",
-        soul_id="Siri",
-        user_id="marcos",
-        whatsapp_history_source="web_source",
-        whatsapp_web_source_db=str(web_db),
-    )
+    config = _web_config(web_db)
 
     history = _load_history(
         _agent(tmp_path, web_db, current_source_message_id="3EB0CURRENT"),
@@ -176,7 +180,7 @@ def test_whatsapp_web_history_excludes_current_turn_and_splits_soul_prefix(tmp_p
     ]
 
 
-def test_whatsapp_web_history_state_db_fallback_still_applies_active_since(tmp_path):
+def test_whatsapp_web_history_empty_result_does_not_fall_back_to_state_db(tmp_path):
     web_db = tmp_path / "web_source.db"
     con = _init_web_source_db(web_db)
     con.commit()
@@ -196,15 +200,35 @@ def test_whatsapp_web_history_state_db_fallback_still_applies_active_since(tmp_p
         timestamp=201,
     )
 
-    config = configure(
-        enabled=True,
-        role="soul",
-        soul_id="Siri",
-        user_id="marcos",
-        whatsapp_history_source="web_source",
-        whatsapp_web_source_db=str(web_db),
-    )
+    config = _web_config(web_db)
 
     history = _load_history(agent, [], config)
 
-    assert [m["content"] for m in history] == ["after Siri joined WhatsApp"]
+    assert history == []
+
+
+def test_whatsapp_web_history_missing_db_fails_loud_and_marks_health(tmp_path, monkeypatch, caplog):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    web_db = tmp_path / "missing.db"
+    config = _web_config(web_db)
+
+    with pytest.raises(MemuClientError, match="WhatsApp web_source history failed"):
+        _load_history(_agent(tmp_path, web_db), [], config)
+
+    assert "refusing state_db fallback" in caplog.text
+    state = read_runtime_status()
+    whatsapp = state["platforms"]["whatsapp"]
+    assert whatsapp["state"] == "degraded"
+    assert whatsapp["soul_history"]["state"] == "degraded"
+    assert whatsapp["soul_history"]["source"] == "web_source"
+
+
+def test_whatsapp_web_history_rejects_unmatched_reply_prefix(tmp_path):
+    web_db = tmp_path / "web_source.db"
+    con = _init_web_source_db(web_db)
+    con.commit()
+    con.close()
+    config = _web_config(web_db, whatsapp_reply_prefix="⚕ *Hermes Agent*\n────────────\n")
+
+    with pytest.raises(MemuClientError, match="reply_prefix to match"):
+        _load_history(_agent(tmp_path, web_db), [], config)

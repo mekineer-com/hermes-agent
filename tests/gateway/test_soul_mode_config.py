@@ -26,6 +26,9 @@ def test_resolve_soul_mode_agent_config_defaults_when_missing():
 
 def test_resolve_soul_mode_agent_config_reads_main_agent():
     cfg = {
+        "whatsapp": {
+            "reply_prefix": "✦ *Echo*: ",
+        },
         "soul_mode": {
             "agents": {
                 "main": {
@@ -52,6 +55,7 @@ def test_resolve_soul_mode_agent_config_reads_main_agent():
     assert out["whatsapp_history_source"] == "web_source"
     assert out["whatsapp_web_source_db"] == "/tmp/web_source.db"
     assert out["whatsapp_history_limit"] == 42
+    assert out["whatsapp_reply_prefix"] == "✦ *Echo*: "
 
 
 def test_resolve_soul_mode_agent_config_is_explicit_per_agent():
