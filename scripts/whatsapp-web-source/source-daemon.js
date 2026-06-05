@@ -7,6 +7,7 @@ const { BackfillManager } = require('./backfill-manager');
 const { buildClientOptions } = require('./browser-options');
 const { ContactManager } = require('./contact-manager');
 const { MemoryDiagnostics, memoryStatsMb } = require('./memory-diagnostics');
+const { configureResourceBlocking, installRemoveMessageHook } = require('./page-hooks');
 const { StatusWriter } = require('./status-writer');
 const { StoreWriter } = require('./store-writer');
 const {
@@ -26,33 +27,6 @@ function loadWWebJS() {
     return require(localPath);
   }
   return require('whatsapp-web.js');
-}
-
-async function configureResourceBlocking(page) {
-  await page.setRequestInterception(true);
-  page.on('request', (request) => {
-    const type = request.resourceType();
-    if (type === 'image' || type === 'media' || type === 'font') {
-      request.abort().catch(() => {});
-      return;
-    }
-    request.continue().catch(() => {});
-  });
-}
-
-async function installRemoveMessageHook(page) {
-  await page.evaluate(() => {
-    if (window.__hermesWebSourceRemoveHookInstalled) return;
-    const requireFn = window.require;
-    const collections = typeof requireFn === 'function' ? requireFn('WAWebCollections') : null;
-    const msgCollection = collections?.Msg;
-    if (!msgCollection?.on) throw new Error('WAWebCollections.Msg remove hook unavailable');
-    window.__hermesWebSourceRemoveHookInstalled = true;
-    msgCollection.on('remove', (msg) => {
-      const model = window.WWebJS?.getMessageModel ? window.WWebJS.getMessageModel(msg) : msg;
-      window.__hermesWebSourceMessageRemoved(model);
-    });
-  });
 }
 
 async function main() {
