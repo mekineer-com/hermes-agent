@@ -479,6 +479,21 @@ async function configureResourceBlocking(page) {
   });
 }
 
+async function installRemoveMessageHook(page) {
+  await page.evaluate(() => {
+    if (window.__hermesWebSourceRemoveHookInstalled) return;
+    const requireFn = window.require;
+    const collections = typeof requireFn === 'function' ? requireFn('WAWebCollections') : null;
+    const msgCollection = collections?.Msg;
+    if (!msgCollection?.on) throw new Error('WAWebCollections.Msg remove hook unavailable');
+    window.__hermesWebSourceRemoveHookInstalled = true;
+    msgCollection.on('remove', (msg) => {
+      const model = window.WWebJS?.getMessageModel ? window.WWebJS.getMessageModel(msg) : msg;
+      window.__hermesWebSourceMessageRemoved(model);
+    });
+  });
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help || args.h) {
@@ -509,6 +524,7 @@ async function main() {
   let memoryDiagnosticsRunning = false;
   let memoryDiagnosticsTimer = null;
   let previousProcessStats = new Map();
+  let removeMessageHookExposed = false;
 
   ensureDir(dbPath);
   ensureDir(statusPath);
@@ -617,6 +633,26 @@ async function main() {
       last_msg_key: row.msg_key,
     });
     return result;
+  }
+
+  async function markRemovedMessage(raw) {
+    const msgKey = messageKey(raw);
+    if (!msgKey) return;
+    await store.command('mark_revoked', {
+      row: {
+        msg_key: msgKey,
+        source: 'event:message_remove',
+        raw: raw || {},
+      },
+    });
+    status.write({
+      state: 'ready',
+      wwebjs_ready: true,
+      db_writeable: true,
+      error: null,
+      last_remove_at: Math.floor(Date.now() / 1000),
+      last_removed_msg_key: msgKey,
+    });
   }
 
   async function snapshotContacts() {
@@ -894,6 +930,19 @@ async function main() {
       } catch (error) {
         console.warn('resource blocking not enabled:', error.message);
       }
+    }
+    try {
+      if (!removeMessageHookExposed) {
+        await client.pupPage.exposeFunction('__hermesWebSourceMessageRemoved', markRemovedMessage);
+        removeMessageHookExposed = true;
+      }
+      await installRemoveMessageHook(client.pupPage);
+    } catch (error) {
+      console.warn('message remove hook not enabled:', error.message);
+      status.write({
+        last_remove_hook_error: error.message,
+        last_remove_hook_error_at: Math.floor(Date.now() / 1000),
+      });
     }
     scheduleMemoryDiagnostics();
 
