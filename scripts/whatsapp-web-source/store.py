@@ -352,6 +352,125 @@ def upsert_contact(con: sqlite3.Connection, row: dict[str, Any]) -> dict[str, An
     return {"status": "ok", "action": "upsert_contact", "contact_id": row["contact_id"]}
 
 
+def in_scope_contact_ids(con: sqlite3.Connection, active_since: int) -> dict[str, Any]:
+    rows = con.execute(
+        """
+        select from_id as contact_id, from_local_id as contact_local_id
+        from whatsapp_messages
+        where timestamp >= ? and from_id is not null and from_id != ''
+        union
+        select chat_id as contact_id, chat_local_id as contact_local_id
+        from whatsapp_messages
+        where timestamp >= ? and chat_id is not null and chat_id != ''
+        union
+        select to_id as contact_id, to_local_id as contact_local_id
+        from whatsapp_messages
+        where timestamp >= ? and to_id is not null and to_id != ''
+        union
+        select author_id as contact_id, author_local_id as contact_local_id
+        from whatsapp_messages
+        where timestamp >= ? and author_id is not null and author_id != ''
+        """,
+        (active_since, active_since, active_since, active_since),
+    ).fetchall()
+    ids = sorted({row["contact_id"] for row in rows if row["contact_id"]})
+    local_ids = sorted({row["contact_local_id"] for row in rows if row["contact_local_id"]})
+    return {"status": "ok", "contact_ids": ids, "contact_local_ids": local_ids}
+
+
+def backup_database(con: sqlite3.Connection, backup_path: Path) -> None:
+    backup_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(str(backup_path)) as dest:
+        con.backup(dest)
+
+
+def prune_scope(
+    con: sqlite3.Connection,
+    active_since: int,
+    backup_path: str | None = None,
+) -> dict[str, Any]:
+    resolved_backup_path: str | None = None
+    if backup_path:
+        backup = expand_path(backup_path)
+        backup_database(con, backup)
+        resolved_backup_path = str(backup)
+    chat_cur = con.execute(
+        """
+        delete from whatsapp_chats
+        where not exists (
+          select 1
+          from whatsapp_messages m
+          where m.chat_id = whatsapp_chats.chat_id
+            and m.timestamp >= ?
+        )
+        """,
+        (active_since,),
+    )
+    contact_cur = con.execute(
+        """
+        delete from whatsapp_contacts
+        where is_me = 0
+          and contact_id not in (
+            select contact_id from (
+              select from_id as contact_id
+              from whatsapp_messages
+              where timestamp >= ? and from_id is not null and from_id != ''
+              union
+              select chat_id as contact_id
+              from whatsapp_messages
+              where timestamp >= ? and chat_id is not null and chat_id != ''
+              union
+              select to_id as contact_id
+              from whatsapp_messages
+              where timestamp >= ? and to_id is not null and to_id != ''
+              union
+              select author_id as contact_id
+              from whatsapp_messages
+              where timestamp >= ? and author_id is not null and author_id != ''
+            )
+          )
+          and contact_local_id not in (
+            select contact_local_id from (
+              select from_local_id as contact_local_id
+              from whatsapp_messages
+              where timestamp >= ? and from_local_id is not null and from_local_id != ''
+              union
+              select chat_local_id as contact_local_id
+              from whatsapp_messages
+              where timestamp >= ? and chat_local_id is not null and chat_local_id != ''
+              union
+              select to_local_id as contact_local_id
+              from whatsapp_messages
+              where timestamp >= ? and to_local_id is not null and to_local_id != ''
+              union
+              select author_local_id as contact_local_id
+              from whatsapp_messages
+              where timestamp >= ? and author_local_id is not null and author_local_id != ''
+            )
+          )
+        """,
+        (
+            active_since,
+            active_since,
+            active_since,
+            active_since,
+            active_since,
+            active_since,
+            active_since,
+            active_since,
+        ),
+    )
+    con.commit()
+    return {
+        "status": "ok",
+        "action": "prune_scope",
+        "active_since": active_since,
+        "deleted_chats": chat_cur.rowcount,
+        "deleted_contacts": contact_cur.rowcount,
+        "backup_path": resolved_backup_path,
+    }
+
+
 def handle(con: sqlite3.Connection, command: dict[str, Any]) -> dict[str, Any]:
     op = command.get("op")
     if op == "ping":
@@ -370,6 +489,10 @@ def handle(con: sqlite3.Connection, command: dict[str, Any]) -> dict[str, Any]:
         return upsert_chat(con, command["row"])
     if op == "upsert_contact":
         return upsert_contact(con, command["row"])
+    if op == "in_scope_contact_ids":
+        return in_scope_contact_ids(con, int(command["active_since"]))
+    if op == "prune_scope":
+        return prune_scope(con, int(command["active_since"]), command.get("backup_path"))
     raise ValueError(f"unknown op: {op}")
 
 

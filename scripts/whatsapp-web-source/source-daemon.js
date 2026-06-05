@@ -42,6 +42,10 @@ function ensureDir(filePath) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }
 
+function timestampLabel() {
+  return new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, 'Z');
+}
+
 function jidLocal(value) {
   const raw = String(value || '').trim();
   if (!raw) return '';
@@ -169,8 +173,13 @@ function normalizeContactRow(contact) {
   };
 }
 
-async function readContactSnapshot(page) {
-  const rows = await page.evaluate(() => {
+function sparseContactRow(contactId) {
+  if (!contactId) return null;
+  return normalizeContactRow({ id: contactId, raw: { id: contactId } });
+}
+
+async function readContactSnapshot(page, scope) {
+  const rows = await page.evaluate((snapshotScope) => {
     const serializeId = (value) => {
       if (!value) return null;
       if (typeof value === 'string') return value;
@@ -178,6 +187,14 @@ async function readContactSnapshot(page) {
       if (value.id && value.id._serialized) return value.id._serialized;
       if (value.user && value.server) return `${value.user}@${value.server}`;
       return null;
+    };
+    const localId = (value) => String(value || '').replace(/:.*@/, '@').split('@', 1)[0];
+    const allowedIds = new Set(snapshotScope.contactIds || []);
+    const allowedLocalIds = new Set(snapshotScope.contactLocalIds || []);
+    const inScope = (id, isMe) => {
+      if (isMe) return true;
+      if (allowedIds.has(id)) return true;
+      return allowedLocalIds.has(localId(id));
     };
     const pick = (model, keys) => {
       for (const key of keys) {
@@ -194,13 +211,15 @@ async function readContactSnapshot(page) {
       try {
         const id = serializeId(contact.id);
         if (!id) continue;
+        const isMe = Boolean(contact.isMe);
+        if (!inScope(id, isMe)) continue;
         const row = {
           id,
           name: pick(contact, ['name', 'formattedName']),
           shortName: pick(contact, ['shortName', 'displayName']),
           pushname: pick(contact, ['pushname', 'pushName', 'notifyName']),
           verifiedName: pick(contact, ['verifiedName', 'verifiedLevelName']),
-          isMe: Boolean(contact.isMe),
+          isMe,
           isUser: Boolean(contact.isUser),
           isGroup: Boolean(contact.isGroup),
         };
@@ -210,6 +229,9 @@ async function readContactSnapshot(page) {
       }
     }
     return out;
+  }, {
+    contactIds: Array.from(scope.contactIds || []),
+    contactLocalIds: Array.from(scope.contactLocalIds || []),
   });
   return rows.map(normalizeContactRow).filter(Boolean);
 }
@@ -349,7 +371,7 @@ async function configureResourceBlocking(page) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help || args.h) {
-    console.log(`Usage: node source-daemon.js [options]\n\nOptions:\n  --db PATH                 SQLite projection DB (default ~/.hermes/whatsapp/web_source.db)\n  --status PATH             JSON status path (default ~/.hermes/whatsapp/web_source_status.json)\n  --auth PATH               LocalAuth data dir (default ~/.hermes/whatsapp/wwebjs_auth)\n  --client-id ID            LocalAuth client id (default memu-web-source)\n  --backfill-chat JID       Backfill one chat after ready\n  --backfill-since EPOCH    Backfill all chats at/after this Unix timestamp\n  --backfill-limit N        Backfill limit per chat (default 100, max 5000)\n  --no-contact-snapshot     Do not snapshot WhatsApp contact/name models after ready\n  --contact-snapshot-interval SECONDS\n                            Refresh contacts periodically (default 900, 0 disables)\n  --user-agent UA           Override WhatsApp Web browser user-agent\n  --headful                 Show Chromium instead of running headless\n  --exit-after-backfill     Exit after bounded backfill\n  --no-resource-block       Do not block image/media/font requests after ready\n`);
+    console.log(`Usage: node source-daemon.js [options]\n\nOptions:\n  --db PATH                 SQLite projection DB (default ~/.hermes/whatsapp/web_source.db)\n  --status PATH             JSON status path (default ~/.hermes/whatsapp/web_source_status.json)\n  --auth PATH               LocalAuth data dir (default ~/.hermes/whatsapp/wwebjs_auth)\n  --client-id ID            LocalAuth client id (default memu-web-source)\n  --backfill-chat JID       Backfill one chat after ready\n  --backfill-since EPOCH    Backfill all chats at/after this Unix timestamp\n  --active-since EPOCH      Storage scope cutoff (defaults to --backfill-since)\n  --backfill-limit N        Backfill limit per chat (default 100, max 5000)\n  --no-contact-snapshot     Do not snapshot WhatsApp contact/name models after ready\n  --contact-snapshot-interval SECONDS\n                            Refresh contacts periodically (default 900, 0 disables)\n  --user-agent UA           Override WhatsApp Web browser user-agent\n  --headful                 Show Chromium instead of running headless\n  --exit-after-backfill     Exit after bounded backfill\n  --no-resource-block       Do not block image/media/font requests after ready\n`);
     return;
   }
   const { Client, LocalAuth, Events } = loadWWebJS();
@@ -360,6 +382,7 @@ async function main() {
   const clientId = String(args['client-id'] || 'memu-web-source');
   const backfillChat = args['backfill-chat'] ? String(args['backfill-chat']) : null;
   const backfillSince = Math.max(parseInt(args['backfill-since'] || '0', 10) || 0, 0);
+  const activeSince = Math.max(parseInt(args['active-since'] || String(backfillSince), 10) || 0, 0);
   const backfillLimit = Math.min(Math.max(parseInt(args['backfill-limit'] || '100', 10) || 100, 1), 5000);
   const contactSnapshotEnabled = args['no-contact-snapshot'] !== true;
   const contactSnapshotInterval = Math.max(parseInt(args['contact-snapshot-interval'] || '900', 10) || 0, 0);
@@ -427,9 +450,46 @@ async function main() {
   process.once('uncaughtException', shutdownFatal);
   process.once('unhandledRejection', shutdownFatal);
 
-  async function persistMessage(message, source) {
+  async function contactScope() {
+    const result = await store.command('in_scope_contact_ids', { active_since: activeSince });
+    return {
+      contactIds: new Set(result.contact_ids || []),
+      contactLocalIds: new Set(result.contact_local_ids || []),
+    };
+  }
+
+  function contactIdsFromMessageRow(row) {
+    return [
+      row.chat_id,
+      row.from_id,
+      row.to_id,
+      row.author_id,
+    ].filter(Boolean);
+  }
+
+  async function contactRowForId(contactId) {
+    try {
+      const contact = await client.getContactById(contactId);
+      return normalizeContactRow(contact) || sparseContactRow(contactId);
+    } catch (_error) {
+      return sparseContactRow(contactId);
+    }
+  }
+
+  async function persistContactsForMessageRow(row, enrich) {
+    const contactIds = Array.from(new Set(contactIdsFromMessageRow(row)));
+    for (const contactId of contactIds) {
+      const contactRow = enrich ? await contactRowForId(contactId) : sparseContactRow(contactId);
+      if (contactRow) await store.command('upsert_contact', { row: contactRow });
+    }
+  }
+
+  async function persistMessage(message, source, options = {}) {
     const row = normalizeMessage(message, source);
     const result = await store.command('upsert_message', { row });
+    await persistContactsForMessageRow(row, Boolean(options.enrichContacts)).catch((error) => {
+      console.warn(`contact persist for ${row.msg_key} failed:`, error.message);
+    });
     status.write({
       state: 'ready',
       wwebjs_ready: true,
@@ -446,7 +506,8 @@ async function main() {
     if (contactSnapshotRunning) return;
     contactSnapshotRunning = true;
     try {
-      const rows = await readContactSnapshot(client.pupPage);
+      const scope = await contactScope();
+      const rows = await readContactSnapshot(client.pupPage, scope);
       let persisted = 0;
       for (const row of rows) {
         await store.command('upsert_contact', { row });
@@ -459,11 +520,40 @@ async function main() {
         error: null,
         last_contact_snapshot_at: Math.floor(Date.now() / 1000),
         last_contact_snapshot_rows: persisted,
+        last_contact_snapshot_scope_ids: scope.contactIds.size,
       });
-      console.log(`contact snapshot: ${persisted} rows`);
+      console.log(`contact snapshot: ${persisted} persisted from ${scope.contactIds.size} scoped ids`);
     } finally {
       contactSnapshotRunning = false;
     }
+  }
+
+  async function pruneScopeOnce() {
+    if (activeSince <= 0) return;
+    const metadataKey = `prune_scope:${activeSince}`;
+    const existing = await store.command('get_metadata', { key: metadataKey });
+    if (existing.value === '1') return;
+    const backupPath = `${dbPath}.bak-prune-${timestampLabel()}`;
+    const result = await store.command('prune_scope', {
+      active_since: activeSince,
+      backup_path: backupPath,
+    });
+    await store.command('set_metadata', { key: metadataKey, value: '1' });
+    status.write({
+      state: 'ready',
+      wwebjs_ready: true,
+      db_writeable: true,
+      error: null,
+      last_prune_at: Math.floor(Date.now() / 1000),
+      last_prune_active_since: activeSince,
+      last_prune_deleted_chats: result.deleted_chats,
+      last_prune_deleted_contacts: result.deleted_contacts,
+      last_prune_backup_path: result.backup_path,
+    });
+    console.log(
+      `scope prune: ${result.deleted_chats} chats and ${result.deleted_contacts} contacts deleted; ` +
+      `backup ${result.backup_path}`,
+    );
   }
 
   function scheduleContactSnapshots() {
@@ -502,9 +592,11 @@ async function main() {
   }
 
   async function backfillChatMessages(chat, chatId, since) {
-    await store.command('upsert_chat', { row: normalizeChat(chat) });
     const messages = await chat.fetchMessages({ limit: backfillLimit });
     const result = await persistBackfillMessages(messages, 'backfill:fetchMessages', since);
+    if (result.inserted || result.updated) {
+      await store.command('upsert_chat', { row: normalizeChat(chat) });
+    }
     const oldest = oldestMessageTimestamp(messages);
     const incomplete = since > 0 && messages.length >= backfillLimit && oldest !== null && oldest >= since;
     return { ...result, fetched: messages.length, chatId, incomplete };
@@ -603,9 +695,6 @@ async function main() {
       }
     }
 
-    await snapshotContacts().catch((error) => contactSnapshotFailed(error));
-    scheduleContactSnapshots();
-
     if (backfillSince > 0) {
       try {
         const result = await backfillChatsSince(backfillSince);
@@ -673,6 +762,10 @@ async function main() {
       }
     }
 
+    await snapshotContacts().catch((error) => contactSnapshotFailed(error));
+    await pruneScopeOnce().catch((error) => persistFailed('scope prune', error));
+    scheduleContactSnapshots();
+
     if (exitAfterBackfill && (backfillSince > 0 || backfillChat)) {
       await client.destroy();
       store.close();
@@ -682,23 +775,28 @@ async function main() {
   });
 
   client.on(Events.MESSAGE_CREATE, (message) => {
-    persistMessage(message, 'event:message_create').catch((error) => persistFailed('persist message_create', error));
+    persistMessage(message, 'event:message_create', { enrichContacts: true })
+      .catch((error) => persistFailed('persist message_create', error));
   });
 
   client.on(Events.MESSAGE_RECEIVED, (message) => {
-    persistMessage(message, 'event:message').catch((error) => persistFailed('persist message', error));
+    persistMessage(message, 'event:message', { enrichContacts: true })
+      .catch((error) => persistFailed('persist message', error));
   });
 
   client.on(Events.MESSAGE_EDIT, (message) => {
-    persistMessage(message, 'event:message_edit').catch((error) => persistFailed('persist message_edit', error));
+    persistMessage(message, 'event:message_edit', { enrichContacts: true })
+      .catch((error) => persistFailed('persist message_edit', error));
   });
 
   client.on(Events.MESSAGE_CIPHERTEXT, (message) => {
-    persistMessage(message, 'event:message_ciphertext').catch((error) => persistFailed('persist ciphertext', error));
+    persistMessage(message, 'event:message_ciphertext', { enrichContacts: true })
+      .catch((error) => persistFailed('persist ciphertext', error));
   });
 
   client.on(Events.MESSAGE_CIPHERTEXT_FAILED, (message) => {
-    persistMessage(message, 'event:message_ciphertext_failed').catch((error) => persistFailed('persist ciphertext_failed', error));
+    persistMessage(message, 'event:message_ciphertext_failed', { enrichContacts: true })
+      .catch((error) => persistFailed('persist ciphertext_failed', error));
   });
 
   client.on(Events.MESSAGE_ACK, (message, ack) => {

@@ -100,6 +100,7 @@ def test_whatsapp_web_source_command_uses_configured_paths(tmp_path, monkeypatch
     assert command[command.index("--backfill-limit") + 1] == "25"
     assert command[command.index("--contact-snapshot-interval") + 1] == "60"
     assert command[command.index("--backfill-since") + 1] == "123"
+    assert command[command.index("--active-since") + 1] == "123"
     assert popen.call_args.kwargs["env"]["PUPPETEER_EXECUTABLE_PATH"] == "/usr/bin/chromium"
 
 
@@ -124,6 +125,7 @@ def test_whatsapp_web_source_command_uses_soul_active_since(tmp_path, monkeypatc
     command = adapter._web_source_command()
 
     assert command[command.index("--backfill-since") + 1] == "1780160400"
+    assert command[command.index("--active-since") + 1] == "1780160400"
 
 
 def test_whatsapp_web_source_pairing_restarts_headful(tmp_path, monkeypatch):

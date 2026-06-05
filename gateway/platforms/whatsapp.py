@@ -909,6 +909,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         ]
         if self._web_source_backfill_since is not None:
             command.extend(["--backfill-since", str(int(self._web_source_backfill_since))])
+            command.extend(["--active-since", str(int(self._web_source_backfill_since))])
         if not self._web_source_contact_snapshot:
             command.append("--no-contact-snapshot")
         if self._web_source_user_agent:

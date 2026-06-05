@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -187,6 +188,126 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(got["name"], "Raquel Scarone")
         self.assertEqual(got["short_name"], "Raquel")
         self.assertEqual(got["push_name"], "Raquel")
+
+    def test_in_scope_contact_ids_include_active_chat_and_senders_only(self):
+        store.upsert_message(
+            self.con,
+            row(
+                msg_key="old",
+                chat_id="old-group@g.us",
+                chat_local_id="old-group",
+                from_id="old-sender@c.us",
+                from_local_id="old-sender",
+                timestamp=90,
+            ),
+        )
+        store.upsert_message(
+            self.con,
+            row(
+                msg_key="new",
+                chat_id="new-group@g.us",
+                chat_local_id="new-group",
+                from_id="new-sender@c.us",
+                from_local_id="new-sender",
+                author_id="group-author@c.us",
+                author_local_id="group-author",
+                timestamp=110,
+            ),
+        )
+
+        got = store.in_scope_contact_ids(self.con, 100)
+
+        self.assertEqual(got["contact_ids"], [
+            "15133278228@c.us",
+            "group-author@c.us",
+            "new-group@g.us",
+            "new-sender@c.us",
+        ])
+        self.assertEqual(got["contact_local_ids"], [
+            "15133278228",
+            "group-author",
+            "new-group",
+            "new-sender",
+        ])
+
+    def test_prune_scope_keeps_only_contacts_and_chats_with_active_messages(self):
+        store.upsert_message(
+            self.con,
+            row(
+                msg_key="active",
+                chat_id="active@g.us",
+                chat_local_id="active",
+                from_id="sender@c.us",
+                from_local_id="sender",
+                timestamp=110,
+            ),
+        )
+        store.upsert_chat(
+            self.con,
+            {
+                "chat_id": "active@g.us",
+                "chat_local_id": "active",
+                "name": "Active",
+                "is_group": True,
+                "last_timestamp": 110,
+                "raw": {},
+            },
+        )
+        store.upsert_chat(
+            self.con,
+            {
+                "chat_id": "old@g.us",
+                "chat_local_id": "old",
+                "name": "Old",
+                "is_group": True,
+                "last_timestamp": 90,
+                "raw": {},
+            },
+        )
+        for contact_id, local_id, is_me in [
+            ("active@g.us", "active", False),
+            ("sender@c.us", "sender", False),
+            ("old@c.us", "old", False),
+            ("me@c.us", "me", True),
+        ]:
+            store.upsert_contact(
+                self.con,
+                {
+                    "contact_id": contact_id,
+                    "contact_local_id": local_id,
+                    "name": contact_id,
+                    "short_name": None,
+                    "push_name": None,
+                    "verified_name": None,
+                    "is_me": is_me,
+                    "is_user": True,
+                    "is_group": contact_id.endswith("@g.us"),
+                    "raw": {},
+                },
+            )
+
+        backup_path = Path(self.tmp.name) / "web_source.db.bak-prune-test"
+        result = store.prune_scope(self.con, 100, str(backup_path))
+        chats = [
+            row["chat_id"]
+            for row in self.con.execute("select chat_id from whatsapp_chats order by chat_id")
+        ]
+        contacts = [
+            row["contact_id"]
+            for row in self.con.execute("select contact_id from whatsapp_contacts order by contact_id")
+        ]
+
+        self.assertEqual(result["deleted_chats"], 1)
+        self.assertEqual(result["deleted_contacts"], 1)
+        self.assertEqual(result["backup_path"], str(backup_path))
+        self.assertTrue(backup_path.exists())
+        self.assertEqual(chats, ["active@g.us"])
+        self.assertEqual(contacts, ["active@g.us", "me@c.us", "sender@c.us"])
+        with sqlite3.connect(backup_path) as backup:
+            old_contact = backup.execute(
+                "select contact_id from whatsapp_contacts where contact_id = 'old@c.us'"
+            ).fetchone()
+        self.assertIsNotNone(old_contact)
 
     def test_malformed_json_returns_error_without_stale_request_id(self):
         proc = subprocess.Popen(
