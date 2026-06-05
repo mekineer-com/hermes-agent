@@ -36,6 +36,7 @@ import { buildMediaRetryCachePayload } from './media_retry_cache.js';
 import {
   canonicalizeMessageIds,
   historyMessageSources,
+  isStartupReplay,
   isRecentlySentEcho,
   upsertEventMode,
 } from './history_ingest.js';
@@ -96,6 +97,11 @@ const REPLY_PREFIX = HAS_CUSTOM_REPLY_PREFIX
 const MAX_MESSAGE_LENGTH = parseInt(process.env.WHATSAPP_MAX_MESSAGE_LENGTH || '4096', 10);
 const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10);
 const SYNC_HISTORY_WINDOW_DAYS = parseFloat(process.env.WHATSAPP_SYNC_HISTORY_WINDOW_DAYS || '14');
+const BRIDGE_STARTED_AT_SECONDS = Math.floor(Date.now() / 1000);
+const STARTUP_REPLAY_GRACE_SECONDS = Math.max(
+  0,
+  parseInt(process.env.WHATSAPP_STARTUP_REPLAY_GRACE_SECONDS || '120', 10) || 120,
+);
 const DM_ALIAS_EVENT_TTL_MS = 5 * 60 * 1000;
 const RECENTLY_SENT_RETENTION_DAYS = parseFloat(process.env.WHATSAPP_RECENTLY_SENT_RETENTION_DAYS || '30');
 const RECENTLY_SENT_RETENTION_MS = Math.max(
@@ -1379,11 +1385,19 @@ async function startSocket() {
         speakerRoleHint,
         speakerNameHint,
       };
-      if (isAgentEcho || mode.persistOnly) {
+      const startupReplay = (
+        type === 'notify'
+        && isStartupReplay({
+          timestamp: msg.messageTimestamp,
+          bridgeStartedAtSeconds: BRIDGE_STARTED_AT_SECONDS,
+          graceSeconds: STARTUP_REPLAY_GRACE_SECONDS,
+        })
+      );
+      if (isAgentEcho || mode.persistOnly || startupReplay) {
         event.eventType = 'history_message';
         event.deliveryMode = 'persist_only';
         event.triggerAgent = false;
-        event.sourceSurface = mode.sourceSurface;
+        event.sourceSurface = startupReplay ? 'messages.upsert:startup-replay' : mode.sourceSurface;
       }
 
       const queued = durableQueue.enqueue(event);

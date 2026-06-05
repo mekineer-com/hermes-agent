@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   canonicalizeMessageIds,
   historyMessageSources,
+  isStartupReplay,
   isRecentlySentEcho,
   upsertEventMode,
 } from './history_ingest.js';
@@ -66,4 +67,22 @@ test('upsertEventMode treats append as persist-only history', () => {
     sourceSurface: 'messages.upsert:append',
   });
   assert.equal(upsertEventMode('replace').forwardable, false);
+});
+
+test('isStartupReplay identifies old notify rows delivered after bridge startup', () => {
+  assert.equal(isStartupReplay({
+    timestamp: 1000,
+    bridgeStartedAtSeconds: 1200,
+    graceSeconds: 120,
+  }), true);
+  assert.equal(isStartupReplay({
+    timestamp: 1090,
+    bridgeStartedAtSeconds: 1200,
+    graceSeconds: 120,
+  }), false);
+  assert.equal(isStartupReplay({
+    timestamp: { low: 1000 },
+    bridgeStartedAtSeconds: 1200,
+    graceSeconds: 120,
+  }), true);
 });
