@@ -834,6 +834,7 @@ def load_gateway_config() -> GatewayConfig:
                     "web_source_user_agent",
                     "web_source_chromium_path",
                     "web_source_headful",
+                    "web_source_disable_service_workers",
                 ):
                     if key in platform_cfg:
                         bridged[key] = platform_cfg[key]

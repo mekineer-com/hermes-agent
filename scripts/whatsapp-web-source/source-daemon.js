@@ -371,7 +371,7 @@ async function configureResourceBlocking(page) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help || args.h) {
-    console.log(`Usage: node source-daemon.js [options]\n\nOptions:\n  --db PATH                 SQLite projection DB (default ~/.hermes/whatsapp/web_source.db)\n  --status PATH             JSON status path (default ~/.hermes/whatsapp/web_source_status.json)\n  --auth PATH               LocalAuth data dir (default ~/.hermes/whatsapp/wwebjs_auth)\n  --client-id ID            LocalAuth client id (default memu-web-source)\n  --backfill-chat JID       Backfill one chat after ready\n  --backfill-since EPOCH    Backfill all chats at/after this Unix timestamp\n  --active-since EPOCH      Storage scope cutoff (defaults to --backfill-since)\n  --backfill-limit N        Backfill limit per chat (default 100, max 5000)\n  --no-contact-snapshot     Do not snapshot WhatsApp contact/name models after ready\n  --contact-snapshot-interval SECONDS\n                            Refresh contacts periodically (default 900, 0 disables)\n  --user-agent UA           Override WhatsApp Web browser user-agent\n  --headful                 Show Chromium instead of running headless\n  --exit-after-backfill     Exit after bounded backfill\n  --no-resource-block       Do not block image/media/font requests after ready\n`);
+    console.log(`Usage: node source-daemon.js [options]\n\nOptions:\n  --db PATH                 SQLite projection DB (default ~/.hermes/whatsapp/web_source.db)\n  --status PATH             JSON status path (default ~/.hermes/whatsapp/web_source_status.json)\n  --auth PATH               LocalAuth data dir (default ~/.hermes/whatsapp/wwebjs_auth)\n  --client-id ID            LocalAuth client id (default memu-web-source)\n  --backfill-chat JID       Backfill one chat after ready\n  --backfill-since EPOCH    Backfill all chats at/after this Unix timestamp\n  --active-since EPOCH      Storage scope cutoff (defaults to --backfill-since)\n  --backfill-limit N        Backfill limit per chat (default 100, max 5000)\n  --no-contact-snapshot     Do not snapshot WhatsApp contact/name models after ready\n  --contact-snapshot-interval SECONDS\n                            Refresh contacts periodically (default 900, 0 disables)\n  --user-agent UA           Override WhatsApp Web browser user-agent\n  --disable-service-workers Experimental: launch Chromium with ServiceWorker disabled\n  --headful                 Show Chromium instead of running headless\n  --exit-after-backfill     Exit after bounded backfill\n  --no-resource-block       Do not block image/media/font requests after ready\n`);
     return;
   }
   const { Client, LocalAuth, Events } = loadWWebJS();
@@ -387,6 +387,7 @@ async function main() {
   const contactSnapshotEnabled = args['no-contact-snapshot'] !== true;
   const contactSnapshotInterval = Math.max(parseInt(args['contact-snapshot-interval'] || '900', 10) || 0, 0);
   const exitAfterBackfill = Boolean(args['exit-after-backfill']);
+  const disableServiceWorkers = Boolean(args['disable-service-workers']);
   const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
   const userAgent = args['user-agent'] ? String(args['user-agent']) : defaultUserAgent();
   const headless = args.headful ? false : true;
@@ -426,6 +427,7 @@ async function main() {
         '--disable-extensions',
         '--disable-software-rasterizer',
         '--mute-audio',
+        ...(disableServiceWorkers ? ['--disable-features=ServiceWorker'] : []),
       ],
     },
   });

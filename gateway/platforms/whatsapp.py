@@ -388,6 +388,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._web_source_user_agent = config.extra.get("web_source_user_agent")
         self._web_source_chromium_path = str(config.extra.get("web_source_chromium_path") or "").strip()
         self._web_source_headful = _coerce_bool(config.extra.get("web_source_headful"), False)
+        self._web_source_disable_service_workers = _coerce_bool(
+            config.extra.get("web_source_disable_service_workers"),
+            False,
+        )
         self._web_source_pairing_headful = False
         self._web_source_process: Optional[subprocess.Popen] = None
         self._web_source_log_fh = None
@@ -914,6 +918,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
             command.append("--no-contact-snapshot")
         if self._web_source_user_agent:
             command.extend(["--user-agent", str(self._web_source_user_agent)])
+        if self._web_source_disable_service_workers:
+            command.append("--disable-service-workers")
         if self._web_source_headful or self._web_source_pairing_headful:
             command.append("--headful")
         return command
