@@ -427,10 +427,10 @@ def handle_turn(
         sender_display_name = str(getattr(agent, "_user_name", "") or "")
         ext_msg_id = str(getattr(agent, "_external_message_id", "") or "").strip() or None
         memorize_chat: bool | None = None
+        allow_public_response = True
 
         # WhatsApp channel policy (memu.json): "excluded" → drop silently.
-        # "listen_only" → skip the soul turn entirely. memU now reads WhatsApp
-        # cross/memorize context directly from Hermes storage.
+        # "listen_only" → run the soul turn, but forbid public replies.
         if platform == "whatsapp":
             from gateway.memu_policy import whatsapp_channel_settings
             policy, memorize_chat = whatsapp_channel_settings(str(getattr(agent, "_chat_id", "") or ""))
@@ -442,10 +442,7 @@ def handle_turn(
                 )
             if policy == "listen_only":
                 logger.info("Soul listen_only for %s (memu.json policy)", conversation_id)
-                return _silent_listen_result(
-                    agent, config, messages, conversation_history, user_message,
-                    task_id, summarize_for_log, platform, exit_reason="soul_mode_listen_only",
-                )
+                allow_public_response = False
 
         turn_out = client.memu_turn(
             conversation_id=conversation_id,
@@ -463,6 +460,7 @@ def handle_turn(
             chat_type=chat_type,
             memorize_chat=memorize_chat,
             external_message_id=ext_msg_id,
+            allow_public_response=allow_public_response,
         )
 
         turn_ok = turn_out.get("ok", True)
@@ -484,12 +482,19 @@ def handle_turn(
         response_target = str(turn_out.get("response_target") or "respond").strip().lower()
         response_text = str(turn_out.get("response") or "").strip()
 
-        # Post-turn LISTEN: the soul ran the turn and chose silence.
-        if response_target == "listen":
-            logger.info("Soul chose response_target=listen for %s", conversation_id)
+        # Post-turn LISTEN/OBSERVE: the soul ran the turn and chose silence.
+        if response_target in {"listen", "observe"}:
+            logger.info("Soul chose response_target=%s for %s", response_target, conversation_id)
             return _silent_listen_result(
                 agent, config, messages, conversation_history, user_message,
                 task_id, summarize_for_log, platform,
+            )
+
+        if not allow_public_response and response_target == "respond":
+            logger.error("Soul tried response_target=respond in listen_only chat %s; suppressing", conversation_id)
+            return _silent_listen_result(
+                agent, config, messages, conversation_history, user_message,
+                task_id, summarize_for_log, platform, exit_reason="soul_mode_listen_only_public_response_suppressed",
             )
 
         # PRIVATE on WhatsApp: route to the human's self-DM (their own

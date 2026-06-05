@@ -197,6 +197,7 @@ class MemuHttpClient:
         chat_type: str | None = None,
         memorize_chat: bool | None = None,
         external_message_id: str | None = None,
+        allow_public_response: bool | None = None,
     ) -> dict[str, Any]:
         speaker_name = str(user_name or "").strip() or str(history_user_name or "").strip()
         payload: dict[str, Any] = {
@@ -231,6 +232,8 @@ class MemuHttpClient:
             payload["chat_type"] = chat_type_clean
         if isinstance(memorize_chat, bool):
             payload["memorize_chat"] = memorize_chat
+        if isinstance(allow_public_response, bool):
+            payload["allow_public_response"] = allow_public_response
         if external_message_id:
             payload["external_message_id"] = str(external_message_id)
 

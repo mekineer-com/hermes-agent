@@ -235,6 +235,42 @@ def test_handle_turn_listens_when_response_target_listen(soul_agent):
     assert result["final_response"] == ""
 
 
+def test_handle_turn_observes_listen_only_whatsapp_without_public_response(soul_agent, monkeypatch):
+    """listen_only still runs memU, but the turn contract forbids public replies."""
+    soul_agent.platform = "whatsapp"
+    soul_agent._chat_id = "120363000000000000@g.us"
+    soul_agent._chat_type = "group"
+    soul_agent._chat_name = "Familia"
+    soul_agent._user_name = "Marcos"
+
+    from gateway import memu_policy
+    monkeypatch.setattr(memu_policy, "whatsapp_channel_settings", lambda _chat_id: ("listen_only", False))
+
+    mock_client = MagicMock()
+    mock_client.memu_turn.return_value = {
+        "ok": True,
+        "response": "",
+        "response_target": "observe",
+    }
+    soul_agent._soul_config._client = mock_client
+
+    result = soul_mode.handle_turn(
+        soul_agent, soul_agent._soul_config,
+        user_message="hi",
+        conversation_history=[],
+        messages=[{"role": "user", "content": "hi"}],
+        task_id="test-task",
+        original_user_message="hi",
+        summarize_for_log=lambda x: str(x)[:50],
+    )
+
+    assert result["completed"] is True
+    assert result["final_response"] == ""
+    mock_client.memu_turn.assert_called_once()
+    assert mock_client.memu_turn.call_args.kwargs["memorize_chat"] is False
+    assert mock_client.memu_turn.call_args.kwargs["allow_public_response"] is False
+
+
 def test_handle_turn_fails_on_empty_respond_response(soul_agent):
     """respond with empty response is an error."""
     mock_client = MagicMock()
