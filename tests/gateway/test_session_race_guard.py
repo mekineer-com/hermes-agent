@@ -37,6 +37,16 @@ class _FakeAdapter:
             event.set()
 
 
+class _FakeSessionDb:
+    def __init__(self, exists):
+        self.exists = exists
+        self.calls = []
+
+    def message_source_key_exists(self, *, source_chat_id, source_message_id):
+        self.calls.append((source_chat_id, source_message_id))
+        return self.exists
+
+
 def _make_runner():
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
@@ -71,6 +81,27 @@ def _make_runner():
     runner.session_store = MagicMock()
     runner.delivery_router = MagicMock()
     return runner
+
+
+def test_whatsapp_duplicate_source_message_skips_before_agent_turn():
+    runner = _make_runner()
+    runner._session_db = _FakeSessionDb(True)
+
+    assert runner._is_duplicate_whatsapp_source_message({
+        "chatId": "15133278228@s.whatsapp.net",
+        "messageId": "3EB0OLD",
+    })
+    assert runner._session_db.calls == [("15133278228@s.whatsapp.net", "3EB0OLD")]
+
+
+def test_whatsapp_new_source_message_not_duplicate():
+    runner = _make_runner()
+    runner._session_db = _FakeSessionDb(False)
+
+    assert not runner._is_duplicate_whatsapp_source_message({
+        "chatId": "15133278228@s.whatsapp.net",
+        "messageId": "3EB0NEW",
+    })
 
 
 def _make_event(text="hello", chat_id="12345", platform=Platform.TELEGRAM):

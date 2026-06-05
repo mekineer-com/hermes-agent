@@ -276,6 +276,25 @@ class TestMessageStorage:
         assert deleted == 1
         assert [m["content"] for m in messages] == ["kept"]
 
+    def test_message_source_key_exists(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="user",
+            content="hello",
+            source_chat_id="15133278228@s.whatsapp.net",
+            source_message_id="wamid.exists",
+        )
+
+        assert db.message_source_key_exists(
+            source_chat_id="15133278228@s.whatsapp.net",
+            source_message_id="wamid.exists",
+        )
+        assert not db.message_source_key_exists(
+            source_chat_id="15133278228@s.whatsapp.net",
+            source_message_id="wamid.missing",
+        )
+
     def test_message_increments_session_count(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="Hello")

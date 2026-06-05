@@ -5816,6 +5816,8 @@ class GatewayRunner:
         if source.platform == Platform.WHATSAPP and self._is_whatsapp_persist_only_event(_raw_message):
             self._persist_whatsapp_history_event(event)
             return None
+        if source.platform == Platform.WHATSAPP and self._is_duplicate_whatsapp_source_message(_raw_message):
+            return None
 
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
@@ -10124,6 +10126,30 @@ class GatewayRunner:
             or delivery_mode == "persist_only"
             or raw.get("triggerAgent") is False
         )
+
+    def _is_duplicate_whatsapp_source_message(self, raw: dict[str, Any]) -> bool:
+        session_db = getattr(self, "_session_db", None)
+        if not session_db:
+            return False
+        source_chat_id = str(raw.get("chatId") or "").strip()
+        source_message_id = str(raw.get("messageId") or "").strip()
+        if not source_chat_id or not source_message_id:
+            return False
+        try:
+            exists = session_db.message_source_key_exists(
+                source_chat_id=source_chat_id,
+                source_message_id=source_message_id,
+            )
+        except Exception:
+            logger.debug("Failed to check WhatsApp duplicate source key", exc_info=True)
+            return False
+        if exists:
+            logger.info(
+                "Skipped duplicate WhatsApp source message chat=%s message=%s",
+                source_chat_id,
+                source_message_id,
+            )
+        return exists
 
     def _resolve_whatsapp_history_soul(self, source: SessionSource) -> dict[str, Any]:
         try:
