@@ -6,7 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "node source-daemon.js",
-    "check": "node --check source-daemon.js contact-manager.js daemon-utils.js memory-diagnostics.js normalization.js status-writer.js store-writer.js && python3 -m py_compile store.py",
+    "check": "node --check source-daemon.js backfill-manager.js contact-manager.js daemon-utils.js memory-diagnostics.js normalization.js status-writer.js store-writer.js && python3 -m py_compile store.py",
     "test": "node --test *.test.mjs && python3 -m unittest -q test_store.py"
   },
   "dependencies": {

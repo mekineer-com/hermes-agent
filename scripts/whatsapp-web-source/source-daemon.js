@@ -3,6 +3,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { BackfillManager } = require('./backfill-manager');
 const { ContactManager } = require('./contact-manager');
 const { MemoryDiagnostics, memoryStatsMb } = require('./memory-diagnostics');
 const { StatusWriter } = require('./status-writer');
@@ -14,12 +15,7 @@ const {
   parseArgs,
 } = require('./daemon-utils');
 const {
-  idSerialized,
-  isConversationChatId,
-  jidLocal,
   messageKey,
-  messageTimestamp,
-  normalizeChat,
   normalizeMessage,
 } = require('./normalization');
 
@@ -141,6 +137,13 @@ async function main() {
     isReady: () => wwebjsReady,
     dbWriteable: () => !store.exitedError,
   });
+  const backfill = new BackfillManager({
+    client,
+    store,
+    status,
+    backfillLimit,
+    persistMessage,
+  });
   let fatalHandled = false;
 
   async function shutdownFatal(error) {
@@ -200,112 +203,6 @@ async function main() {
     });
   }
 
-  async function persistBackfillMessages(messages, source, since) {
-    const startedAt = Math.floor(Date.now() / 1000);
-    let inserted = 0;
-    let updated = 0;
-    let skippedBeforeSince = 0;
-    const presentMsgKeys = [];
-    let oldestPersistedTimestamp = null;
-    for (const message of messages) {
-      if (since > 0 && messageTimestamp(message) < since) {
-        skippedBeforeSince += 1;
-        continue;
-      }
-      const msgKey = messageKey(message);
-      if (msgKey) presentMsgKeys.push(msgKey);
-      const ts = messageTimestamp(message);
-      if (ts && (oldestPersistedTimestamp === null || ts < oldestPersistedTimestamp)) {
-        oldestPersistedTimestamp = ts;
-      }
-      const result = await persistMessage(message, source);
-      if (result.action === 'insert') inserted += 1;
-      else updated += 1;
-    }
-    return { inserted, updated, skippedBeforeSince, presentMsgKeys, oldestPersistedTimestamp, startedAt };
-  }
-
-  function oldestMessageTimestamp(messages) {
-    let oldest = null;
-    for (const message of messages) {
-      const ts = messageTimestamp(message);
-      if (!ts) continue;
-      if (oldest === null || ts < oldest) oldest = ts;
-    }
-    return oldest;
-  }
-
-  async function backfillChatMessages(chat, chatId, since) {
-    const messages = await chat.fetchMessages({ limit: backfillLimit });
-    const result = await persistBackfillMessages(messages, 'backfill:fetchMessages', since);
-    let reconciledRevoked = 0;
-    if (result.presentMsgKeys.length > 0 && result.oldestPersistedTimestamp !== null) {
-      const reconcile = await store.command('mark_missing_in_chat_window', {
-        row: {
-          chat_id: chatId,
-          chat_local_id: jidLocal(chatId),
-          min_timestamp: result.oldestPersistedTimestamp,
-          updated_before: result.startedAt,
-          present_msg_keys: result.presentMsgKeys,
-          source: 'reconcile:fetchMessages_missing',
-        },
-      });
-      reconciledRevoked = Number(reconcile.matched || 0);
-    }
-    if (result.inserted || result.updated) {
-      await store.command('upsert_chat', { row: normalizeChat(chat) });
-    }
-    const oldest = oldestMessageTimestamp(messages);
-    const incomplete = since > 0 && messages.length >= backfillLimit && oldest !== null && oldest >= since;
-    return { ...result, fetched: messages.length, chatId, incomplete, reconciledRevoked };
-  }
-
-  async function backfillChatsSince(since) {
-    if (!since) return null;
-    status.write({
-      state: 'backfilling',
-      wwebjs_ready: true,
-      db_writeable: true,
-      backfill_since: since,
-    }, { immediate: true });
-    const chats = await client.getChats();
-    let scannedChats = 0;
-    let backfilledChats = 0;
-    let fetched = 0;
-    let inserted = 0;
-    let updated = 0;
-    let skippedBeforeSince = 0;
-    let reconciledRevoked = 0;
-    const incompleteChatIds = [];
-    for (const chat of chats) {
-      const chatId = idSerialized(chat.id);
-      if (!isConversationChatId(chatId)) continue;
-      scannedChats += 1;
-      try {
-        const result = await backfillChatMessages(chat, chatId, since);
-        fetched += result.fetched;
-        inserted += result.inserted;
-        updated += result.updated;
-        skippedBeforeSince += result.skippedBeforeSince;
-        reconciledRevoked += result.reconciledRevoked;
-        if (result.inserted || result.updated) backfilledChats += 1;
-        if (result.incomplete) incompleteChatIds.push(chatId);
-      } catch (error) {
-        console.error(`backfill ${chatId} failed:`, error);
-      }
-    }
-    return {
-      scannedChats,
-      backfilledChats,
-      fetched,
-      inserted,
-      updated,
-      skippedBeforeSince,
-      reconciledRevoked,
-      incompleteChatIds,
-    };
-  }
-
   function persistFailed(label, error) {
     console.error(`${label} failed:`, error);
     status.write(
@@ -358,7 +255,7 @@ async function main() {
 
     if (backfillSince > 0) {
       try {
-        const result = await backfillChatsSince(backfillSince);
+        const result = await backfill.chatsSince(backfillSince);
         console.log(
           `backfill since ${backfillSince}: ${result.scannedChats} chats, ${result.fetched} fetched ` +
           `(${result.inserted} inserted, ${result.updated} updated)`,
@@ -399,7 +296,7 @@ async function main() {
     if (backfillChat) {
       try {
         const chat = await client.getChatById(backfillChat);
-        const result = await backfillChatMessages(chat, backfillChat, backfillSince);
+        const result = await backfill.chatMessages(chat, backfillChat, backfillSince);
         console.log(
           `backfill ${backfillChat}: ${result.fetched} rows ` +
           `(${result.inserted} inserted, ${result.updated} updated)`,
