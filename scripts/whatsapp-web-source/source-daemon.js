@@ -4,6 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const { BackfillManager } = require('./backfill-manager');
+const { buildClientOptions } = require('./browser-options');
 const { ContactManager } = require('./contact-manager');
 const { MemoryDiagnostics, memoryStatsMb } = require('./memory-diagnostics');
 const { StatusWriter } = require('./status-writer');
@@ -96,27 +97,15 @@ async function main() {
   await store.command('ping');
   status.write({ state: 'starting', wwebjs_ready: false, db_writeable: true }, { immediate: true });
 
-  const client = new Client({
-    authStrategy: new LocalAuth({ clientId, dataPath: authPath }),
-    ...(userAgent ? { userAgent } : {}),
-    puppeteer: {
-      headless,
-      ...(executablePath ? { executablePath } : {}),
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-gpu',
-        '--disable-extensions',
-        '--disable-software-rasterizer',
-        '--mute-audio',
-        ...(disableServiceWorkers ? ['--disable-features=ServiceWorker'] : []),
-      ],
-    },
-  });
+  const client = new Client(buildClientOptions({
+    LocalAuth,
+    clientId,
+    authPath,
+    userAgent,
+    headless,
+    executablePath,
+    disableServiceWorkers,
+  }));
   const memoryDiagnostics = new MemoryDiagnostics({
     intervalSeconds: memoryDiagnosticsInterval,
     isReady: () => wwebjsReady,
