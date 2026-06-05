@@ -3,8 +3,25 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
-const { execFileSync, spawn } = require('child_process');
+const { spawn } = require('child_process');
+const {
+  defaultUserAgent,
+  ensureDir,
+  expandPath,
+  parseArgs,
+  timestampLabel,
+} = require('./daemon-utils');
+const {
+  idSerialized,
+  isConversationChatId,
+  jidLocal,
+  messageKey,
+  messageTimestamp,
+  normalizeChat,
+  normalizeContactRow,
+  normalizeMessage,
+  sparseContactRow,
+} = require('./normalization');
 
 function loadWWebJS() {
   const localPath = path.resolve(__dirname, '../../..', 'wwebjs');
@@ -12,170 +29,6 @@ function loadWWebJS() {
     return require(localPath);
   }
   return require('whatsapp-web.js');
-}
-
-function parseArgs(argv) {
-  const out = {};
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    if (!arg.startsWith('--')) continue;
-    const key = arg.slice(2);
-    const next = argv[i + 1];
-    if (next === undefined || next.startsWith('--')) {
-      out[key] = true;
-    } else {
-      out[key] = next;
-      i += 1;
-    }
-  }
-  return out;
-}
-
-function expandPath(value) {
-  const input = String(value || '');
-  if (input === '~') return os.homedir();
-  if (input.startsWith('~/')) return path.join(os.homedir(), input.slice(2));
-  return input.replace(/^\$HOME(?=\/|$)/, os.homedir());
-}
-
-function ensureDir(filePath) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-}
-
-function timestampLabel() {
-  return new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, 'Z');
-}
-
-function jidLocal(value) {
-  const raw = String(value || '').trim();
-  if (!raw) return '';
-  return raw.replace(/:.*@/, '@').split('@', 1)[0];
-}
-
-function idSerialized(value) {
-  if (!value) return null;
-  if (typeof value === 'string') return value;
-  if (value._serialized) return value._serialized;
-  if (value.id?._serialized) return value.id._serialized;
-  return String(value);
-}
-
-function defaultUserAgent() {
-  if (process.env.HERMES_WWEBJS_USER_AGENT) return process.env.HERMES_WWEBJS_USER_AGENT;
-  const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-  if (!executablePath) return undefined;
-  try {
-    const version = execFileSync(executablePath, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim();
-    const match = version.match(/(?:Chromium|Chrome) (\d+)\./);
-    if (match) {
-      return `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${match[1]}.0.0.0 Safari/537.36`;
-    }
-  } catch (error) {
-    return undefined;
-  }
-  return undefined;
-}
-
-function messageKey(message) {
-  return message?.id?._serialized || message?.rawData?.id?._serialized || null;
-}
-
-function messageChatId(message) {
-  if (message.fromMe) return idSerialized(message.to);
-  return idSerialized(message.from);
-}
-
-function mediaPlaceholder(message) {
-  if (!message.hasMedia) return null;
-  switch (message.type) {
-    case 'image': return '[image]';
-    case 'video': return '[video]';
-    case 'ptt': return '[voice note]';
-    case 'audio': return '[audio]';
-    case 'document': return '[document]';
-    case 'sticker': return '[sticker]';
-    default: return `[${message.type || 'media'}]`;
-  }
-}
-
-function messageTimestamp(message) {
-  return Number(message.timestamp || message.rawData?.t || 0);
-}
-
-function normalizeMessage(message, source) {
-  const msgKey = messageKey(message);
-  const chatId = messageChatId(message);
-  if (!msgKey) throw new Error('message has no serialized id');
-  if (!chatId) throw new Error(`message ${msgKey} has no chat id`);
-
-  const fromId = idSerialized(message.from);
-  const toId = idSerialized(message.to);
-  const authorId = idSerialized(message.author);
-  const body = message.body || '';
-  return {
-    msg_key: msgKey,
-    chat_id: chatId,
-    chat_local_id: jidLocal(chatId),
-    from_me: Boolean(message.fromMe),
-    timestamp: messageTimestamp(message),
-    type: String(message.type || 'unknown'),
-    body,
-    author_id: authorId,
-    author_local_id: jidLocal(authorId),
-    from_id: fromId,
-    from_local_id: jidLocal(fromId),
-    to_id: toId,
-    to_local_id: jidLocal(toId),
-    has_media: Boolean(message.hasMedia),
-    media_placeholder: mediaPlaceholder(message),
-    ack: message.ack ?? null,
-    revoked: message.type === 'revoked',
-    revoke_source: message.type === 'revoked' ? source : null,
-    source,
-    raw: message.rawData || {},
-  };
-}
-
-function normalizeChat(chat) {
-  const chatId = idSerialized(chat.id);
-  return {
-    chat_id: chatId,
-    chat_local_id: jidLocal(chatId),
-    name: chat.name || null,
-    is_group: Boolean(chat.isGroup),
-    last_timestamp: chat.timestamp || null,
-    raw: chat.rawData || {},
-  };
-}
-
-function isConversationChatId(chatId) {
-  const value = String(chatId || '').trim().toLowerCase();
-  if (!value) return false;
-  if (value === 'status@broadcast') return false;
-  if (value.endsWith('@newsletter')) return false;
-  return true;
-}
-
-function normalizeContactRow(contact) {
-  const contactId = idSerialized(contact.id || contact.contactId || contact);
-  if (!contactId) return null;
-  return {
-    contact_id: contactId,
-    contact_local_id: jidLocal(contactId),
-    name: contact.name || null,
-    short_name: contact.shortName || contact.short_name || null,
-    push_name: contact.pushname || contact.pushName || contact.push_name || null,
-    verified_name: contact.verifiedName || contact.verified_name || null,
-    is_me: Boolean(contact.isMe),
-    is_user: Boolean(contact.isUser),
-    is_group: Boolean(contact.isGroup),
-    raw: contact.raw || contact,
-  };
-}
-
-function sparseContactRow(contactId) {
-  if (!contactId) return null;
-  return normalizeContactRow({ id: contactId, raw: { id: contactId } });
 }
 
 async function readContactSnapshot(page, scope) {
