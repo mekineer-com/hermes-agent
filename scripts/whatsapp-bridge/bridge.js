@@ -33,7 +33,12 @@ import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { DurableQueue } from './durable_queue.js';
 import { buildMediaRetryCachePayload } from './media_retry_cache.js';
-import { canonicalizeMessageIds, historyMessageSources, isRecentlySentEcho } from './history_ingest.js';
+import {
+  canonicalizeMessageIds,
+  historyMessageSources,
+  isRecentlySentEcho,
+  upsertEventMode,
+} from './history_ingest.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -1091,9 +1096,9 @@ async function startSocket() {
   });
 
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    // Discovery should observe all upsert types (WhatsApp/Baileys varies by
-    // event kind). Forwarding into memU remains restricted to notify/append.
-    const forwardableType = (type === 'notify' || type === 'append');
+    // Discovery should observe all upsert types. Only notify is live; append is
+    // Baileys history/backfill and must not trigger the agent on restart.
+    const mode = upsertEventMode(type);
 
     const botIds = Array.from(new Set([
       normalizeWhatsAppId(sock.user?.id),
@@ -1180,7 +1185,7 @@ async function startSocket() {
         }));
       }
       const senderNumber = senderId.replace(/@.*/, '');
-      if (!forwardableType) continue;
+      if (!mode.forwardable) continue;
 
       // Handle !fromMe messages (from other people) based on mode.
       // Self-chat mode only responds to the user's own messages to
@@ -1374,11 +1379,11 @@ async function startSocket() {
         speakerRoleHint,
         speakerNameHint,
       };
-      if (isAgentEcho) {
+      if (isAgentEcho || mode.persistOnly) {
         event.eventType = 'history_message';
         event.deliveryMode = 'persist_only';
         event.triggerAgent = false;
-        event.sourceSurface = 'messages.upsert';
+        event.sourceSurface = mode.sourceSurface;
       }
 
       const queued = durableQueue.enqueue(event);

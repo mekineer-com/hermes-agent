@@ -41,3 +41,25 @@ export function canonicalizeMessageIds({
 export function isRecentlySentEcho({ fromMe = false, messageId = '' } = {}, recentlySentIds = new Set()) {
   return !!fromMe && !!String(messageId || '').trim() && recentlySentIds.has(messageId);
 }
+
+export function upsertEventMode(type) {
+  if (type === 'notify') {
+    return {
+      forwardable: true,
+      persistOnly: false,
+      sourceSurface: 'messages.upsert',
+    };
+  }
+  if (type === 'append') {
+    return {
+      forwardable: true,
+      persistOnly: true,
+      sourceSurface: 'messages.upsert:append',
+    };
+  }
+  return {
+    forwardable: false,
+    persistOnly: false,
+    sourceSurface: `messages.upsert:${String(type || 'unknown')}`,
+  };
+}

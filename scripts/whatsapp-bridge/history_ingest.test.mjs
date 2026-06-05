@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { canonicalizeMessageIds, historyMessageSources, isRecentlySentEcho } from './history_ingest.js';
+import {
+  canonicalizeMessageIds,
+  historyMessageSources,
+  isRecentlySentEcho,
+  upsertEventMode,
+} from './history_ingest.js';
 
 test('historyMessageSources includes top-level messaging-history messages', () => {
   const rows = historyMessageSources({
@@ -47,4 +52,18 @@ test('isRecentlySentEcho only suppresses bridge-sent fromMe echoes', () => {
   assert.equal(isRecentlySentEcho({ fromMe: true, messageId: 'sent-1' }, recentlySentIds), true);
   assert.equal(isRecentlySentEcho({ fromMe: false, messageId: 'sent-1' }, recentlySentIds), false);
   assert.equal(isRecentlySentEcho({ fromMe: true, messageId: 'other' }, recentlySentIds), false);
+});
+
+test('upsertEventMode treats append as persist-only history', () => {
+  assert.deepEqual(upsertEventMode('notify'), {
+    forwardable: true,
+    persistOnly: false,
+    sourceSurface: 'messages.upsert',
+  });
+  assert.deepEqual(upsertEventMode('append'), {
+    forwardable: true,
+    persistOnly: true,
+    sourceSurface: 'messages.upsert:append',
+  });
+  assert.equal(upsertEventMode('replace').forwardable, false);
 });
