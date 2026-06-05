@@ -4,6 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const { StatusWriter } = require('./status-writer');
 const {
   defaultUserAgent,
   ensureDir,
@@ -278,48 +279,6 @@ async function pageDiagnostics(page) {
   };
 }
 
-class StatusWriter {
-  constructor(statusPath) {
-    this.statusPath = statusPath;
-    this.current = {};
-    this.pending = {};
-    this.timer = null;
-  }
-
-  write(patch, options = {}) {
-    const stateChanged = patch.state && patch.state !== this.current.state;
-    this.pending = { ...this.pending, ...patch };
-    if (options.immediate || stateChanged) {
-      this.flush();
-      return;
-    }
-    if (!this.timer) {
-      this.timer = setTimeout(() => this.flush(), 1000);
-      if (this.timer.unref) this.timer.unref();
-    }
-  }
-
-  flush() {
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = null;
-    }
-    if (Object.keys(this.pending).length === 0) return;
-    ensureDir(this.statusPath);
-    const status = {
-      service: 'whatsapp-web-source',
-      pid: process.pid,
-      ...this.current,
-      ...this.pending,
-      updated_at: Math.floor(Date.now() / 1000),
-      ...memoryStatsMb(),
-    };
-    fs.writeFileSync(this.statusPath, `${JSON.stringify(status, null, 2)}\n`, { mode: 0o600 });
-    this.current = status;
-    this.pending = {};
-  }
-}
-
 async function configureResourceBlocking(page) {
   await page.setRequestInterception(true);
   page.on('request', (request) => {
@@ -381,7 +340,7 @@ async function main() {
 
   ensureDir(dbPath);
   ensureDir(statusPath);
-  const status = new StatusWriter(statusPath);
+  const status = new StatusWriter(statusPath, { stats: memoryStatsMb });
   status.write({ state: 'starting', wwebjs_ready: false, db_writeable: false }, { immediate: true });
 
   const store = new StoreWriter(dbPath, (error) => {
