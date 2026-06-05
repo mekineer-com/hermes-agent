@@ -3,6 +3,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { ContactManager } = require('./contact-manager');
 const { MemoryDiagnostics, memoryStatsMb } = require('./memory-diagnostics');
 const { StatusWriter } = require('./status-writer');
 const { StoreWriter } = require('./store-writer');
@@ -11,7 +12,6 @@ const {
   ensureDir,
   expandPath,
   parseArgs,
-  timestampLabel,
 } = require('./daemon-utils');
 const {
   idSerialized,
@@ -20,9 +20,7 @@ const {
   messageKey,
   messageTimestamp,
   normalizeChat,
-  normalizeContactRow,
   normalizeMessage,
-  sparseContactRow,
 } = require('./normalization');
 
 function loadWWebJS() {
@@ -31,64 +29,6 @@ function loadWWebJS() {
     return require(localPath);
   }
   return require('whatsapp-web.js');
-}
-
-async function readContactSnapshot(page, scope) {
-  const rows = await page.evaluate((snapshotScope) => {
-    const serializeId = (value) => {
-      if (!value) return null;
-      if (typeof value === 'string') return value;
-      if (value._serialized) return value._serialized;
-      if (value.id && value.id._serialized) return value.id._serialized;
-      if (value.user && value.server) return `${value.user}@${value.server}`;
-      return null;
-    };
-    const localId = (value) => String(value || '').replace(/:.*@/, '@').split('@', 1)[0];
-    const allowedIds = new Set(snapshotScope.contactIds || []);
-    const allowedLocalIds = new Set(snapshotScope.contactLocalIds || []);
-    const inScope = (id, isMe) => {
-      if (isMe) return true;
-      if (allowedIds.has(id)) return true;
-      return allowedLocalIds.has(localId(id));
-    };
-    const pick = (model, keys) => {
-      for (const key of keys) {
-        const value = model && model[key];
-        if (typeof value === 'string' && value.trim()) return value;
-      }
-      return null;
-    };
-    const requireFn = window.require || window.Store?.require;
-    const collections = typeof requireFn === 'function' ? requireFn('WAWebCollections') : null;
-    const contacts = collections?.Contact?.getModelsArray?.() || [];
-    const out = [];
-    for (const contact of contacts) {
-      try {
-        const id = serializeId(contact.id);
-        if (!id) continue;
-        const isMe = Boolean(contact.isMe);
-        if (!inScope(id, isMe)) continue;
-        const row = {
-          id,
-          name: pick(contact, ['name', 'formattedName']),
-          shortName: pick(contact, ['shortName', 'displayName']),
-          pushname: pick(contact, ['pushname', 'pushName', 'notifyName']),
-          verifiedName: pick(contact, ['verifiedName', 'verifiedLevelName']),
-          isMe,
-          isUser: Boolean(contact.isUser),
-          isGroup: Boolean(contact.isGroup),
-        };
-        out.push({ ...row, raw: row });
-      } catch (_error) {
-        // Internal WhatsApp models can include device WIDs that break higher-level APIs.
-      }
-    }
-    return out;
-  }, {
-    contactIds: Array.from(scope.contactIds || []),
-    contactLocalIds: Array.from(scope.contactLocalIds || []),
-  });
-  return rows.map(normalizeContactRow).filter(Boolean);
 }
 
 async function configureResourceBlocking(page) {
@@ -143,8 +83,6 @@ async function main() {
   const userAgent = args['user-agent'] ? String(args['user-agent']) : defaultUserAgent();
   const headless = args.headful ? false : true;
   let wwebjsReady = false;
-  let contactSnapshotRunning = false;
-  let contactSnapshotTimer = null;
   let removeMessageHookExposed = false;
 
   ensureDir(dbPath);
@@ -191,6 +129,18 @@ async function main() {
     dbWriteable: () => !store.exitedError,
     status,
   });
+  const contacts = new ContactManager({
+    enabled: contactSnapshotEnabled,
+    intervalSeconds: contactSnapshotInterval,
+    activeSince,
+    dbPath,
+    store,
+    client,
+    page: () => client.pupPage,
+    status,
+    isReady: () => wwebjsReady,
+    dbWriteable: () => !store.exitedError,
+  });
   let fatalHandled = false;
 
   async function shutdownFatal(error) {
@@ -202,7 +152,7 @@ async function main() {
       { state: 'degraded', wwebjs_ready: wwebjsReady, db_writeable: !store.exitedError, error: error?.message || String(error) },
       { immediate: true },
     );
-    if (contactSnapshotTimer) clearInterval(contactSnapshotTimer);
+    contacts.stop();
     memoryDiagnostics.stop();
     await client.destroy().catch(() => {});
     store.close();
@@ -213,44 +163,10 @@ async function main() {
   process.once('uncaughtException', shutdownFatal);
   process.once('unhandledRejection', shutdownFatal);
 
-  async function contactScope() {
-    const result = await store.command('in_scope_contact_ids', { active_since: activeSince });
-    return {
-      contactIds: new Set(result.contact_ids || []),
-      contactLocalIds: new Set(result.contact_local_ids || []),
-    };
-  }
-
-  function contactIdsFromMessageRow(row) {
-    return [
-      row.chat_id,
-      row.from_id,
-      row.to_id,
-      row.author_id,
-    ].filter(Boolean);
-  }
-
-  async function contactRowForId(contactId) {
-    try {
-      const contact = await client.getContactById(contactId);
-      return normalizeContactRow(contact) || sparseContactRow(contactId);
-    } catch (_error) {
-      return sparseContactRow(contactId);
-    }
-  }
-
-  async function persistContactsForMessageRow(row, enrich) {
-    const contactIds = Array.from(new Set(contactIdsFromMessageRow(row)));
-    for (const contactId of contactIds) {
-      const contactRow = enrich ? await contactRowForId(contactId) : sparseContactRow(contactId);
-      if (contactRow) await store.command('upsert_contact', { row: contactRow });
-    }
-  }
-
   async function persistMessage(message, source, options = {}) {
     const row = normalizeMessage(message, source);
     const result = await store.command('upsert_message', { row });
-    await persistContactsForMessageRow(row, Boolean(options.enrichContacts)).catch((error) => {
+    await contacts.persistForMessageRow(row, Boolean(options.enrichContacts)).catch((error) => {
       console.warn(`contact persist for ${row.msg_key} failed:`, error.message);
     });
     status.write({
@@ -282,70 +198,6 @@ async function main() {
       last_remove_at: Math.floor(Date.now() / 1000),
       last_removed_msg_key: msgKey,
     });
-  }
-
-  async function snapshotContacts() {
-    if (!contactSnapshotEnabled) return;
-    if (contactSnapshotRunning) return;
-    contactSnapshotRunning = true;
-    try {
-      const scope = await contactScope();
-      const rows = await readContactSnapshot(client.pupPage, scope);
-      let persisted = 0;
-      for (const row of rows) {
-        await store.command('upsert_contact', { row });
-        persisted += 1;
-      }
-      status.write({
-        state: 'ready',
-        wwebjs_ready: true,
-        db_writeable: true,
-        error: null,
-        last_contact_snapshot_at: Math.floor(Date.now() / 1000),
-        last_contact_snapshot_rows: persisted,
-        last_contact_snapshot_scope_ids: scope.contactIds.size,
-      });
-      console.log(`contact snapshot: ${persisted} persisted from ${scope.contactIds.size} scoped ids`);
-    } finally {
-      contactSnapshotRunning = false;
-    }
-  }
-
-  async function pruneScopeOnce() {
-    if (activeSince <= 0) return;
-    const metadataKey = `prune_scope:${activeSince}`;
-    const existing = await store.command('get_metadata', { key: metadataKey });
-    if (existing.value === '1') return;
-    const backupPath = `${dbPath}.bak-prune-${timestampLabel()}`;
-    const result = await store.command('prune_scope', {
-      active_since: activeSince,
-      backup_path: backupPath,
-    });
-    await store.command('set_metadata', { key: metadataKey, value: '1' });
-    status.write({
-      state: 'ready',
-      wwebjs_ready: true,
-      db_writeable: true,
-      error: null,
-      last_prune_at: Math.floor(Date.now() / 1000),
-      last_prune_active_since: activeSince,
-      last_prune_deleted_chats: result.deleted_chats,
-      last_prune_deleted_contacts: result.deleted_contacts,
-      last_prune_backup_path: result.backup_path,
-    });
-    console.log(
-      `scope prune: ${result.deleted_chats} chats and ${result.deleted_contacts} contacts deleted; ` +
-      `backup ${result.backup_path}`,
-    );
-  }
-
-  function scheduleContactSnapshots() {
-    if (!contactSnapshotEnabled || contactSnapshotInterval <= 0 || contactSnapshotTimer) return;
-    contactSnapshotTimer = setInterval(() => {
-      if (!wwebjsReady) return;
-      snapshotContacts().catch((error) => contactSnapshotFailed(error));
-    }, contactSnapshotInterval * 1000);
-    if (contactSnapshotTimer.unref) contactSnapshotTimer.unref();
   }
 
   async function persistBackfillMessages(messages, source, since) {
@@ -462,20 +314,6 @@ async function main() {
     );
   }
 
-  function contactSnapshotFailed(error) {
-    console.error('contact snapshot failed:', error);
-    status.write(
-      {
-        state: wwebjsReady ? 'ready' : 'degraded',
-        wwebjs_ready: wwebjsReady,
-        db_writeable: !store.exitedError,
-        last_contact_snapshot_error: error.message,
-        last_contact_snapshot_error_at: Math.floor(Date.now() / 1000),
-      },
-      { immediate: true },
-    );
-  }
-
   client.on('qr', (qr) => {
     console.log('Pair WhatsApp Web with this QR payload:');
     console.log(qr);
@@ -586,9 +424,9 @@ async function main() {
       }
     }
 
-    await snapshotContacts().catch((error) => contactSnapshotFailed(error));
-    await pruneScopeOnce().catch((error) => persistFailed('scope prune', error));
-    scheduleContactSnapshots();
+    await contacts.snapshot().catch((error) => contacts.snapshotFailed(error));
+    await contacts.pruneScopeOnce().catch((error) => persistFailed('scope prune', error));
+    contacts.schedule();
 
     if (exitAfterBackfill && (backfillSince > 0 || backfillChat)) {
       await client.destroy();
@@ -647,17 +485,14 @@ async function main() {
   client.on('disconnected', (reason) => {
     console.warn('WhatsApp Web source disconnected:', reason);
     wwebjsReady = false;
-    if (contactSnapshotTimer) {
-      clearInterval(contactSnapshotTimer);
-      contactSnapshotTimer = null;
-    }
+    contacts.stop();
     memoryDiagnostics.stop();
     status.write({ state: 'disconnected', wwebjs_ready: false, db_writeable: !store.exitedError, error: String(reason) }, { immediate: true });
   });
 
   process.on('SIGINT', async () => {
     status.write({ state: 'stopping', wwebjs_ready: false, db_writeable: !store.exitedError }, { immediate: true });
-    if (contactSnapshotTimer) clearInterval(contactSnapshotTimer);
+    contacts.stop();
     memoryDiagnostics.stop();
     await client.destroy().catch(() => {});
     store.close();
@@ -666,7 +501,7 @@ async function main() {
   });
   process.on('SIGTERM', async () => {
     status.write({ state: 'stopping', wwebjs_ready: false, db_writeable: !store.exitedError }, { immediate: true });
-    if (contactSnapshotTimer) clearInterval(contactSnapshotTimer);
+    contacts.stop();
     memoryDiagnostics.stop();
     await client.destroy().catch(() => {});
     store.close();
