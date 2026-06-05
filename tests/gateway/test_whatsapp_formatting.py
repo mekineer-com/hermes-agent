@@ -172,6 +172,24 @@ class TestMessageLimits:
 
         assert adapter._outgoing_chunk_limit() == adapter.MAX_MESSAGE_LENGTH
 
+    def test_configured_bot_mode_beats_env_self_chat(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter.config.extra = {"mode": "bot"}
+        monkeypatch.setenv("WHATSAPP_MODE", "self-chat")
+
+        assert adapter._whatsapp_mode() == "bot"
+        assert adapter._outgoing_chunk_limit() == adapter.MAX_MESSAGE_LENGTH
+
+    def test_invalid_configured_mode_falls_back_to_env_then_default(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter.config.extra = {"mode": "invalid"}
+        monkeypatch.setenv("WHATSAPP_MODE", "bot")
+
+        assert adapter._whatsapp_mode() == "bot"
+
+        monkeypatch.setenv("WHATSAPP_MODE", "invalid")
+        assert adapter._whatsapp_mode() == "self-chat"
+
 
 # ---------------------------------------------------------------------------
 # send() chunking tests

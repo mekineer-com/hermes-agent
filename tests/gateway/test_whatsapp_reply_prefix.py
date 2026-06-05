@@ -38,6 +38,20 @@ class TestConfigYamlBridging:
         assert wa_config is not None
         assert wa_config.extra.get("reply_prefix") == "Custom Bot"
 
+    def test_mode_bridged_from_yaml(self, tmp_path):
+        """whatsapp.mode in config.yaml sets PlatformConfig.extra."""
+        config_yaml = tmp_path / "config.yaml"
+        config_yaml.write_text("whatsapp:\n  mode: bot\n")
+
+        with patch("gateway.config.get_hermes_home", return_value=tmp_path):
+            from gateway.config import load_gateway_config
+            with patch.dict("os.environ", {"WHATSAPP_ENABLED": "true"}, clear=False):
+                config = load_gateway_config()
+
+        wa_config = config.platforms.get(Platform.WHATSAPP)
+        assert wa_config is not None
+        assert wa_config.extra.get("mode") == "bot"
+
     def test_empty_reply_prefix_bridged(self, tmp_path):
         """Empty string reply_prefix disables the header."""
         config_yaml = tmp_path / "config.yaml"

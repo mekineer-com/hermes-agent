@@ -421,10 +421,18 @@ class WhatsAppAdapter(BasePlatformAdapter):
         # notification before the normal "✓ whatsapp disconnected" fires.
         self._shutting_down: bool = False
 
+    def _whatsapp_mode(self) -> str:
+        configured = str(self.config.extra.get("mode") or "").strip().lower()
+        if configured in {"bot", "self-chat"}:
+            return configured
+        env_mode = os.getenv("WHATSAPP_MODE", "").strip().lower()
+        if env_mode in {"bot", "self-chat"}:
+            return env_mode
+        return "self-chat"
+
     def _effective_reply_prefix(self) -> str:
         """Return the prefix the Node bridge will add in self-chat mode."""
-        whatsapp_mode = os.getenv("WHATSAPP_MODE", "self-chat")
-        if whatsapp_mode != "self-chat":
+        if self._whatsapp_mode() != "self-chat":
             return ""
         if self._reply_prefix is not None:
             return self._reply_prefix.replace("\\n", "\n")
@@ -685,7 +693,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             )
             self._bridge_health = {
                 "status": "not_paired",
-                "mode": os.getenv("WHATSAPP_MODE", "self-chat"),
+                "mode": self._whatsapp_mode(),
             }
             self._running = True
             if self._web_source_enabled and not self._web_source_headful:
@@ -716,7 +724,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
             # Ensure session directory exists
             self._session_path.mkdir(parents=True, exist_ok=True)
-            whatsapp_mode = os.getenv("WHATSAPP_MODE", "self-chat")
+            whatsapp_mode = self._whatsapp_mode()
             
             # Check if bridge is already running and connected
             import aiohttp

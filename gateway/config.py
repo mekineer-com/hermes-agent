@@ -821,6 +821,7 @@ def load_gateway_config() -> GatewayConfig:
                     "bridge_port",
                     "bridge_script",
                     "session_path",
+                    "mode",
                     "web_source_enabled",
                     "web_source_script",
                     "web_source_db",
