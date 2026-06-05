@@ -148,7 +148,7 @@ class ContactManager {
       this.status.write({
         state: 'ready',
         wwebjs_ready: true,
-        db_writeable: true,
+        db_writeable: this.dbWriteable(),
         error: null,
         last_contact_snapshot_at: Math.floor(this.now() / 1000),
         last_contact_snapshot_rows: persisted,

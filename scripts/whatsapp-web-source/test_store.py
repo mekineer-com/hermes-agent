@@ -168,6 +168,48 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(rows["older"], 0)
         self.assertEqual(rows["other-chat"], 0)
 
+    def test_reconcile_missing_does_not_touch_rows_updated_at_fetch_start_second(self):
+        store.upsert_message(self.con, row(msg_key="live", timestamp=120))
+        self.con.execute("update whatsapp_messages set updated_at = 100 where msg_key = 'live'")
+        self.con.commit()
+
+        result = store.mark_missing_in_chat_window(
+            self.con,
+            {
+                "chat_id": "123@c.us",
+                "chat_local_id": "123",
+                "min_timestamp": 100,
+                "updated_before": 100,
+                "present_msg_keys": [],
+                "source": "reconcile:fetchMessages_missing",
+            },
+        )
+        got = self.con.execute("select revoked from whatsapp_messages where msg_key = 'live'").fetchone()
+
+        self.assertEqual(result["matched"], 0)
+        self.assertEqual(got["revoked"], 0)
+
+    def test_reconcile_missing_revokes_rows_updated_before_fetch_started(self):
+        store.upsert_message(self.con, row(msg_key="deleted", timestamp=120))
+        self.con.execute("update whatsapp_messages set updated_at = 99 where msg_key = 'deleted'")
+        self.con.commit()
+
+        result = store.mark_missing_in_chat_window(
+            self.con,
+            {
+                "chat_id": "123@c.us",
+                "chat_local_id": "123",
+                "min_timestamp": 100,
+                "updated_before": 100,
+                "present_msg_keys": [],
+                "source": "reconcile:fetchMessages_missing",
+            },
+        )
+        got = self.con.execute("select revoked from whatsapp_messages where msg_key = 'deleted'").fetchone()
+
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(got["revoked"], 1)
+
     def test_reconcile_missing_does_not_touch_rows_updated_after_fetch_started(self):
         store.upsert_message(self.con, row(msg_key="live", timestamp=120))
         self.con.execute("update whatsapp_messages set updated_at = 200 where msg_key = 'live'")

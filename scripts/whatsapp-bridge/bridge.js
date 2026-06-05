@@ -100,7 +100,7 @@ const SYNC_HISTORY_WINDOW_DAYS = parseFloat(process.env.WHATSAPP_SYNC_HISTORY_WI
 const BRIDGE_STARTED_AT_SECONDS = Math.floor(Date.now() / 1000);
 const STARTUP_REPLAY_GRACE_SECONDS = Math.max(
   0,
-  parseInt(process.env.WHATSAPP_STARTUP_REPLAY_GRACE_SECONDS || '120', 10) || 120,
+  Math.min(600, parseInt(process.env.WHATSAPP_STARTUP_REPLAY_GRACE_SECONDS || '120', 10) || 120),
 );
 const DM_ALIAS_EVENT_TTL_MS = 5 * 60 * 1000;
 const RECENTLY_SENT_RETENTION_DAYS = parseFloat(process.env.WHATSAPP_RECENTLY_SENT_RETENTION_DAYS || '30');

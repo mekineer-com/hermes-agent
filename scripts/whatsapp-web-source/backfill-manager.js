@@ -26,6 +26,7 @@ class BackfillManager {
     status,
     backfillLimit,
     persistMessage,
+    dbWriteable = () => true,
     logger = console,
     now = () => Date.now(),
   }) {
@@ -34,12 +35,12 @@ class BackfillManager {
     this.status = status;
     this.backfillLimit = backfillLimit;
     this.persistMessage = persistMessage;
+    this.dbWriteable = dbWriteable;
     this.logger = logger;
     this.now = now;
   }
 
-  async persistMessages(messages, source, since) {
-    const startedAt = Math.floor(this.now() / 1000);
+  async persistMessages(messages, source, since, startedAt = Math.floor(this.now() / 1000)) {
     let inserted = 0;
     let updated = 0;
     let skippedBeforeSince = 0;
@@ -64,8 +65,9 @@ class BackfillManager {
   }
 
   async chatMessages(chat, chatId, since) {
+    const fetchStartedAt = Math.floor(this.now() / 1000);
     const messages = await chat.fetchMessages({ limit: this.backfillLimit });
-    const result = await this.persistMessages(messages, 'backfill:fetchMessages', since);
+    const result = await this.persistMessages(messages, 'backfill:fetchMessages', since, fetchStartedAt);
     let reconciledRevoked = 0;
     if (result.presentMsgKeys.length > 0 && result.oldestPersistedTimestamp !== null) {
       const reconcile = await this.store.command('mark_missing_in_chat_window', {
@@ -93,7 +95,7 @@ class BackfillManager {
     this.status.write({
       state: 'backfilling',
       wwebjs_ready: true,
-      db_writeable: true,
+      db_writeable: this.dbWriteable(),
       backfill_since: since,
     }, { immediate: true });
     const chats = await this.client.getChats();

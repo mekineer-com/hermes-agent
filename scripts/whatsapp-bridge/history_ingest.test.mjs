@@ -85,4 +85,14 @@ test('isStartupReplay identifies old notify rows delivered after bridge startup'
     bridgeStartedAtSeconds: 1200,
     graceSeconds: 120,
   }), true);
+  assert.equal(isStartupReplay({
+    timestamp: 1000,
+    bridgeStartedAtSeconds: 5000,
+    graceSeconds: 36000,
+  }), true);
+  assert.equal(isStartupReplay({
+    timestamp: 4500,
+    bridgeStartedAtSeconds: 5000,
+    graceSeconds: 36000,
+  }), false);
 });

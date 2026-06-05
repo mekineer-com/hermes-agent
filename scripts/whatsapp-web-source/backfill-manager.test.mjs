@@ -54,6 +54,7 @@ test('persistMessages skips rows before since and tracks present message keys', 
 
 test('chatMessages reconciles missing rows through store.py and upserts changed chat', async () => {
   const commands = [];
+  const nowValues = [1000000, 1234000];
   const manager = new BackfillManager({
     client: {},
     store: {
@@ -66,7 +67,7 @@ test('chatMessages reconciles missing rows through store.py and upserts changed 
     status: { write: () => {} },
     backfillLimit: 2,
     persistMessage: async () => ({ action: 'insert' }),
-    now: () => 1234000,
+    now: () => nowValues.shift() ?? 1234000,
   });
   const chat = {
     id: { _serialized: '111@c.us' },
@@ -81,11 +82,27 @@ test('chatMessages reconciles missing rows through store.py and upserts changed 
     chat_id: '111@c.us',
     chat_local_id: '111',
     min_timestamp: 1000,
-    updated_before: 1234,
+    updated_before: 1000,
     present_msg_keys: ['new1', 'new2'],
     source: 'reconcile:fetchMessages_missing',
   });
   assert.equal(result.fetched, 2);
   assert.equal(result.reconciledRevoked, 2);
   assert.equal(result.incomplete, true);
+});
+
+test('chatsSince reports current db writeability', async () => {
+  const writes = [];
+  const manager = new BackfillManager({
+    client: { getChats: async () => [] },
+    store: { command: async () => ({}) },
+    status: { write: (row) => writes.push(row) },
+    backfillLimit: 2,
+    persistMessage: async () => ({ action: 'insert' }),
+    dbWriteable: () => false,
+  });
+
+  await manager.chatsSince(1000);
+
+  assert.equal(writes[0].db_writeable, false);
 });

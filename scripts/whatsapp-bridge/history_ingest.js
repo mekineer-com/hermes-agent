@@ -55,7 +55,7 @@ function timestampSeconds(value) {
 export function isStartupReplay({ timestamp, bridgeStartedAtSeconds, graceSeconds = 120 } = {}) {
   const ts = timestampSeconds(timestamp);
   const started = Number(bridgeStartedAtSeconds);
-  const grace = Math.max(0, Number(graceSeconds) || 0);
+  const grace = Math.min(600, Math.max(0, Number(graceSeconds) || 0));
   return !!ts && Number.isFinite(started) && started > 0 && ts < started - grace;
 }
 

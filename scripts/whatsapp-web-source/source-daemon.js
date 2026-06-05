@@ -106,6 +106,7 @@ async function main() {
     status,
     backfillLimit,
     persistMessage,
+    dbWriteable: () => !store.exitedError,
   });
   let fatalHandled = false;
 
@@ -159,7 +160,7 @@ async function main() {
     status.write({
       state: 'ready',
       wwebjs_ready: true,
-      db_writeable: true,
+      db_writeable: !store.exitedError,
       error: null,
       last_remove_at: Math.floor(Date.now() / 1000),
       last_removed_msg_key: msgKey,

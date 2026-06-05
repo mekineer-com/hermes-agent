@@ -60,6 +60,7 @@ test('persistForMessageRow dedupes ids and writes sparse contacts without enrich
 
 test('snapshot writes scoped contact status fields', async () => {
   const { contactManager, commands, writes } = manager({
+    dbWriteable: () => false,
     readSnapshot: async (_page, scope) => [
       { contact_id: '111@c.us', contact_local_id: '111', raw: {}, name: 'Alice' },
       { contact_id: '222@c.us', contact_local_id: '222', raw: {}, name: 'Bob' },
@@ -76,7 +77,7 @@ test('snapshot writes scoped contact status fields', async () => {
   assert.deepEqual(writes[0].row, {
     state: 'ready',
     wwebjs_ready: true,
-    db_writeable: true,
+    db_writeable: false,
     error: null,
     last_contact_snapshot_at: 1234,
     last_contact_snapshot_rows: 2,

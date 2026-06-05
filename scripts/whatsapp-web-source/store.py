@@ -279,7 +279,7 @@ def mark_missing_in_chat_window(con: sqlite3.Connection, row: dict[str, Any]) ->
             raw_json = ?
         where revoked = 0
           and timestamp >= ?
-          and updated_at <= ?
+          and updated_at < ?
           and (chat_id = ? or chat_local_id = ?)
           and not exists (
             select 1
