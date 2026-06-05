@@ -248,6 +248,70 @@ def mark_revoked(con: sqlite3.Connection, row: dict[str, Any]) -> dict[str, Any]
     return {"status": "ok", "action": "revoke", "msg_key": msg_key, "matched": cur.rowcount}
 
 
+def mark_missing_in_chat_window(con: sqlite3.Connection, row: dict[str, Any]) -> dict[str, Any]:
+    chat_id = str(row.get("chat_id") or "").strip()
+    chat_local_id = str(row.get("chat_local_id") or "").strip()
+    min_timestamp = int(row["min_timestamp"])
+    updated_before = int(row["updated_before"])
+    present_msg_keys = [
+        str(value or "").strip()
+        for value in row.get("present_msg_keys", [])
+        if str(value or "").strip()
+    ]
+    source = str(row.get("source") or "reconcile:missing")
+    ts = now()
+
+    if not chat_id and not chat_local_id:
+        return {"status": "ok", "action": "reconcile_missing", "matched": 0}
+
+    con.execute("create temp table if not exists present_backfill_keys (msg_key text primary key)")
+    con.execute("delete from present_backfill_keys")
+    con.executemany(
+        "insert or ignore into present_backfill_keys (msg_key) values (?)",
+        [(msg_key,) for msg_key in present_msg_keys],
+    )
+    cur = con.execute(
+        """
+        update whatsapp_messages
+        set revoked = 1,
+            revoke_source = ?,
+            updated_at = ?,
+            raw_json = ?
+        where revoked = 0
+          and timestamp >= ?
+          and updated_at <= ?
+          and (chat_id = ? or chat_local_id = ?)
+          and not exists (
+            select 1
+            from present_backfill_keys p
+            where p.msg_key = whatsapp_messages.msg_key
+          )
+        """,
+        (
+            source,
+            ts,
+            json.dumps(
+                {
+                    "source": source,
+                    "chat_id": chat_id,
+                    "chat_local_id": chat_local_id,
+                    "min_timestamp": min_timestamp,
+                    "present_msg_keys": len(present_msg_keys),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            min_timestamp,
+            updated_before,
+            chat_id,
+            chat_local_id,
+        ),
+    )
+    con.execute("delete from present_backfill_keys")
+    con.commit()
+    return {"status": "ok", "action": "reconcile_missing", "matched": cur.rowcount}
+
+
 def update_ack(con: sqlite3.Connection, row: dict[str, Any]) -> dict[str, Any]:
     msg_key = row["msg_key"]
     ts = now()
@@ -479,6 +543,8 @@ def handle(con: sqlite3.Connection, command: dict[str, Any]) -> dict[str, Any]:
         return upsert_message(con, command["row"])
     if op == "mark_revoked":
         return mark_revoked(con, command["row"])
+    if op == "mark_missing_in_chat_window":
+        return mark_missing_in_chat_window(con, command["row"])
     if op == "update_ack":
         return update_ack(con, command["row"])
     if op == "get_metadata":

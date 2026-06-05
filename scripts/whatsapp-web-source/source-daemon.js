@@ -568,19 +568,28 @@ async function main() {
   }
 
   async function persistBackfillMessages(messages, source, since) {
+    const startedAt = Math.floor(Date.now() / 1000);
     let inserted = 0;
     let updated = 0;
     let skippedBeforeSince = 0;
+    const presentMsgKeys = [];
+    let oldestPersistedTimestamp = null;
     for (const message of messages) {
       if (since > 0 && messageTimestamp(message) < since) {
         skippedBeforeSince += 1;
         continue;
       }
+      const msgKey = messageKey(message);
+      if (msgKey) presentMsgKeys.push(msgKey);
+      const ts = messageTimestamp(message);
+      if (ts && (oldestPersistedTimestamp === null || ts < oldestPersistedTimestamp)) {
+        oldestPersistedTimestamp = ts;
+      }
       const result = await persistMessage(message, source);
       if (result.action === 'insert') inserted += 1;
       else updated += 1;
     }
-    return { inserted, updated, skippedBeforeSince };
+    return { inserted, updated, skippedBeforeSince, presentMsgKeys, oldestPersistedTimestamp, startedAt };
   }
 
   function oldestMessageTimestamp(messages) {
@@ -596,12 +605,26 @@ async function main() {
   async function backfillChatMessages(chat, chatId, since) {
     const messages = await chat.fetchMessages({ limit: backfillLimit });
     const result = await persistBackfillMessages(messages, 'backfill:fetchMessages', since);
+    let reconciledRevoked = 0;
+    if (result.presentMsgKeys.length > 0 && result.oldestPersistedTimestamp !== null) {
+      const reconcile = await store.command('mark_missing_in_chat_window', {
+        row: {
+          chat_id: chatId,
+          chat_local_id: jidLocal(chatId),
+          min_timestamp: result.oldestPersistedTimestamp,
+          updated_before: result.startedAt,
+          present_msg_keys: result.presentMsgKeys,
+          source: 'reconcile:fetchMessages_missing',
+        },
+      });
+      reconciledRevoked = Number(reconcile.matched || 0);
+    }
     if (result.inserted || result.updated) {
       await store.command('upsert_chat', { row: normalizeChat(chat) });
     }
     const oldest = oldestMessageTimestamp(messages);
     const incomplete = since > 0 && messages.length >= backfillLimit && oldest !== null && oldest >= since;
-    return { ...result, fetched: messages.length, chatId, incomplete };
+    return { ...result, fetched: messages.length, chatId, incomplete, reconciledRevoked };
   }
 
   async function backfillChatsSince(since) {
@@ -619,6 +642,7 @@ async function main() {
     let inserted = 0;
     let updated = 0;
     let skippedBeforeSince = 0;
+    let reconciledRevoked = 0;
     const incompleteChatIds = [];
     for (const chat of chats) {
       const chatId = idSerialized(chat.id);
@@ -630,6 +654,7 @@ async function main() {
         inserted += result.inserted;
         updated += result.updated;
         skippedBeforeSince += result.skippedBeforeSince;
+        reconciledRevoked += result.reconciledRevoked;
         if (result.inserted || result.updated) backfilledChats += 1;
         if (result.incomplete) incompleteChatIds.push(chatId);
       } catch (error) {
@@ -643,6 +668,7 @@ async function main() {
       inserted,
       updated,
       skippedBeforeSince,
+      reconciledRevoked,
       incompleteChatIds,
     };
   }
@@ -716,6 +742,7 @@ async function main() {
           last_backfill_inserted: result.inserted,
           last_backfill_updated: result.updated,
           last_backfill_skipped_before_since: result.skippedBeforeSince,
+          last_backfill_reconciled_revoked: result.reconciledRevoked,
         };
         if (result.incompleteChatIds.length > 0) {
           backfillStatus.state = 'degraded';
