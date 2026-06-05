@@ -392,6 +392,13 @@ class WhatsAppAdapter(BasePlatformAdapter):
             config.extra.get("web_source_disable_service_workers"),
             False,
         )
+        self._web_source_resource_block = _coerce_bool(
+            config.extra.get("web_source_resource_block"),
+            True,
+        )
+        self._web_source_memory_diagnostics_interval = int(
+            config.extra.get("web_source_memory_diagnostics_interval", 60)
+        )
         self._web_source_pairing_headful = False
         self._web_source_process: Optional[subprocess.Popen] = None
         self._web_source_log_fh = None
@@ -910,6 +917,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             "--client-id", self._web_source_client_id,
             "--backfill-limit", str(self._web_source_backfill_limit),
             "--contact-snapshot-interval", str(self._web_source_contact_snapshot_interval),
+            "--memory-diagnostics-interval", str(self._web_source_memory_diagnostics_interval),
         ]
         if self._web_source_backfill_since is not None:
             command.extend(["--backfill-since", str(int(self._web_source_backfill_since))])
@@ -920,6 +928,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
             command.extend(["--user-agent", str(self._web_source_user_agent)])
         if self._web_source_disable_service_workers:
             command.append("--disable-service-workers")
+        if not self._web_source_resource_block:
+            command.append("--no-resource-block")
         if self._web_source_headful or self._web_source_pairing_headful:
             command.append("--headful")
         return command

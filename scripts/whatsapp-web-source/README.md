@@ -2,7 +2,7 @@
 
 Experimental production-facing WhatsApp Web source daemon.
 
-It uses `whatsapp-web.js` to read decrypted WhatsApp Web messages and projects a normalized subset to SQLite. It does not send replies, does not mark chats seen, and is not wired into Hermes prompt history yet.
+It uses `whatsapp-web.js` to read decrypted WhatsApp Web messages and projects a normalized subset to SQLite. It does not send replies and does not mark chats seen.
 
 After WhatsApp Web is ready, it snapshots contact/name models into `whatsapp_contacts`. This uses WhatsApp Web's internal contact collection directly instead of `client.getContacts()`, because one malformed device WID can make the higher-level API fail the whole batch.
 
@@ -44,6 +44,19 @@ Contacts are refreshed every 15 minutes by default. Tune or disable the refresh:
 ```sh
 node source-daemon.js --contact-snapshot-interval 300
 node source-daemon.js --contact-snapshot-interval 0
+```
+
+Chromium/page memory diagnostics are written into the health file every 60 seconds by default. Tune or disable them:
+
+```sh
+node source-daemon.js --memory-diagnostics-interval 15
+node source-daemon.js --memory-diagnostics-interval 0
+```
+
+Disable image/media/font request blocking for RAM/CPU A/B testing:
+
+```sh
+node source-daemon.js --no-resource-block
 ```
 
 ## Safety

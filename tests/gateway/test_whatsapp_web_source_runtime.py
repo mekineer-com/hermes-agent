@@ -44,7 +44,9 @@ def test_whatsapp_web_source_config_bridged_from_yaml(tmp_path, monkeypatch):
         "  web_source_db: /tmp/web-source.db\n"
         "  web_source_chromium_path: /usr/bin/chromium\n"
         "  web_source_contact_snapshot_interval: 30\n"
-        "  web_source_disable_service_workers: true\n",
+        "  web_source_disable_service_workers: true\n"
+        "  web_source_resource_block: false\n"
+        "  web_source_memory_diagnostics_interval: 15\n",
         encoding="utf-8",
     )
     with patch("gateway.config.get_hermes_home", return_value=tmp_path):
@@ -57,6 +59,8 @@ def test_whatsapp_web_source_config_bridged_from_yaml(tmp_path, monkeypatch):
     assert extra["web_source_chromium_path"] == "/usr/bin/chromium"
     assert extra["web_source_contact_snapshot_interval"] == 30
     assert extra["web_source_disable_service_workers"] is True
+    assert extra["web_source_resource_block"] is False
+    assert extra["web_source_memory_diagnostics_interval"] == 15
 
 
 def test_whatsapp_web_source_command_uses_configured_paths(tmp_path, monkeypatch):
@@ -82,8 +86,10 @@ def test_whatsapp_web_source_command_uses_configured_paths(tmp_path, monkeypatch
                 "web_source_backfill_limit": 25,
                 "web_source_backfill_since": 123,
                 "web_source_contact_snapshot_interval": 60,
+                "web_source_memory_diagnostics_interval": 15,
                 "web_source_chromium_path": "/usr/bin/chromium",
                 "web_source_disable_service_workers": True,
+                "web_source_resource_block": False,
             },
         )
     )
@@ -102,9 +108,11 @@ def test_whatsapp_web_source_command_uses_configured_paths(tmp_path, monkeypatch
     assert command[command.index("--client-id") + 1] == "siri-source"
     assert command[command.index("--backfill-limit") + 1] == "25"
     assert command[command.index("--contact-snapshot-interval") + 1] == "60"
+    assert command[command.index("--memory-diagnostics-interval") + 1] == "15"
     assert command[command.index("--backfill-since") + 1] == "123"
     assert command[command.index("--active-since") + 1] == "123"
     assert "--disable-service-workers" in command
+    assert "--no-resource-block" in command
     assert popen.call_args.kwargs["env"]["PUPPETEER_EXECUTABLE_PATH"] == "/usr/bin/chromium"
 
 

@@ -314,6 +314,117 @@ function memoryStatsMb() {
   };
 }
 
+function parseProcStatus(pid) {
+  const statusPath = `/proc/${pid}/status`;
+  const cmdlinePath = `/proc/${pid}/cmdline`;
+  const statPath = `/proc/${pid}/stat`;
+  const status = fs.readFileSync(statusPath, 'utf8');
+  const get = (name) => {
+    const match = status.match(new RegExp(`^${name}:\\s+(.+)$`, 'm'));
+    return match ? match[1].trim() : '';
+  };
+  const cmdline = fs.readFileSync(cmdlinePath, 'utf8').replace(/\0/g, ' ').trim();
+  const stat = fs.readFileSync(statPath, 'utf8');
+  const afterName = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+  const typeMatch = cmdline.match(/--type=([^ ]+)/);
+  return {
+    pid,
+    ppid: Number(get('PPid') || 0),
+    name: get('Name'),
+    state: get('State').split(/\s+/, 1)[0] || '',
+    rss_mb: Math.round((Number((get('VmRSS').match(/\d+/) || ['0'])[0]) || 0) / 1024),
+    process_type: typeMatch ? typeMatch[1] : 'browser',
+    cpu_ticks: (Number(afterName[11]) || 0) + (Number(afterName[12]) || 0),
+  };
+}
+
+function chromiumProcessTree(rootPid, previous = new Map()) {
+  let processes = [];
+  try {
+    processes = fs.readdirSync('/proc')
+      .filter((name) => /^\d+$/.test(name))
+      .map((name) => {
+        try {
+          return parseProcStatus(Number(name));
+        } catch (_error) {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch (_error) {
+    return { total_rss_mb: 0, processes: [] };
+  }
+
+  const children = new Map();
+  for (const proc of processes) {
+    if (!children.has(proc.ppid)) children.set(proc.ppid, []);
+    children.get(proc.ppid).push(proc);
+  }
+  const descendants = [];
+  const stack = [...(children.get(rootPid) || [])];
+  while (stack.length > 0) {
+    const proc = stack.pop();
+    if (!proc) continue;
+    descendants.push(proc);
+    stack.push(...(children.get(proc.pid) || []));
+  }
+
+  const nowMs = Date.now();
+  let totalRssMb = 0;
+  const rows = descendants
+    .filter((proc) => proc.name === 'chromium' || proc.name === 'chrome' || proc.process_type !== 'browser')
+    .map((proc) => {
+      totalRssMb += proc.rss_mb;
+      const prev = previous.get(proc.pid);
+      const elapsedSeconds = prev ? Math.max((nowMs - prev.sample_ms) / 1000, 0.001) : null;
+      const cpuTicksDelta = prev ? Math.max(proc.cpu_ticks - prev.cpu_ticks, 0) : null;
+      return {
+        pid: proc.pid,
+        ppid: proc.ppid,
+        type: proc.process_type,
+        state: proc.state,
+        rss_mb: proc.rss_mb,
+        cpu_ticks: proc.cpu_ticks,
+        cpu_ticks_delta: cpuTicksDelta,
+        cpu_ticks_per_second: elapsedSeconds && cpuTicksDelta !== null
+          ? Math.round(cpuTicksDelta / elapsedSeconds)
+          : null,
+      };
+    })
+    .sort((a, b) => b.rss_mb - a.rss_mb);
+
+  return {
+    total_rss_mb: totalRssMb,
+    process_count: rows.length,
+    processes: rows.slice(0, 8),
+  };
+}
+
+async function pageDiagnostics(page) {
+  const [metrics, collections] = await Promise.all([
+    page.metrics().catch(() => null),
+    page.evaluate(() => {
+      const requireFn = window.require;
+      const collections = typeof requireFn === 'function' ? requireFn('WAWebCollections') : null;
+      return {
+        msg: collections?.Msg?.getModelsArray?.().length ?? null,
+        chat: collections?.Chat?.getModelsArray?.().length ?? null,
+        contact: collections?.Contact?.getModelsArray?.().length ?? null,
+      };
+    }).catch(() => null),
+  ]);
+  return {
+    page_metrics: metrics ? {
+      js_heap_used_mb: Math.round(metrics.JSHeapUsedSize / 1024 / 1024),
+      js_heap_total_mb: Math.round(metrics.JSHeapTotalSize / 1024 / 1024),
+      nodes: metrics.Nodes,
+      documents: metrics.Documents,
+      js_event_listeners: metrics.JSEventListeners,
+    } : null,
+    wa_collection_counts: collections,
+  };
+}
+
 class StatusWriter {
   constructor(statusPath) {
     this.statusPath = statusPath;
@@ -371,7 +482,7 @@ async function configureResourceBlocking(page) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help || args.h) {
-    console.log(`Usage: node source-daemon.js [options]\n\nOptions:\n  --db PATH                 SQLite projection DB (default ~/.hermes/whatsapp/web_source.db)\n  --status PATH             JSON status path (default ~/.hermes/whatsapp/web_source_status.json)\n  --auth PATH               LocalAuth data dir (default ~/.hermes/whatsapp/wwebjs_auth)\n  --client-id ID            LocalAuth client id (default memu-web-source)\n  --backfill-chat JID       Backfill one chat after ready\n  --backfill-since EPOCH    Backfill all chats at/after this Unix timestamp\n  --active-since EPOCH      Storage scope cutoff (defaults to --backfill-since)\n  --backfill-limit N        Backfill limit per chat (default 100, max 5000)\n  --no-contact-snapshot     Do not snapshot WhatsApp contact/name models after ready\n  --contact-snapshot-interval SECONDS\n                            Refresh contacts periodically (default 900, 0 disables)\n  --user-agent UA           Override WhatsApp Web browser user-agent\n  --disable-service-workers Experimental: launch Chromium with ServiceWorker disabled\n  --headful                 Show Chromium instead of running headless\n  --exit-after-backfill     Exit after bounded backfill\n  --no-resource-block       Do not block image/media/font requests after ready\n`);
+    console.log(`Usage: node source-daemon.js [options]\n\nOptions:\n  --db PATH                 SQLite projection DB (default ~/.hermes/whatsapp/web_source.db)\n  --status PATH             JSON status path (default ~/.hermes/whatsapp/web_source_status.json)\n  --auth PATH               LocalAuth data dir (default ~/.hermes/whatsapp/wwebjs_auth)\n  --client-id ID            LocalAuth client id (default memu-web-source)\n  --backfill-chat JID       Backfill one chat after ready\n  --backfill-since EPOCH    Backfill all chats at/after this Unix timestamp\n  --active-since EPOCH      Storage scope cutoff (defaults to --backfill-since)\n  --backfill-limit N        Backfill limit per chat (default 100, max 5000)\n  --no-contact-snapshot     Do not snapshot WhatsApp contact/name models after ready\n  --contact-snapshot-interval SECONDS\n                            Refresh contacts periodically (default 900, 0 disables)\n  --memory-diagnostics-interval SECONDS\n                            Refresh Chromium/page memory diagnostics (default 60, 0 disables)\n  --user-agent UA           Override WhatsApp Web browser user-agent\n  --disable-service-workers Experimental: launch Chromium with ServiceWorker disabled\n  --headful                 Show Chromium instead of running headless\n  --exit-after-backfill     Exit after bounded backfill\n  --no-resource-block       Do not block image/media/font requests after ready\n`);
     return;
   }
   const { Client, LocalAuth, Events } = loadWWebJS();
@@ -386,6 +497,7 @@ async function main() {
   const backfillLimit = Math.min(Math.max(parseInt(args['backfill-limit'] || '100', 10) || 100, 1), 5000);
   const contactSnapshotEnabled = args['no-contact-snapshot'] !== true;
   const contactSnapshotInterval = Math.max(parseInt(args['contact-snapshot-interval'] || '900', 10) || 0, 0);
+  const memoryDiagnosticsInterval = Math.max(parseInt(args['memory-diagnostics-interval'] || '60', 10) || 0, 0);
   const exitAfterBackfill = Boolean(args['exit-after-backfill']);
   const disableServiceWorkers = Boolean(args['disable-service-workers']);
   const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
@@ -394,6 +506,9 @@ async function main() {
   let wwebjsReady = false;
   let contactSnapshotRunning = false;
   let contactSnapshotTimer = null;
+  let memoryDiagnosticsRunning = false;
+  let memoryDiagnosticsTimer = null;
+  let previousProcessStats = new Map();
 
   ensureDir(dbPath);
   ensureDir(statusPath);
@@ -443,6 +558,7 @@ async function main() {
       { immediate: true },
     );
     if (contactSnapshotTimer) clearInterval(contactSnapshotTimer);
+    if (memoryDiagnosticsTimer) clearInterval(memoryDiagnosticsTimer);
     await client.destroy().catch(() => {});
     store.close();
     status.flush();
@@ -565,6 +681,63 @@ async function main() {
       snapshotContacts().catch((error) => contactSnapshotFailed(error));
     }, contactSnapshotInterval * 1000);
     if (contactSnapshotTimer.unref) contactSnapshotTimer.unref();
+  }
+
+  function browserRootPid() {
+    return client.pupBrowser?.process?.()?.pid || null;
+  }
+
+  async function collectMemoryDiagnostics() {
+    if (!wwebjsReady || memoryDiagnosticsRunning) return;
+    const rootPid = browserRootPid();
+    if (!rootPid) return;
+    memoryDiagnosticsRunning = true;
+    try {
+      const chromium = chromiumProcessTree(rootPid, previousProcessStats);
+      const sampleMs = Date.now();
+      previousProcessStats = new Map(
+        chromium.processes.map((proc) => [
+          proc.pid,
+          {
+            cpu_ticks: proc.cpu_ticks,
+            sample_ms: sampleMs,
+          },
+        ]),
+      );
+      const statusProcesses = chromium.processes.map(({ cpu_ticks, ...proc }) => proc);
+      const page = await pageDiagnostics(client.pupPage);
+      status.write({
+        state: 'ready',
+        wwebjs_ready: true,
+        db_writeable: !store.exitedError,
+        memory_diagnostics_at: Math.floor(sampleMs / 1000),
+        chromium_root_pid: rootPid,
+        chromium_total_rss_mb: chromium.total_rss_mb,
+        chromium_process_count: chromium.process_count,
+        chromium_processes: statusProcesses,
+        ...page,
+      });
+    } catch (error) {
+      status.write({
+        memory_diagnostics_error: error.message,
+        memory_diagnostics_error_at: Math.floor(Date.now() / 1000),
+      });
+    } finally {
+      memoryDiagnosticsRunning = false;
+    }
+  }
+
+  function scheduleMemoryDiagnostics() {
+    if (memoryDiagnosticsInterval <= 0 || memoryDiagnosticsTimer) return;
+    collectMemoryDiagnostics().catch((error) => {
+      console.warn('memory diagnostics failed:', error.message);
+    });
+    memoryDiagnosticsTimer = setInterval(() => {
+      collectMemoryDiagnostics().catch((error) => {
+        console.warn('memory diagnostics failed:', error.message);
+      });
+    }, memoryDiagnosticsInterval * 1000);
+    if (memoryDiagnosticsTimer.unref) memoryDiagnosticsTimer.unref();
   }
 
   async function persistBackfillMessages(messages, source, since) {
@@ -722,6 +895,7 @@ async function main() {
         console.warn('resource blocking not enabled:', error.message);
       }
     }
+    scheduleMemoryDiagnostics();
 
     if (backfillSince > 0) {
       try {
@@ -856,12 +1030,17 @@ async function main() {
       clearInterval(contactSnapshotTimer);
       contactSnapshotTimer = null;
     }
+    if (memoryDiagnosticsTimer) {
+      clearInterval(memoryDiagnosticsTimer);
+      memoryDiagnosticsTimer = null;
+    }
     status.write({ state: 'disconnected', wwebjs_ready: false, db_writeable: !store.exitedError, error: String(reason) }, { immediate: true });
   });
 
   process.on('SIGINT', async () => {
     status.write({ state: 'stopping', wwebjs_ready: false, db_writeable: !store.exitedError }, { immediate: true });
     if (contactSnapshotTimer) clearInterval(contactSnapshotTimer);
+    if (memoryDiagnosticsTimer) clearInterval(memoryDiagnosticsTimer);
     await client.destroy().catch(() => {});
     store.close();
     status.flush();
@@ -870,6 +1049,7 @@ async function main() {
   process.on('SIGTERM', async () => {
     status.write({ state: 'stopping', wwebjs_ready: false, db_writeable: !store.exitedError }, { immediate: true });
     if (contactSnapshotTimer) clearInterval(contactSnapshotTimer);
+    if (memoryDiagnosticsTimer) clearInterval(memoryDiagnosticsTimer);
     await client.destroy().catch(() => {});
     store.close();
     status.flush();
