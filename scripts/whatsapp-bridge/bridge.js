@@ -80,6 +80,39 @@ function logSyncEvent(eventName, payload) {
     appendFileSync(SYNC_EVENT_LOG_PATH, entry + '\n', 'utf8');
   } catch {}
 }
+
+function logUpsertObservation({
+  type = '',
+  msg = {},
+  chatId = '',
+  senderId = '',
+  deliveryMode = '',
+  sourceSurface = '',
+  action = '',
+  reason = '',
+  body = '',
+  messageType = '',
+  queued = null,
+} = {}) {
+  const key = msg?.key || {};
+  logSyncEvent('messages.upsert', {
+    type,
+    deliveryMode,
+    sourceSurface,
+    action,
+    reason,
+    queued,
+    messageId: key.id || '',
+    chatId,
+    senderId,
+    timestamp: msg?.messageTimestamp,
+    rawMessageTimestamp: msg?.messageTimestamp,
+    fromMe: typeof key.fromMe === 'boolean' ? key.fromMe : null,
+    body,
+    messageType,
+    hasPayload: !!msg?.message,
+  });
+}
 const IMAGE_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'image_cache');
 const DOCUMENT_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'document_cache');
 const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
@@ -1123,10 +1156,32 @@ async function startSocket() {
             messageId: msg.key.id || '',
           }));
         }
+        logUpsertObservation({
+          type,
+          msg,
+          chatId: rawChatId,
+          deliveryMode: mode.deliveryMode,
+          sourceSurface: mode.sourceSurface,
+          action: 'dropped',
+          reason: 'status_update',
+          queued: false,
+        });
         continue;
       }
       let chatId = normalizeWhatsAppId(rawChatId);
-      if (!chatId) continue;
+      if (!chatId) {
+        logUpsertObservation({
+          type,
+          msg,
+          chatId: rawChatId,
+          deliveryMode: mode.deliveryMode,
+          sourceSurface: mode.sourceSurface,
+          action: 'dropped',
+          reason: 'missing_chat_id',
+          queued: false,
+        });
+        continue;
+      }
       const selfSenderId = normalizeWhatsAppId(sock.user?.id || sock.user?.lid || '');
       let participantId = normalizeWhatsAppId(msg.key.participant || '');
       if (
@@ -1179,6 +1234,17 @@ async function startSocket() {
           isGroup,
           lastSenderName: (!isGroup && !msg.key.fromMe) ? senderDisplayName : '',
         });
+        logUpsertObservation({
+          type,
+          msg,
+          chatId,
+          senderId,
+          deliveryMode: mode.deliveryMode,
+          sourceSurface: mode.sourceSurface,
+          action: 'dropped',
+          reason: 'missing_message_payload',
+          queued: false,
+        });
         continue;
       }
       rememberInboundLastMessage(msg);
@@ -1191,7 +1257,20 @@ async function startSocket() {
         }));
       }
       const senderNumber = senderId.replace(/@.*/, '');
-      if (!mode.forwardable) continue;
+      if (!mode.forwardable) {
+        logUpsertObservation({
+          type,
+          msg,
+          chatId,
+          senderId,
+          deliveryMode: mode.deliveryMode,
+          sourceSurface: mode.sourceSurface,
+          action: 'dropped',
+          reason: 'non_forwardable_upsert_type',
+          queued: false,
+        });
+        continue;
+      }
 
       // Handle !fromMe messages (from other people) based on mode.
       // Self-chat mode only responds to the user's own messages to
@@ -1206,6 +1285,17 @@ async function startSocket() {
             chatId,
             senderId,
           }));
+          logUpsertObservation({
+            type,
+            msg,
+            chatId,
+            senderId,
+            deliveryMode: mode.deliveryMode,
+            sourceSurface: mode.sourceSurface,
+            action: 'dropped',
+            reason: 'self_chat_mode_rejects_non_self',
+            queued: false,
+          });
           continue;
         }
         if (!matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
@@ -1215,11 +1305,23 @@ async function startSocket() {
             chatId,
             senderId,
           }));
+          logUpsertObservation({
+            type,
+            msg,
+            chatId,
+            senderId,
+            deliveryMode: mode.deliveryMode,
+            sourceSurface: mode.sourceSurface,
+            action: 'dropped',
+            reason: 'allowlist_mismatch',
+            queued: false,
+          });
           continue;
         }
       }
 
       const messageContent = getMessageContent(msg);
+      const messageType = Object.keys(messageContent || {})[0] || '';
       const contextInfo = getContextInfo(messageContent);
       const mentionedIds = Array.from(new Set((contextInfo?.mentionedJid || []).map(normalizeWhatsAppId).filter(Boolean)));
       const quotedMessageId = contextInfo?.stanzaId || null;
@@ -1317,6 +1419,19 @@ async function startSocket() {
             messageId: msg.key.id,
           }));
         }
+        logUpsertObservation({
+          type,
+          msg,
+          chatId,
+          senderId,
+          deliveryMode: 'persist_only',
+          sourceSurface: mode.sourceSurface,
+          action: 'dropped',
+          reason: 'recently_sent_agent_echo',
+          body,
+          messageType,
+          queued: false,
+        });
         continue;
       }
       const isAgentEcho = msg.key.fromMe && !!decoratedAssistant;
@@ -1333,6 +1448,19 @@ async function startSocket() {
           if (WHATSAPP_DEBUG) {
             console.log(JSON.stringify({ event: 'ignored', reason: 'self_chat_mode_rejects_non_self_from_me', chatId, messageId: msg.key.id }));
           }
+          logUpsertObservation({
+            type,
+            msg,
+            chatId,
+            senderId,
+            deliveryMode: mode.deliveryMode,
+            sourceSurface: mode.sourceSurface,
+            action: 'dropped',
+            reason: 'self_chat_mode_rejects_non_self_from_me',
+            body,
+            messageType,
+            queued: false,
+          });
           continue;
         }
       }
@@ -1342,6 +1470,18 @@ async function startSocket() {
         if (WHATSAPP_DEBUG) {
           console.log(JSON.stringify({ event: 'ignored', reason: 'empty', chatId, messageKeys: Object.keys(msg.message || {}) }));
         }
+        logUpsertObservation({
+          type,
+          msg,
+          chatId,
+          senderId,
+          deliveryMode: mode.deliveryMode,
+          sourceSurface: mode.sourceSurface,
+          action: 'dropped',
+          reason: 'empty',
+          messageType,
+          queued: false,
+        });
         continue;
       }
 
@@ -1401,7 +1541,20 @@ async function startSocket() {
       }
 
       const queued = durableQueue.enqueue(event);
-      if (WHATSAPP_DEBUG && !queued) {
+      logUpsertObservation({
+        type,
+        msg,
+        chatId: event.chatId,
+        senderId: event.senderId,
+        deliveryMode: event.deliveryMode,
+        sourceSurface: event.sourceSurface,
+        action: queued ? 'queued' : 'dropped',
+        reason: queued ? 'queued' : 'duplicate_event_uid',
+        body: event.body,
+        messageType,
+        queued,
+      });
+      if (!queued && WHATSAPP_DEBUG) {
         console.log(JSON.stringify({
           event: 'ignored',
           reason: 'duplicate_event_uid',

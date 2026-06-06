@@ -18,5 +18,6 @@ test('bridge preserves persist-only WhatsApp event field contract', () => {
 
 test('bridge stamps explicit live and revoke delivery modes', () => {
   assert.match(bridgeSource, /deliveryMode:\s*mode\.deliveryMode/);
+  assert.match(bridgeSource, /event\.deliveryMode\s*=\s*delivery\.deliveryMode/);
   assert.match(bridgeSource, /deliveryMode:\s*'revoke'/);
 });

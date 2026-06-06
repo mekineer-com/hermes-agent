@@ -80,8 +80,8 @@ export function upsertEventMode(type) {
   // a live delivery signal. Ingest it for history/discovery only.
   return {
     forwardable: false,
-    persistOnly: false,
-    deliveryMode: 'discovery_only',
+    persistOnly: true,
+    deliveryMode: 'persist_only',
     sourceSurface: `messages.upsert:${String(type || 'unknown')}`,
   };
 }

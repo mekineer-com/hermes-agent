@@ -1875,14 +1875,6 @@ class WhatsAppAdapter(BasePlatformAdapter):
         return "persist_only"
 
     @staticmethod
-    def _has_valid_bridge_delivery_mode(data: Dict[str, Any]) -> bool:
-        return str(data.get("deliveryMode") or "").strip().lower() in {"live", "persist_only", "revoke"}
-
-    @staticmethod
-    def _is_persist_only_bridge_event(data: Dict[str, Any]) -> bool:
-        return WhatsAppAdapter._bridge_delivery_mode(data) != "live"
-
-    @staticmethod
     def _should_persist_bridge_event(data: Dict[str, Any]) -> bool:
         chat_id = str(data.get("chatId") or "").strip().lower()
         if not chat_id or chat_id == "status@broadcast" or chat_id.endswith("@newsletter"):
@@ -1894,7 +1886,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         raw = event.raw_message if isinstance(event.raw_message, dict) else {}
         # WhatsApp events must arrive pre-classified by the bridge. Missing
         # deliveryMode is invalid because stale chats.update history once woke Siri.
-        if not self._has_valid_bridge_delivery_mode(raw):
+        if str(raw.get("deliveryMode") or "").strip().lower() not in {"live", "persist_only", "revoke"}:
             logger.warning(
                 "[whatsapp] Bridge event missing/invalid deliveryMode; treating as non-live chat_id=%r message_id=%r mode=%r",
                 raw.get("chatId"),

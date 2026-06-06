@@ -490,13 +490,6 @@ def handle_turn(
                 task_id, summarize_for_log, platform,
             )
 
-        if not allow_public_response and response_target == "respond":
-            logger.error("Soul tried response_target=respond in listen_only chat %s; suppressing", conversation_id)
-            return _silent_listen_result(
-                agent, config, messages, conversation_history, user_message,
-                task_id, summarize_for_log, platform, exit_reason="soul_mode_listen_only_public_response_suppressed",
-            )
-
         # PRIVATE on WhatsApp: route to the human's self-DM (their own
         # number's chat-with-self) instead of the originating chat. Other
         # platforms have no self-DM concept and fall through to the default

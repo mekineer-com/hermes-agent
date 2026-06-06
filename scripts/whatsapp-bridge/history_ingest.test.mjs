@@ -70,7 +70,7 @@ test('upsertEventMode treats append as persist-only history', () => {
     sourceSurface: 'messages.upsert:append',
   });
   assert.equal(upsertEventMode('replace').forwardable, false);
-  assert.equal(upsertEventMode('replace').deliveryMode, 'discovery_only');
+  assert.equal(upsertEventMode('replace').deliveryMode, 'persist_only');
 });
 
 test('classifyUpsertEvent stamps explicit delivery mode for live and history rows', () => {
@@ -87,7 +87,7 @@ test('classifyUpsertEvent stamps explicit delivery mode for live and history row
     deliveryMode: 'persist_only',
     sourceSurface: 'messages.upsert:startup-replay',
   });
-  assert.equal(classifyUpsertEvent({ type: 'replace' }).deliveryMode, 'discovery_only');
+  assert.equal(classifyUpsertEvent({ type: 'replace' }).deliveryMode, 'persist_only');
 });
 
 test('isStartupReplay identifies old notify rows delivered after bridge startup', () => {
