@@ -38,13 +38,13 @@ class _FakeAdapter:
 
 
 class _FakeSessionDb:
-    def __init__(self, exists):
-        self.exists = exists
+    def __init__(self, handled):
+        self.handled = handled
         self.calls = []
 
-    def message_source_key_exists(self, *, source_chat_id, source_message_id):
+    def message_source_key_has_response(self, *, source_chat_id, source_message_id):
         self.calls.append((source_chat_id, source_message_id))
-        return self.exists
+        return self.handled
 
 
 def _make_runner():
@@ -83,7 +83,7 @@ def _make_runner():
     return runner
 
 
-def test_whatsapp_duplicate_source_message_skips_before_agent_turn():
+def test_whatsapp_answered_source_message_skips_before_agent_turn():
     runner = _make_runner()
     runner._session_db = _FakeSessionDb(True)
 

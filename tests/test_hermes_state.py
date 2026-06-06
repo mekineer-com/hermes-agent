@@ -66,6 +66,28 @@ class TestSessionLifecycle:
         assert session["end_reason"] == "compression"
         assert session["ended_at"] == first_ended_at
 
+    def test_source_key_has_response_only_after_assistant_reply(self, db):
+        db.create_session(session_id="s1", source="whatsapp")
+        db.append_message(
+            "s1",
+            role="user",
+            content="hello",
+            source_chat_id="15133278228@s.whatsapp.net",
+            source_message_id="m1",
+        )
+
+        assert not db.message_source_key_has_response(
+            source_chat_id="15133278228@s.whatsapp.net",
+            source_message_id="m1",
+        )
+
+        db.append_message("s1", role="assistant", content="hi")
+
+        assert db.message_source_key_has_response(
+            source_chat_id="15133278228@s.whatsapp.net",
+            source_message_id="m1",
+        )
+
     def test_end_session_after_reopen_allows_re_end(self, db):
         """reopen_session() is the explicit escape hatch for re-ending a
         closed session. After reopen, end_session() takes effect again.

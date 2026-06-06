@@ -76,7 +76,7 @@ test('durable queue preserves unacked messages across restart and ack', () => {
       botIds: [],
       timestamp: 3,
     });
-    assert.equal(duplicate, null);
+    assert.equal(duplicate, two);
 
     assert.deepEqual(queue.readUnacked(10).map((item) => item.seq), [1, 2]);
 
@@ -172,7 +172,7 @@ test('durable queue bootstraps seen ids from queue rows when seen file is missin
 
     const queue = new DurableQueue({ queueDir, compactionEveryAcks: 1000 });
     const seenLines = readLines(path.join(queueDir, 'queue.seen'));
-    assert.deepEqual(seenLines, ['114628432556258@lid:ACCB6730B9B318CD8D20AF8EA94082E1']);
+    assert.deepEqual(seenLines, ['persist_only\t114628432556258@lid:ACCB6730B9B318CD8D20AF8EA94082E1']);
 
     const duplicate = queue.enqueue({
       messageId: 'ACCB6730B9B318CD8D20AF8EA94082E1',
@@ -217,14 +217,14 @@ test('durable queue gives deliveryMode revoke a distinct uid from the original m
       timestamp: 2,
     });
 
-    assert.equal(original.event_uid, 'live:15133278228@s.whatsapp.net:m1');
+    assert.equal(original.event_uid, '15133278228@s.whatsapp.net:m1');
     assert.equal(revoke.event_uid, 'revoke:15133278228@s.whatsapp.net:m1');
   } finally {
     rmSync(queueDir, { recursive: true, force: true });
   }
 });
 
-test('durable queue does not let history rows block later live rows', () => {
+test('durable queue merges history rows into later live rows', () => {
   const queueDir = mkQueueDir();
   try {
     const queue = new DurableQueue({ queueDir, compactionEveryAcks: 1000 });
@@ -237,6 +237,7 @@ test('durable queue does not let history rows block later live rows', () => {
       body: 'hello',
       timestamp: 1,
     });
+    const queueLinesAfterHistory = readLines(path.join(queueDir, 'queue.jsonl'));
     const live = queue.enqueue({
       deliveryMode: 'live',
       messageId: 'm1',
@@ -245,6 +246,7 @@ test('durable queue does not let history rows block later live rows', () => {
       body: 'hello',
       timestamp: 1,
     });
+    const queueLinesAfterLive = readLines(path.join(queueDir, 'queue.jsonl'));
     const duplicateLive = queue.enqueue({
       deliveryMode: 'live',
       messageId: 'm1',
@@ -254,9 +256,57 @@ test('durable queue does not let history rows block later live rows', () => {
       timestamp: 2,
     });
 
-    assert.equal(history.event_uid, 'persist:15133278228@s.whatsapp.net:m1');
-    assert.equal(live.event_uid, 'live:15133278228@s.whatsapp.net:m1');
-    assert.equal(duplicateLive, null);
+    assert.equal(history, live);
+    assert.equal(history.event_uid, '15133278228@s.whatsapp.net:m1');
+    assert.equal(history.deliveryMode, 'live');
+    assert.equal(history.eventType, undefined);
+    assert.equal(queueLinesAfterHistory.length, 1);
+    assert.equal(queueLinesAfterLive.length, 1);
+    assert.equal(duplicateLive.event_uid, '15133278228@s.whatsapp.net:m1');
+    assert.deepEqual(queue.readUnacked(10).map((item) => item.seq), [1]);
+  } finally {
+    rmSync(queueDir, { recursive: true, force: true });
+  }
+});
+
+test('durable queue lets a live row upgrade a previously seen history row after restart', () => {
+  const queueDir = mkQueueDir();
+  try {
+    let queue = new DurableQueue({ queueDir, compactionEveryAcks: 1000 });
+    const history = queue.enqueue({
+      eventType: 'history_message',
+      deliveryMode: 'persist_only',
+      messageId: 'm1',
+      chatId: '15133278228@s.whatsapp.net',
+      senderId: '15133278228@s.whatsapp.net',
+      body: 'history body',
+      timestamp: 1,
+    });
+    queue.ackThrough(history.seq);
+
+    queue = new DurableQueue({ queueDir, compactionEveryAcks: 1000 });
+    const live = queue.enqueue({
+      deliveryMode: 'live',
+      messageId: 'm1',
+      chatId: '15133278228@s.whatsapp.net',
+      senderId: '15133278228@s.whatsapp.net',
+      body: 'history body',
+      timestamp: 1,
+    });
+    const duplicateHistory = queue.enqueue({
+      eventType: 'history_message',
+      deliveryMode: 'persist_only',
+      messageId: 'm1',
+      chatId: '15133278228@s.whatsapp.net',
+      senderId: '15133278228@s.whatsapp.net',
+      body: 'history body',
+      timestamp: 1,
+    });
+
+    assert.equal(live.event_uid, '15133278228@s.whatsapp.net:m1');
+    assert.equal(live.deliveryMode, 'live');
+    assert.equal(duplicateHistory, live);
+    assert.equal(live.eventType, undefined);
   } finally {
     rmSync(queueDir, { recursive: true, force: true });
   }

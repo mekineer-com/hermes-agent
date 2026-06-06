@@ -1744,6 +1744,31 @@ class SessionDB:
             ).fetchone()
         return row is not None
 
+    def message_source_key_has_response(
+        self,
+        *,
+        source_chat_id: str,
+        source_message_id: str,
+    ) -> bool:
+        chat_key = str(source_chat_id or "").strip()
+        message_key = str(source_message_id or "").strip()
+        if not chat_key or not message_key:
+            return False
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, session_id FROM messages WHERE source_chat_id = ? AND source_message_id = ? LIMIT 1",
+                (chat_key, message_key),
+            ).fetchone()
+            if not row:
+                return False
+            message_id = int(row["id"] if isinstance(row, sqlite3.Row) else row[0])
+            session_id = row["session_id"] if isinstance(row, sqlite3.Row) else row[1]
+            response = self._conn.execute(
+                "SELECT 1 FROM messages WHERE session_id = ? AND id > ? AND role = 'assistant' LIMIT 1",
+                (session_id, message_id),
+            ).fetchone()
+        return response is not None
+
     def stamp_latest_assistant_source_key(
         self,
         *,

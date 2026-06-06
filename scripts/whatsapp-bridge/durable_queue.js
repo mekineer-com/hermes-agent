@@ -52,16 +52,45 @@ function eventUidFor(event) {
   if (eventType === 'revoke' || deliveryMode === 'revoke') {
     return `revoke:${chatId}:${messageId}`;
   }
-  if (deliveryMode === 'persist_only') {
-    return `persist:${chatId}:${messageId}`;
-  }
-  if (deliveryMode === 'live') {
-    return `live:${chatId}:${messageId}`;
-  }
   // messageId is already chat-scoped in WhatsApp. Including senderId here
   // causes false misses when the same participant surfaces as @lid vs
   // @s.whatsapp.net across reconnects/replays.
   return `${chatId}:${messageId}`;
+}
+
+function hasValue(value) {
+  if (value === null || value === undefined) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'string') return value.trim() !== '';
+  return true;
+}
+
+function mergeQueuedEvent(target, incoming) {
+  const targetMode = String(target?.deliveryMode || '').trim().toLowerCase();
+  const incomingMode = String(incoming?.deliveryMode || '').trim().toLowerCase();
+  const liveUpgrade = targetMode !== 'live' && incomingMode === 'live';
+
+  for (const [key, value] of Object.entries(incoming || {})) {
+    if (key === 'seq' || key === 'event_uid') continue;
+    if (targetMode === 'live' && incomingMode !== 'live' && key === 'eventType') continue;
+    if (!hasValue(target[key]) && hasValue(value)) {
+      target[key] = value;
+    }
+  }
+  if (liveUpgrade) {
+    target.deliveryMode = 'live';
+    target.sourceSurface = incoming.sourceSurface || target.sourceSurface;
+    delete target.eventType;
+  }
+  return target;
+}
+
+function seenModeFor(event) {
+  const eventType = String(event?.eventType || '').trim().toLowerCase();
+  const deliveryMode = String(event?.deliveryMode || '').trim().toLowerCase();
+  if (eventType === 'revoke' || deliveryMode === 'revoke') return 'revoke';
+  if (deliveryMode === 'live') return 'live';
+  return 'persist_only';
 }
 
 export class DurableQueue {
@@ -82,7 +111,7 @@ export class DurableQueue {
     this.nextSeq = 1;
     this.unacked = [];
     this.unackedUidSet = new Set();
-    this.seenUidSet = new Set();
+    this.seenModeByUid = new Map();
     this.ackSinceCompaction = 0;
 
     this._load();
@@ -118,8 +147,9 @@ export class DurableQueue {
       if (!Number.isFinite(seq) || seq < 1) continue;
       if (seq > this.maxSeq) this.maxSeq = seq;
       const eventUid = eventUidFor(row);
-      if (eventUid && !this.seenUidSet.has(eventUid)) {
-        this.seenUidSet.add(eventUid);
+      if (eventUid) row.event_uid = eventUid;
+      if (eventUid && !this.seenModeByUid.has(eventUid)) {
+        this.seenModeByUid.set(eventUid, seenModeFor(row));
         seenDirty = true;
       }
       if (seq <= this.ackedUpToSeq) continue;
@@ -155,15 +185,23 @@ export class DurableQueue {
     const raw = readFileSync(this.seenPath, 'utf8');
     const lines = raw.split('\n');
     for (const line of lines) {
-      const uid = String(line || '').trim();
-      if (uid) this.seenUidSet.add(uid);
+      const text = String(line || '').trim();
+      if (!text) continue;
+      const tab = text.indexOf('\t');
+      if (tab >= 0) {
+        const mode = text.slice(0, tab).trim() || 'live';
+        const uid = text.slice(tab + 1).trim();
+        if (uid) this.seenModeByUid.set(uid, mode);
+      } else {
+        this.seenModeByUid.set(text, 'live');
+      }
     }
   }
 
-  _appendSeenUid(eventUid) {
+  _appendSeenUid(eventUid, mode) {
     const fd = openSync(this.seenPath, 'a');
     try {
-      writeFileSync(fd, `${eventUid}\n`, { encoding: 'utf8' });
+      writeFileSync(fd, `${mode}\t${eventUid}\n`, { encoding: 'utf8' });
       fsyncSync(fd);
     } finally {
       closeSync(fd);
@@ -171,7 +209,7 @@ export class DurableQueue {
   }
 
   _persistSeen() {
-    const lines = Array.from(this.seenUidSet);
+    const lines = Array.from(this.seenModeByUid.entries()).map(([uid, mode]) => `${mode}\t${uid}`);
     if (!lines.length) {
       atomicWriteText(this.seenPath, '');
       return;
@@ -207,7 +245,20 @@ export class DurableQueue {
   enqueue(event) {
     const eventUid = eventUidFor(event);
     if (!eventUid) return null;
-    if (this.seenUidSet.has(eventUid)) return null;
+    const incomingSeenMode = seenModeFor(event);
+    const existing = this.unacked.find((row) => row?.event_uid === eventUid);
+    if (existing) {
+      mergeQueuedEvent(existing, event);
+      const mergedMode = seenModeFor(existing);
+      this.seenModeByUid.set(eventUid, mergedMode);
+      this._persistSeen();
+      this._compact();
+      return existing;
+    }
+    const seenMode = this.seenModeByUid.get(eventUid);
+    if (seenMode && !(seenMode === 'persist_only' && incomingSeenMode === 'live')) {
+      return null;
+    }
     if (this.unackedUidSet.has(eventUid)) return null;
 
     const seq = this.nextSeq;
@@ -219,10 +270,10 @@ export class DurableQueue {
       ...event,
     };
     this._appendRow(row);
-    this._appendSeenUid(eventUid);
+    this._appendSeenUid(eventUid, incomingSeenMode);
     this.unacked.push(row);
     this.unackedUidSet.add(eventUid);
-    this.seenUidSet.add(eventUid);
+    this.seenModeByUid.set(eventUid, incomingSeenMode);
     return row;
   }
 
@@ -272,7 +323,7 @@ export class DurableQueue {
       ackedUpToSeq: this.ackedUpToSeq,
       maxSeq: this.maxSeq,
       queueLength: this.unacked.length,
-      seenCount: this.seenUidSet.size,
+      seenCount: this.seenModeByUid.size,
       nextSeq: this.nextSeq,
     };
   }

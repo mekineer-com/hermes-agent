@@ -10143,20 +10143,20 @@ class GatewayRunner:
         if not source_chat_id or not source_message_id:
             return False
         try:
-            exists = session_db.message_source_key_exists(
+            handled = session_db.message_source_key_has_response(
                 source_chat_id=source_chat_id,
                 source_message_id=source_message_id,
             )
         except Exception:
             logger.debug("Failed to check WhatsApp duplicate source key", exc_info=True)
             return False
-        if exists:
+        if handled:
             logger.info(
-                "Skipped duplicate WhatsApp source message chat=%s message=%s",
+                "Skipped already-answered WhatsApp source message chat=%s message=%s",
                 source_chat_id,
                 source_message_id,
             )
-        return exists
+        return handled
 
     def _resolve_whatsapp_history_soul(self, source: SessionSource) -> dict[str, Any]:
         try:
