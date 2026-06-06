@@ -64,6 +64,7 @@ export function upsertEventMode(type) {
     return {
       forwardable: true,
       persistOnly: false,
+      deliveryMode: 'live',
       sourceSurface: 'messages.upsert',
     };
   }
@@ -71,12 +72,44 @@ export function upsertEventMode(type) {
     return {
       forwardable: true,
       persistOnly: true,
+      deliveryMode: 'persist_only',
       sourceSurface: 'messages.upsert:append',
     };
   }
+  // chats.update can carry message rows, but Baileys does not guarantee it is
+  // a live delivery signal. Ingest it for history/discovery only.
   return {
     forwardable: false,
     persistOnly: false,
+    deliveryMode: 'discovery_only',
     sourceSurface: `messages.upsert:${String(type || 'unknown')}`,
   };
+}
+
+export function classifyUpsertEvent({
+  type,
+  isAgentEcho = false,
+  timestamp,
+  bridgeStartedAtSeconds,
+  startupReplayGraceSeconds = 120,
+} = {}) {
+  const mode = upsertEventMode(type);
+  if (!mode.forwardable) return mode;
+  const startupReplay = (
+    type === 'notify'
+    && isStartupReplay({
+      timestamp,
+      bridgeStartedAtSeconds,
+      graceSeconds: startupReplayGraceSeconds,
+    })
+  );
+  if (isAgentEcho || mode.persistOnly || startupReplay) {
+    return {
+      forwardable: true,
+      persistOnly: true,
+      deliveryMode: 'persist_only',
+      sourceSurface: startupReplay ? 'messages.upsert:startup-replay' : mode.sourceSurface,
+    };
+  }
+  return mode;
 }

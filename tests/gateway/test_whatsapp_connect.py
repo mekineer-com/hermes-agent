@@ -81,6 +81,12 @@ def _make_adapter():
     return adapter
 
 
+def _live_event():
+    event = MagicMock()
+    event.raw_message = {"deliveryMode": "live"}
+    return event
+
+
 def _mock_aiohttp(status=200, json_data=None, json_side_effect=None):
     """Build a mock ``aiohttp.ClientSession`` returning a fixed response."""
     mock_resp = MagicMock()
@@ -731,7 +737,7 @@ class TestDurableBridgeAck:
         adapter._running = True
         adapter._check_managed_bridge_exit = AsyncMock(return_value=None)
         adapter.handle_message = AsyncMock()
-        adapter._build_message_event = AsyncMock(side_effect=[MagicMock(), MagicMock()])
+        adapter._build_message_event = AsyncMock(side_effect=[_live_event(), _live_event()])
 
         first_resp = MagicMock()
         first_resp.status = 200
@@ -767,7 +773,7 @@ class TestDurableBridgeAck:
         adapter._running = True
         adapter._check_managed_bridge_exit = AsyncMock(return_value=None)
         adapter.handle_message = AsyncMock(side_effect=RuntimeError("boom"))
-        adapter._build_message_event = AsyncMock(return_value=MagicMock())
+        adapter._build_message_event = AsyncMock(return_value=_live_event())
 
         first_resp = MagicMock()
         first_resp.status = 200
@@ -1002,11 +1008,11 @@ class TestGatewayWalHooking:
         adapter = _make_adapter()
         adapter.handle_message = AsyncMock()
         event = MagicMock()
-        event.raw_message = {"chatId": "x"}
+        event.raw_message = {"chatId": "x", "deliveryMode": "live"}
         adapter._build_message_event = AsyncMock(return_value=event)
         wal = MagicMock()
         wal.pending.return_value = [
-            {"wal_seq": 3, "bridge_seq": 17, "event": {"seq": 17, "chatId": "a@lid", "body": "x"}},
+            {"wal_seq": 3, "bridge_seq": 17, "event": {"seq": 17, "chatId": "a@lid", "body": "x", "deliveryMode": "live"}},
         ]
         adapter._gateway_wal = wal
 
@@ -1092,7 +1098,7 @@ class TestGatewayWalCrashWindows:
         adapter2._gateway_wal = wal2
         adapter2.handle_message = AsyncMock()
         replay_event = MagicMock()
-        replay_event.raw_message = {}
+        replay_event.raw_message = {"deliveryMode": "live"}
         adapter2._build_message_event = AsyncMock(return_value=replay_event)
 
         await adapter2._replay_gateway_wal()
@@ -1119,7 +1125,7 @@ class TestGatewayWalCrashWindows:
         adapter1._running = True
         adapter1._check_managed_bridge_exit = AsyncMock(return_value=None)
         polled_event = MagicMock()
-        polled_event.raw_message = {"chatId": "a@lid"}
+        polled_event.raw_message = {"chatId": "a@lid", "deliveryMode": "live"}
         adapter1._build_message_event = AsyncMock(return_value=polled_event)
         # Emulates async dispatch return; completion hook is intentionally not invoked.
         adapter1.handle_message = AsyncMock(return_value=None)
@@ -1153,7 +1159,7 @@ class TestGatewayWalCrashWindows:
         adapter2._gateway_wal = wal2
         adapter2.handle_message = AsyncMock()
         replay_event = MagicMock()
-        replay_event.raw_message = {}
+        replay_event.raw_message = {"deliveryMode": "live"}
         adapter2._build_message_event = AsyncMock(return_value=replay_event)
 
         await adapter2._replay_gateway_wal()

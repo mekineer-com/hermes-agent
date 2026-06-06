@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   canonicalizeMessageIds,
+  classifyUpsertEvent,
   historyMessageSources,
   isStartupReplay,
   isRecentlySentEcho,
@@ -59,14 +60,34 @@ test('upsertEventMode treats append as persist-only history', () => {
   assert.deepEqual(upsertEventMode('notify'), {
     forwardable: true,
     persistOnly: false,
+    deliveryMode: 'live',
     sourceSurface: 'messages.upsert',
   });
   assert.deepEqual(upsertEventMode('append'), {
     forwardable: true,
     persistOnly: true,
+    deliveryMode: 'persist_only',
     sourceSurface: 'messages.upsert:append',
   });
   assert.equal(upsertEventMode('replace').forwardable, false);
+  assert.equal(upsertEventMode('replace').deliveryMode, 'discovery_only');
+});
+
+test('classifyUpsertEvent stamps explicit delivery mode for live and history rows', () => {
+  assert.equal(classifyUpsertEvent({ type: 'notify', timestamp: 1200 }).deliveryMode, 'live');
+  assert.equal(classifyUpsertEvent({ type: 'append', timestamp: 1200 }).deliveryMode, 'persist_only');
+  assert.deepEqual(classifyUpsertEvent({
+    type: 'notify',
+    timestamp: 1000,
+    bridgeStartedAtSeconds: 1200,
+    startupReplayGraceSeconds: 120,
+  }), {
+    forwardable: true,
+    persistOnly: true,
+    deliveryMode: 'persist_only',
+    sourceSurface: 'messages.upsert:startup-replay',
+  });
+  assert.equal(classifyUpsertEvent({ type: 'replace' }).deliveryMode, 'discovery_only');
 });
 
 test('isStartupReplay identifies old notify rows delivered after bridge startup', () => {

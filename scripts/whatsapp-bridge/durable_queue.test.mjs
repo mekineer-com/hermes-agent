@@ -197,3 +197,29 @@ test('durable queue bootstraps seen ids from queue rows when seen file is missin
     rmSync(queueDir, { recursive: true, force: true });
   }
 });
+
+test('durable queue gives deliveryMode revoke a distinct uid from the original message', () => {
+  const queueDir = mkQueueDir();
+  try {
+    const queue = new DurableQueue({ queueDir, compactionEveryAcks: 1000 });
+    const original = queue.enqueue({
+      deliveryMode: 'live',
+      messageId: 'm1',
+      chatId: '15133278228@s.whatsapp.net',
+      senderId: '15133278228@s.whatsapp.net',
+      body: 'hello',
+      timestamp: 1,
+    });
+    const revoke = queue.enqueue({
+      deliveryMode: 'revoke',
+      messageId: 'm1',
+      chatId: '15133278228@s.whatsapp.net',
+      timestamp: 2,
+    });
+
+    assert.equal(original.event_uid, '15133278228@s.whatsapp.net:m1');
+    assert.equal(revoke.event_uid, 'revoke:15133278228@s.whatsapp.net:m1');
+  } finally {
+    rmSync(queueDir, { recursive: true, force: true });
+  }
+});

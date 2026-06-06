@@ -35,8 +35,8 @@ import { DurableQueue } from './durable_queue.js';
 import { buildMediaRetryCachePayload } from './media_retry_cache.js';
 import {
   canonicalizeMessageIds,
+  classifyUpsertEvent,
   historyMessageSources,
-  isStartupReplay,
   isRecentlySentEcho,
   upsertEventMode,
 } from './history_ingest.js';
@@ -856,6 +856,7 @@ async function enqueueHistoryMessage(rawMsg, { chatFallback = '', surface = 'syn
   if (Number(msg.messageStubType) === WHATSAPP_REVOKE_STUB_TYPE && targetRevokeId) {
     return durableQueue.enqueue({
       eventType: 'revoke',
+      deliveryMode: 'revoke',
       messageId: targetRevokeId,
       chatId,
       isGroup,
@@ -941,7 +942,6 @@ async function enqueueHistoryMessage(rawMsg, { chatFallback = '', surface = 'syn
   const event = {
     eventType: 'history_message',
     deliveryMode: 'persist_only',
-    triggerAgent: false,
     sourceSurface: surface,
     messageId,
     chatId,
@@ -1364,6 +1364,8 @@ async function startSocket() {
       });
 
       const event = {
+        deliveryMode: mode.deliveryMode,
+        sourceSurface: mode.sourceSurface,
         messageId: msg.key.id,
         chatId,
         senderId,
@@ -1385,19 +1387,17 @@ async function startSocket() {
         speakerRoleHint,
         speakerNameHint,
       };
-      const startupReplay = (
-        type === 'notify'
-        && isStartupReplay({
-          timestamp: msg.messageTimestamp,
-          bridgeStartedAtSeconds: BRIDGE_STARTED_AT_SECONDS,
-          graceSeconds: STARTUP_REPLAY_GRACE_SECONDS,
-        })
-      );
-      if (isAgentEcho || mode.persistOnly || startupReplay) {
+      const delivery = classifyUpsertEvent({
+        type,
+        isAgentEcho,
+        timestamp: msg.messageTimestamp,
+        bridgeStartedAtSeconds: BRIDGE_STARTED_AT_SECONDS,
+        startupReplayGraceSeconds: STARTUP_REPLAY_GRACE_SECONDS,
+      });
+      event.deliveryMode = delivery.deliveryMode;
+      event.sourceSurface = delivery.sourceSurface;
+      if (delivery.persistOnly) {
         event.eventType = 'history_message';
-        event.deliveryMode = 'persist_only';
-        event.triggerAgent = false;
-        event.sourceSurface = startupReplay ? 'messages.upsert:startup-replay' : mode.sourceSurface;
       }
 
       const queued = durableQueue.enqueue(event);
@@ -1426,6 +1426,7 @@ async function startSocket() {
       if (update.message !== null && update.message !== undefined) continue;
       durableQueue.enqueue({
         eventType: 'revoke',
+        deliveryMode: 'revoke',
         messageId,
         chatId: remoteJid,
         isGroup: remoteJid.endsWith('@g.us'),

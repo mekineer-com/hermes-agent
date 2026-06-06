@@ -1688,8 +1688,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
-            event_type = str(data.get("eventType") or "").strip().lower()
-            if event_type == "revoke":
+            delivery_mode = self._bridge_delivery_mode(data)
+            if delivery_mode == "revoke":
                 chat_id = str(data.get("chatId") or "").strip()
                 if not chat_id:
                     return None
@@ -1719,7 +1719,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                     internal=True,
                 )
 
-            persist_only = self._is_persist_only_bridge_event(data)
+            persist_only = delivery_mode != "live"
             if persist_only and not self._should_persist_bridge_event(data):
                 return None
             if not persist_only and not self._should_process_message(data):
@@ -1866,14 +1866,21 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return None
 
     @staticmethod
-    def _is_persist_only_bridge_event(data: Dict[str, Any]) -> bool:
-        event_type = str(data.get("eventType") or "").strip().lower()
+    def _bridge_delivery_mode(data: Dict[str, Any]) -> str:
         delivery_mode = str(data.get("deliveryMode") or "").strip().lower()
-        return (
-            event_type == "history_message"
-            or delivery_mode == "persist_only"
-            or data.get("triggerAgent") is False
-        )
+        if delivery_mode in {"live", "persist_only", "revoke"}:
+            return delivery_mode
+        if str(data.get("eventType") or "").strip().lower() == "revoke":
+            return "revoke"
+        return "persist_only"
+
+    @staticmethod
+    def _has_valid_bridge_delivery_mode(data: Dict[str, Any]) -> bool:
+        return str(data.get("deliveryMode") or "").strip().lower() in {"live", "persist_only", "revoke"}
+
+    @staticmethod
+    def _is_persist_only_bridge_event(data: Dict[str, Any]) -> bool:
+        return WhatsAppAdapter._bridge_delivery_mode(data) != "live"
 
     @staticmethod
     def _should_persist_bridge_event(data: Dict[str, Any]) -> bool:
@@ -1885,7 +1892,16 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
     async def _dispatch_built_message_event(self, event: MessageEvent) -> None:
         raw = event.raw_message if isinstance(event.raw_message, dict) else {}
-        if not self._is_persist_only_bridge_event(raw):
+        # WhatsApp events must arrive pre-classified by the bridge. Missing
+        # deliveryMode is invalid because stale chats.update history once woke Siri.
+        if not self._has_valid_bridge_delivery_mode(raw):
+            logger.warning(
+                "[whatsapp] Bridge event missing/invalid deliveryMode; treating as non-live chat_id=%r message_id=%r mode=%r",
+                raw.get("chatId"),
+                raw.get("messageId"),
+                raw.get("deliveryMode"),
+            )
+        if self._bridge_delivery_mode(raw) == "live":
             await self.handle_message(event)
             return
         wal_seq = raw.get("wal_seq")

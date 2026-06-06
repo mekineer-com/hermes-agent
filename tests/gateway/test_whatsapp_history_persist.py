@@ -70,7 +70,6 @@ def _event(*, text="hello", role_hint="user", timestamp=1780233002):
         raw_message={
             "eventType": "history_message",
             "deliveryMode": "persist_only",
-            "triggerAgent": False,
             "messageId": "m1",
             "chatId": "15133278228@s.whatsapp.net",
             "senderId": "15133278228@s.whatsapp.net",
@@ -232,3 +231,24 @@ async def test_whatsapp_persist_only_dispatch_marks_wal_only_after_success():
     adapter._message_handler = AsyncMock(return_value=None)
     await adapter._dispatch_built_message_event(event)
     assert marked == [7]
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_missing_mode_wal_row_is_non_live_and_acked():
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    adapter = object.__new__(WhatsAppAdapter)
+    marked = []
+    adapter._gateway_wal = SimpleNamespace(mark_processed=lambda seq: marked.append(seq))
+    adapter._message_handler = AsyncMock(return_value=None)
+    adapter.handle_message = AsyncMock()
+    event = _event()
+    event.raw_message.pop("eventType")
+    event.raw_message.pop("deliveryMode")
+    event.raw_message["wal_seq"] = 8
+
+    await adapter._dispatch_built_message_event(event)
+
+    adapter.handle_message.assert_not_awaited()
+    adapter._message_handler.assert_awaited_once_with(event)
+    assert marked == [8]

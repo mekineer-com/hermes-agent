@@ -48,7 +48,8 @@ function eventUidFor(event) {
   const messageId = String(event?.messageId || '').trim();
   if (!chatId || !messageId) return '';
   const eventType = String(event?.eventType || '').trim().toLowerCase();
-  if (eventType === 'revoke') {
+  const deliveryMode = String(event?.deliveryMode || '').trim().toLowerCase();
+  if (eventType === 'revoke' || deliveryMode === 'revoke') {
     return `revoke:${chatId}:${messageId}`;
   }
   // messageId is already chat-scoped in WhatsApp. Including senderId here

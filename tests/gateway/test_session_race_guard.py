@@ -109,7 +109,13 @@ def _make_event(text="hello", chat_id="12345", platform=Platform.TELEGRAM):
         platform=platform, chat_id=chat_id, chat_type="dm",
         user_id="u1",
     )
-    return MessageEvent(text=text, message_type=MessageType.TEXT, source=source)
+    raw_message = {"deliveryMode": "live"} if platform == Platform.WHATSAPP else None
+    return MessageEvent(
+        text=text,
+        message_type=MessageType.TEXT,
+        source=source,
+        raw_message=raw_message,
+    )
 
 
 # ------------------------------------------------------------------
