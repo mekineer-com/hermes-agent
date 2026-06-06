@@ -52,6 +52,12 @@ function eventUidFor(event) {
   if (eventType === 'revoke' || deliveryMode === 'revoke') {
     return `revoke:${chatId}:${messageId}`;
   }
+  if (deliveryMode === 'persist_only') {
+    return `persist:${chatId}:${messageId}`;
+  }
+  if (deliveryMode === 'live') {
+    return `live:${chatId}:${messageId}`;
+  }
   // messageId is already chat-scoped in WhatsApp. Including senderId here
   // causes false misses when the same participant surfaces as @lid vs
   // @s.whatsapp.net across reconnects/replays.

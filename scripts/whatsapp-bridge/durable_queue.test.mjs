@@ -217,8 +217,46 @@ test('durable queue gives deliveryMode revoke a distinct uid from the original m
       timestamp: 2,
     });
 
-    assert.equal(original.event_uid, '15133278228@s.whatsapp.net:m1');
+    assert.equal(original.event_uid, 'live:15133278228@s.whatsapp.net:m1');
     assert.equal(revoke.event_uid, 'revoke:15133278228@s.whatsapp.net:m1');
+  } finally {
+    rmSync(queueDir, { recursive: true, force: true });
+  }
+});
+
+test('durable queue does not let history rows block later live rows', () => {
+  const queueDir = mkQueueDir();
+  try {
+    const queue = new DurableQueue({ queueDir, compactionEveryAcks: 1000 });
+    const history = queue.enqueue({
+      eventType: 'history_message',
+      deliveryMode: 'persist_only',
+      messageId: 'm1',
+      chatId: '15133278228@s.whatsapp.net',
+      senderId: '15133278228@s.whatsapp.net',
+      body: 'hello',
+      timestamp: 1,
+    });
+    const live = queue.enqueue({
+      deliveryMode: 'live',
+      messageId: 'm1',
+      chatId: '15133278228@s.whatsapp.net',
+      senderId: '15133278228@s.whatsapp.net',
+      body: 'hello',
+      timestamp: 1,
+    });
+    const duplicateLive = queue.enqueue({
+      deliveryMode: 'live',
+      messageId: 'm1',
+      chatId: '15133278228@s.whatsapp.net',
+      senderId: '15133278228@s.whatsapp.net',
+      body: 'hello again',
+      timestamp: 2,
+    });
+
+    assert.equal(history.event_uid, 'persist:15133278228@s.whatsapp.net:m1');
+    assert.equal(live.event_uid, 'live:15133278228@s.whatsapp.net:m1');
+    assert.equal(duplicateLive, null);
   } finally {
     rmSync(queueDir, { recursive: true, force: true });
   }

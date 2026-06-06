@@ -38,6 +38,7 @@ import {
   classifyUpsertEvent,
   historyMessageSources,
   isRecentlySentEcho,
+  isStartupReplay,
   upsertEventMode,
 } from './history_ingest.js';
 
@@ -881,6 +882,16 @@ async function enqueueHistoryMessage(rawMsg, { chatFallback = '', surface = 'syn
 
   const timestamp = msg.messageTimestamp || msg.messageC2STimestamp || rawMsg?.messageTimestamp;
   if (!syncTimestampAllowed(timestamp)) return false;
+  if (
+    surface === 'chats.update'
+    && !isStartupReplay({
+      timestamp,
+      bridgeStartedAtSeconds: BRIDGE_STARTED_AT_SECONDS,
+      graceSeconds: STARTUP_REPLAY_GRACE_SECONDS,
+    })
+  ) {
+    return false;
+  }
 
   const isGroup = chatId.endsWith('@g.us');
   const targetRevokeId = Array.isArray(msg.messageStubParameters)
