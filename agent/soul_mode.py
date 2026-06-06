@@ -39,23 +39,6 @@ class SoulModeConfig:
             and self.use_memu_turn
         )
 
-    def is_configured_soul(self) -> bool:
-        return self.enabled or self.role == "soul" or bool(self.soul_id) or bool(self.user_id)
-
-    def inactive_reason(self) -> str:
-        reasons = []
-        if not self.enabled:
-            reasons.append("disabled")
-        if self.role != "soul":
-            reasons.append(f"role={self.role or 'missing'}")
-        if not self.soul_id:
-            reasons.append("missing soul_id")
-        if not self.user_id:
-            reasons.append("missing user_id")
-        if not self.use_memu_turn:
-            reasons.append("use_memu_turn=false")
-        return ", ".join(reasons) or "unknown"
-
     def get_client(self) -> MemuHttpClient:
         if self._client is None:
             self._client = MemuHttpClient(

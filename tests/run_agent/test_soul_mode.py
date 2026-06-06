@@ -121,35 +121,6 @@ def test_run_conversation_returns_failed_result_on_memu_error(soul_agent):
     assert result["turn_exit_reason"] == "soul_mode_error"
 
 
-def test_whatsapp_configured_soul_does_not_fall_back_when_inactive(soul_agent):
-    soul_agent.platform = "whatsapp"
-    soul_agent.configure_soul_mode(
-        enabled=True,
-        role="soul",
-        soul_id="Echo",
-        user_id="marcos",
-        memu_base_url="http://127.0.0.1:8099",
-        use_memu_turn=False,
-    )
-
-    with (
-        patch.object(soul_agent, "_ensure_db_session", return_value=None),
-        patch.object(soul_agent, "_restore_primary_runtime", return_value=None),
-        patch.object(soul_agent, "_save_trajectory", return_value=None),
-        patch.object(soul_agent, "_cleanup_task_resources", return_value=None),
-        patch.object(soul_agent, "_persist_session", return_value=None),
-        patch("agent.soul_mode.handle_turn") as mock_handle,
-    ):
-        result = soul_agent.run_conversation("hi")
-
-    mock_handle.assert_not_called()
-    assert result["completed"] is False
-    assert result["failed"] is True
-    assert result["turn_exit_reason"] == "soul_mode_error"
-    assert "refusing normal Hermes fallback" in result["final_response"]
-    assert "use_memu_turn=false" in result["error"]
-
-
 def test_build_conversation_id_readable_defaults():
     assert soul_mode.build_conversation_id(platform="telegram", chat_id="12345") == "telegram:12345"
     assert soul_mode.build_conversation_id(platform="cron", chat_id="daily-reminder") == "cron:daily-reminder"

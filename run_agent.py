@@ -12419,24 +12419,6 @@ class AIAgent:
                 original_user_message=original_user_message,
                 summarize_for_log=_summarize_user_message_for_log,
             )
-        if _platform == "whatsapp" and self._soul_config.is_configured_soul():
-            reason = self._soul_config.inactive_reason()
-            error_msg = (
-                "memU soul mode inactive for WhatsApp; refusing normal Hermes "
-                f"fallback ({reason})"
-            )
-            logger.error(error_msg)
-            self._save_trajectory(messages, _summarize_user_message_for_log(user_message), False)
-            self._cleanup_task_resources(effective_task_id)
-            self._persist_session(messages, conversation_history)
-            self.clear_interrupt()
-            self._stream_callback = None
-            return _soul_mode._make_failed_result(
-                self,
-                f"⚠️ {error_msg}",
-                error_msg,
-                messages,
-            )
         
         if not self.quiet_mode:
             _print_preview = _summarize_user_message_for_log(user_message)
