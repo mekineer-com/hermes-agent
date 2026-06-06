@@ -29,11 +29,74 @@ def test_whatsapp_process_termination_uses_posix_process_group(monkeypatch):
     ]
 
 
+def test_whatsapp_stale_bridge_pidfile_requires_identity_match(tmp_path, monkeypatch):
+    session_path = tmp_path / "session"
+    session_path.mkdir()
+    pidfile = session_path / "bridge.pid"
+    pidfile.write_text("1234", encoding="utf-8")
+    killed = []
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+    monkeypatch.setattr(whatsapp_module, "_pid_cmdline", lambda pid: ["python", "unrelated.py"])
+    monkeypatch.setattr(whatsapp_module, "_terminate_pid_tree", lambda pid, force=False: killed.append((pid, force)))
+
+    whatsapp_module._kill_stale_bridge_by_pidfile(session_path, tmp_path / "bridge.js")
+
+    assert killed == []
+    assert not pidfile.exists()
+
+
+def test_whatsapp_stale_bridge_pidfile_kills_matching_tree(tmp_path, monkeypatch):
+    session_path = tmp_path / "session"
+    session_path.mkdir()
+    bridge_script = tmp_path / "bridge.js"
+    pidfile = session_path / "bridge.pid"
+    pidfile.write_text("1234", encoding="utf-8")
+    killed = []
+    pid_exists = iter([True, False])
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: next(pid_exists))
+    monkeypatch.setattr(whatsapp_module.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        whatsapp_module,
+        "_pid_cmdline",
+        lambda pid: ["node", str(bridge_script), "--session", str(session_path)],
+    )
+    monkeypatch.setattr(whatsapp_module, "_terminate_pid_tree", lambda pid, force=False: killed.append((pid, force)))
+
+    whatsapp_module._kill_stale_bridge_by_pidfile(session_path, bridge_script)
+
+    assert killed == [(1234, False)]
+    assert not pidfile.exists()
+
+
 def test_whatsapp_web_source_defaults_enabled_headless():
     adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={}))
 
     assert adapter._web_source_enabled is True
     assert adapter._web_source_headful is False
+
+
+def test_whatsapp_runtime_status_marks_unmanaged_bridge_degraded(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    adapter = WhatsAppAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "web_source_enabled": False,
+                "web_source_status": str(tmp_path / "status.json"),
+            },
+        )
+    )
+    adapter._running = True
+    adapter._http_session = object()
+    adapter._bridge_health = {"status": "connected", "mode": "bot"}
+    adapter._bridge_process = None
+
+    adapter._write_whatsapp_runtime_status(force=True)
+
+    whatsapp = read_runtime_status()["platforms"]["whatsapp"]
+    assert whatsapp["state"] == "degraded"
+    assert whatsapp["bridge"]["state"] == "degraded"
+    assert whatsapp["bridge"]["managed"] is False
 
 
 def test_whatsapp_web_source_config_bridged_from_yaml(tmp_path, monkeypatch):
@@ -114,6 +177,92 @@ def test_whatsapp_web_source_command_uses_configured_paths(tmp_path, monkeypatch
     assert "--disable-service-workers" in command
     assert "--no-resource-block" in command
     assert popen.call_args.kwargs["env"]["PUPPETEER_EXECUTABLE_PATH"] == "/usr/bin/chromium"
+    assert status_path.with_name("web_source.pid").read_text(encoding="utf-8") == "12345"
+
+
+def test_whatsapp_web_source_start_kills_matching_stale_pidfile(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    script = tmp_path / "source-daemon.js"
+    script.write_text("'use strict';\n", encoding="utf-8")
+    (tmp_path / "node_modules").mkdir()
+    db_path = tmp_path / "projection.db"
+    status_path = tmp_path / "source-status.json"
+    auth_path = tmp_path / "auth"
+    status_path.with_name("web_source.pid").write_text("777", encoding="utf-8")
+    killed = []
+    proc = SimpleNamespace(pid=12345, poll=lambda: None)
+    pid_exists = iter([True, False])
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: next(pid_exists))
+    monkeypatch.setattr(whatsapp_module.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        whatsapp_module,
+        "_pid_cmdline",
+        lambda pid: ["node", str(script), "--db", str(db_path), "--status", str(status_path), "--auth", str(auth_path)],
+    )
+    monkeypatch.setattr(whatsapp_module, "_terminate_pid_tree", lambda pid, force=False: killed.append((pid, force)))
+    adapter = WhatsAppAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "web_source_enabled": True,
+                "web_source_script": str(script),
+                "web_source_db": str(db_path),
+                "web_source_status": str(status_path),
+                "web_source_auth": str(auth_path),
+            },
+        )
+    )
+    adapter._running = True
+    adapter._http_session = object()
+    adapter._bridge_health = {"status": "connected", "mode": "bot"}
+
+    with patch("subprocess.Popen", return_value=proc):
+        assert adapter._start_web_source() is True
+
+    assert killed == [(777, False)]
+    assert status_path.with_name("web_source.pid").read_text(encoding="utf-8") == "12345"
+
+
+def test_whatsapp_web_source_stop_clears_pidfile(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    script = tmp_path / "source-daemon.js"
+    script.write_text("'use strict';\n", encoding="utf-8")
+    (tmp_path / "node_modules").mkdir()
+    status_path = tmp_path / "source-status.json"
+
+    class ExitingProcess:
+        pid = 12345
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.returncode = 0
+            return self.returncode
+
+    adapter = WhatsAppAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "web_source_enabled": True,
+                "web_source_script": str(script),
+                "web_source_status": str(status_path),
+                "web_source_auth": str(tmp_path / "auth"),
+            },
+        )
+    )
+    adapter._running = True
+    adapter._http_session = object()
+    adapter._bridge_health = {"status": "connected", "mode": "bot"}
+
+    with patch("subprocess.Popen", return_value=ExitingProcess()), \
+         patch("gateway.platforms.whatsapp._terminate_bridge_process"):
+        assert adapter._start_web_source() is True
+        assert status_path.with_name("web_source.pid").exists()
+        assert adapter._stop_web_source() is True
+
+    assert not status_path.with_name("web_source.pid").exists()
 
 
 def test_whatsapp_web_source_command_uses_soul_active_since(tmp_path, monkeypatch):
@@ -300,7 +449,7 @@ def test_whatsapp_web_source_missing_script_marks_degraded(tmp_path, monkeypatch
     state = read_runtime_status()
     whatsapp = state["platforms"]["whatsapp"]
     assert whatsapp["state"] == "degraded"
-    assert whatsapp["bridge"]["state"] == "ready"
+    assert whatsapp["bridge"]["state"] == "degraded"
     assert whatsapp["web_source"]["state"] == "degraded"
     assert "missing.js" in whatsapp["web_source"]["error"]
 

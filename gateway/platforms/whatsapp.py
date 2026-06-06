@@ -91,37 +91,85 @@ def _kill_port_process(port: int) -> None:
         pass
 
 
-def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
-    """Kill a bridge process recorded in a PID file from a previous run.
-
-    The bridge writes ``bridge.pid`` into the session directory when it
-    starts.  If the gateway crashed without a clean shutdown the old bridge
-    process becomes orphaned — this helper finds and kills it.
-    """
-    pid_file = session_path / "bridge.pid"
-    if not pid_file.exists():
-        return
+def _pid_cmdline(pid: int) -> list[str]:
     try:
-        pid = int(pid_file.read_text().strip())
+        import psutil
+        return psutil.Process(pid).cmdline()
+    except Exception:
+        if _IS_WINDOWS:
+            return []
+
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return []
+    return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+
+
+def _cmdline_contains_all(cmdline: list[str], markers: list[str]) -> bool:
+    joined = "\0".join(cmdline)
+    return bool(joined) and all(marker in joined for marker in markers)
+
+
+def _terminate_pid_tree(pid: int, *, force: bool = False) -> None:
+    if _IS_WINDOWS:
+        cmd = ["taskkill", "/PID", str(pid), "/T"]
+        if force:
+            cmd.append("/F")
+        subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        return
+    os.killpg(os.getpgid(pid), signal.SIGKILL if force else signal.SIGTERM)
+
+
+def _read_pidfile(pid_file: Path) -> Optional[int]:
+    if not pid_file.exists():
+        return None
+    try:
+        return int(pid_file.read_text().strip())
     except (ValueError, OSError, TypeError):
         try:
             pid_file.unlink()
         except OSError:
             pass
+        return None
+
+
+def _kill_stale_pidfile_process(pid_file: Path, *, markers: list[str], label: str) -> None:
+    pid = _read_pidfile(pid_file)
+    if pid is None:
         return
-    # ``os.kill(pid, 0)`` is NOT a no-op on Windows (bpo-14484) — use the
-    # cross-platform existence check before sending a real signal.
     from gateway.status import _pid_exists
+
     if _pid_exists(pid):
-        try:
-            os.kill(pid, signal.SIGTERM)
-            logger.info("[whatsapp] Killed stale bridge PID %d from pidfile", pid)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+        cmdline = _pid_cmdline(pid)
+        if _cmdline_contains_all(cmdline, markers):
+            try:
+                _terminate_pid_tree(pid, force=False)
+                time.sleep(0.5)
+                if _pid_exists(pid):
+                    _terminate_pid_tree(pid, force=True)
+                logger.info("[whatsapp] Killed stale %s PID %d from pidfile", label, pid)
+            except (ProcessLookupError, PermissionError, OSError, subprocess.SubprocessError):
+                pass
+        else:
+            logger.warning(
+                "[whatsapp] Ignoring stale %s pidfile for PID %d because command line did not match",
+                label,
+                pid,
+            )
     try:
         pid_file.unlink()
     except OSError:
         pass
+
+
+def _kill_stale_bridge_by_pidfile(session_path: Path, bridge_script: Path) -> None:
+    """Kill a prior bridge only when the pidfile still points at our bridge."""
+    _kill_stale_pidfile_process(
+        session_path / "bridge.pid",
+        markers=[str(bridge_script), str(session_path)],
+        label="bridge",
+    )
 
 
 def _write_bridge_pidfile(session_path: Path, pid: int) -> None:
@@ -130,6 +178,25 @@ def _write_bridge_pidfile(session_path: Path, pid: int) -> None:
         (session_path / "bridge.pid").write_text(str(pid))
     except OSError:
         pass
+
+
+def _web_source_pidfile(status_path: Path) -> Path:
+    return status_path.with_name("web_source.pid")
+
+
+def _kill_stale_web_source_by_pidfile(
+    pid_file: Path,
+    *,
+    script_path: Path,
+    db_path: Path,
+    status_path: Path,
+    auth_path: Path,
+) -> None:
+    _kill_stale_pidfile_process(
+        pid_file,
+        markers=[str(script_path), str(db_path), str(status_path), str(auth_path)],
+        label="web-source",
+    )
 
 
 def _terminate_bridge_process(proc, *, force: bool = False) -> None:
@@ -368,6 +435,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._web_source_status_path = _expand_user_path(
             config.extra.get("web_source_status", whatsapp_home / "web_source_status.json")
         )
+        self._web_source_pid_path = _web_source_pidfile(self._web_source_status_path)
         self._web_source_auth_path = _expand_user_path(
             config.extra.get("web_source_auth", whatsapp_home / "wwebjs_auth")
         )
@@ -726,7 +794,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
             self._session_path.mkdir(parents=True, exist_ok=True)
             whatsapp_mode = self._whatsapp_mode()
             
-            # Check if bridge is already running and connected
+            # memU Stack treats Hermes as the owner of WhatsApp children.  An
+            # already-running bridge may be old code from a prior launch, so
+            # replace it instead of adopting it as unmanaged infrastructure.
             import aiohttp
             try:
                 async with aiohttp.ClientSession() as session:
@@ -738,44 +808,14 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             data = await resp.json()
                             bridge_status = data.get("status", "unknown")
                             if bridge_status == "connected":
-                                bridge_mode = str(data.get("mode") or "").strip()
-                                bridge_reply_prefix = data.get("replyPrefix")
-                                desired_reply_prefix = (
-                                    self._reply_prefix.replace("\\n", "\n")
-                                    if self._reply_prefix is not None
-                                    else None
-                                )
-                                if (
-                                    desired_reply_prefix is not None
-                                    and bridge_reply_prefix != desired_reply_prefix
-                                ):
-                                    print(
-                                        f"[{self.name}] Bridge running with different reply_prefix; restarting"
-                                    )
-                                elif bridge_mode and bridge_mode != whatsapp_mode:
-                                    print(
-                                        f"[{self.name}] Bridge running in mode={bridge_mode}, need mode={whatsapp_mode}; restarting"
-                                    )
-                                else:
-                                    print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
-                                    self._bridge_health = data
-                                    self._bridge_process = None  # Not managed by us
-                                    self._http_session = aiohttp.ClientSession()
-                                    # Replay pending WAL rows before fresh polling.
-                                    self._running = True
-                                    self._start_web_source()
-                                    await self._replay_gateway_wal()
-                                    self._mark_connected()
-                                    self._write_whatsapp_runtime_status(force=True)
-                                    self._poll_task = asyncio.create_task(self._poll_messages())
-                                    return True
+                                print(f"[{self.name}] Bridge already running; replacing so Hermes owns it")
                             else:
                                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
             except Exception:
                 pass  # Bridge not running, start a new one
             
             # Kill any orphaned bridge from a previous gateway run
-            _kill_stale_bridge_by_pidfile(self._session_path)
+            _kill_stale_bridge_by_pidfile(self._session_path, bridge_path)
             _kill_port_process(self._bridge_port)
             await asyncio.sleep(1)
             
@@ -969,6 +1009,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             "enabled": True,
             "state": state,
             "pid": pid,
+            "managed": process is not None,
             "returncode": returncode,
             "db_path": str(self._web_source_db),
             "status_path": str(self._web_source_status_path),
@@ -993,20 +1034,31 @@ class WhatsAppAdapter(BasePlatformAdapter):
         )
         bridge_process = getattr(self, "_bridge_process", None)
         setup_needed = self.fatal_error_code == "whatsapp_not_paired"
-        bridge_state = "ready" if bridge_connected else ("setup_needed" if setup_needed else "starting")
+        bridge_managed = bridge_process is not None
+        bridge_unmanaged = bridge_connected and not bridge_managed
+        if bridge_unmanaged:
+            bridge_state = "degraded"
+        elif bridge_connected:
+            bridge_state = "ready"
+        else:
+            bridge_state = "setup_needed" if setup_needed else "starting"
         bridge_details = {
             "state": bridge_state,
             "pid": bridge_process.pid if bridge_process else None,
-            "managed": bridge_process is not None,
+            "managed": bridge_managed,
             "port": self._bridge_port,
             "status": bridge_status or None,
             "mode": bridge_health.get("mode"),
         }
+        if bridge_unmanaged:
+            bridge_details["error"] = "WhatsApp bridge is connected but not owned by Hermes"
         if setup_needed:
             bridge_details["error"] = self.fatal_error_message
         web_source = self._web_source_status_details()
         if self.has_fatal_error and not setup_needed:
             aggregate_state = "fatal"
+        elif bridge_unmanaged:
+            aggregate_state = "degraded"
         elif not bridge_connected:
             aggregate_state = "degraded" if setup_needed else ("starting" if self._running else "disconnected")
         elif self._web_source_enabled and web_source.get("state") not in {"ready"}:
@@ -1052,6 +1104,13 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._web_source_db.parent.mkdir(parents=True, exist_ok=True)
         self._web_source_status_path.parent.mkdir(parents=True, exist_ok=True)
         self._web_source_auth_path.mkdir(parents=True, exist_ok=True)
+        _kill_stale_web_source_by_pidfile(
+            self._web_source_pid_path,
+            script_path=self._web_source_script,
+            db_path=self._web_source_db,
+            status_path=self._web_source_status_path,
+            auth_path=self._web_source_auth_path,
+        )
         self._web_source_log = self._web_source_status_path.with_suffix(".log")
         self._web_source_log_fh = open(self._web_source_log, "a", encoding="utf-8")
         self._web_source_error = None
@@ -1071,6 +1130,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
             preexec_fn=None if _IS_WINDOWS else os.setsid,
             env=env,
         )
+        try:
+            self._web_source_pid_path.write_text(str(self._web_source_process.pid))
+        except OSError:
+            pass
         self._write_whatsapp_runtime_status(force=True)
         return True
 
@@ -1130,6 +1193,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
             stopped = proc.poll() is not None
         if stopped:
             self._web_source_process = None
+            try:
+                self._web_source_pid_path.unlink(missing_ok=True)
+            except OSError:
+                pass
         self._web_source_intentionally_stopped = stopped
         if stopped and self._web_source_log_fh:
             try:
@@ -1199,9 +1266,6 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         self._bridge_process.kill()
             except Exception as e:
                 print(f"[{self.name}] Error stopping bridge: {e}")
-        else:
-            # Bridge was not started by us, don't kill it
-            print(f"[{self.name}] Disconnecting (external bridge left running)")
 
         # Clean up PID file
         try:

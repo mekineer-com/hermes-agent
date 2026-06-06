@@ -57,6 +57,7 @@ def _make_adapter():
     adapter._web_source_process = None
     adapter._web_source_db = Path("/tmp/test-web-source.db")
     adapter._web_source_status_path = Path("/tmp/test-web-source-status.json")
+    adapter._web_source_pid_path = Path("/tmp/test-web-source.pid")
     adapter._web_source_error = None
     adapter._web_source_intentionally_stopped = False
     adapter._web_source_log_fh = None
@@ -853,7 +854,7 @@ class TestDurableBridgeAck:
 
 class TestGatewayWalHooking:
     @pytest.mark.asyncio
-    async def test_connect_existing_bridge_replays_wal_before_polling(self):
+    async def test_connect_replaces_existing_bridge_before_replay_and_polling(self):
         adapter = _make_adapter()
         adapter._acquire_platform_lock = MagicMock(return_value=True)
         adapter._release_platform_lock = MagicMock()
@@ -865,7 +866,16 @@ class TestGatewayWalHooking:
         health_session = MagicMock()
         health_session.get = MagicMock(return_value=_AsyncCM(health_resp))
 
+        started_bridge_resp = MagicMock()
+        started_bridge_resp.status = 200
+        started_bridge_resp.json = AsyncMock(return_value={"status": "connected", "mode": "bot"})
+        started_bridge_session = MagicMock()
+        started_bridge_session.get = MagicMock(return_value=_AsyncCM(started_bridge_resp))
+
         persistent_session = MagicMock()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_fh = MagicMock()
         call_order: list[str] = []
 
         async def _record_replay():
@@ -881,11 +891,21 @@ class TestGatewayWalHooking:
         with patch("gateway.platforms.whatsapp.check_whatsapp_requirements", return_value=True), \
              patch.object(Path, "exists", return_value=True), \
              patch.object(Path, "mkdir", return_value=None), \
-             patch("aiohttp.ClientSession", side_effect=[_AsyncCM(health_session), persistent_session]), \
+             patch("gateway.platforms.whatsapp._kill_stale_bridge_by_pidfile") as kill_stale, \
+             patch("gateway.platforms.whatsapp._kill_port_process") as kill_port, \
+             patch("gateway.platforms.whatsapp.asyncio.sleep", new=AsyncMock()), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0)), \
+             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
+             patch("builtins.open", return_value=mock_fh), \
+             patch("aiohttp.ClientSession", side_effect=[_AsyncCM(health_session), _AsyncCM(started_bridge_session), persistent_session]), \
              patch("gateway.platforms.whatsapp.asyncio.create_task", side_effect=_record_poll_task):
             result = await adapter.connect()
 
         assert result is True
+        assert mock_popen.called
+        kill_stale.assert_called_once()
+        kill_port.assert_called_once_with(adapter._bridge_port)
+        assert adapter._bridge_process is mock_proc
         adapter._replay_gateway_wal.assert_awaited_once()
         assert call_order == ["replay", "poll-task"]
 
