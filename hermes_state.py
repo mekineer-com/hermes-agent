@@ -1727,23 +1727,6 @@ class SessionDB:
 
         return int(self._execute_write(_do))
 
-    def message_source_key_exists(
-        self,
-        *,
-        source_chat_id: str,
-        source_message_id: str,
-    ) -> bool:
-        chat_key = str(source_chat_id or "").strip()
-        message_key = str(source_message_id or "").strip()
-        if not chat_key or not message_key:
-            return False
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT 1 FROM messages WHERE source_chat_id = ? AND source_message_id = ? LIMIT 1",
-                (chat_key, message_key),
-            ).fetchone()
-        return row is not None
-
     def message_source_key_has_response(
         self,
         *,

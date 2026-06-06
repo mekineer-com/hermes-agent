@@ -110,7 +110,6 @@ export class DurableQueue {
     this.maxSeq = 0;
     this.nextSeq = 1;
     this.unacked = [];
-    this.unackedUidSet = new Set();
     this.seenModeByUid = new Map();
     this.ackSinceCompaction = 0;
 
@@ -154,7 +153,6 @@ export class DurableQueue {
       }
       if (seq <= this.ackedUpToSeq) continue;
       this.unacked.push(row);
-      if (eventUid) this.unackedUidSet.add(eventUid);
     }
     if (seenDirty) {
       this._persistSeen();
@@ -259,7 +257,6 @@ export class DurableQueue {
     if (seenMode && !(seenMode === 'persist_only' && incomingSeenMode === 'live')) {
       return null;
     }
-    if (this.unackedUidSet.has(eventUid)) return null;
 
     const seq = this.nextSeq;
     this.nextSeq += 1;
@@ -272,7 +269,6 @@ export class DurableQueue {
     this._appendRow(row);
     this._appendSeenUid(eventUid, incomingSeenMode);
     this.unacked.push(row);
-    this.unackedUidSet.add(eventUid);
     this.seenModeByUid.set(eventUid, incomingSeenMode);
     return row;
   }
@@ -295,15 +291,12 @@ export class DurableQueue {
     this.ackedUpToSeq = target;
     const kept = [];
     let removed = 0;
-    this.unackedUidSet.clear();
     for (const row of this.unacked) {
       if (Number(row?.seq) <= target) {
         removed += 1;
         continue;
       }
       kept.push(row);
-      const uid = String(row?.event_uid || '').trim();
-      if (uid) this.unackedUidSet.add(uid);
     }
     this.unacked = kept;
     this.ackSinceCompaction += (target - prev);

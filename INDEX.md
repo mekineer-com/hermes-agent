@@ -72,8 +72,8 @@ Search targets:
 - `_is_whatsapp_persist_only_event`
   - identifies history/persist-only events that should not wake Siri
 - `_is_duplicate_whatsapp_source_message`
-  - checks `SessionDB.message_source_key_exists`
-  - duplicate live rows should not wake Siri
+  - checks `SessionDB.message_source_key_has_response`
+  - live rows should be skipped only after the source message has an assistant response
 - post-agent transcript persistence in `_handle_message`
   - adds WhatsApp sender/source/timestamp metadata to user rows
   - updates latest user sender in `state.db`
