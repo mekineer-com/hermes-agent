@@ -7711,6 +7711,11 @@ class GatewayRunner:
         )
         if message_text is None:
             return
+        persist_user_message = None
+        if source.platform == Platform.WHATSAPP:
+            raw_event_text = str(getattr(event, "text", "") or "").strip()
+            if raw_event_text:
+                persist_user_message = raw_event_text
 
         # Bind this gateway run generation to the adapter's active-session
         # event so deferred post-delivery callbacks can be released by the
@@ -7748,6 +7753,7 @@ class GatewayRunner:
                     else None
                 ),
                 channel_prompt=event.channel_prompt,
+                persist_user_message=persist_user_message,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -7992,6 +7998,7 @@ class GatewayRunner:
             _source_message_id = str(_raw_message.get("messageId") or "").strip() or None
             _source_chat_id = str(_raw_message.get("chatId") or "").strip() or None
             _message_timestamp = _coerce_gateway_timestamp(_raw_message.get("timestamp"))
+            _user_content_for_persistence = persist_user_message or message_text
             _user_sender_fields = (
                 {"sender_id": _sender_id, "sender_name": _sender_name}
                 if source.platform == Platform.WHATSAPP and (_sender_id or _sender_name)
@@ -8041,7 +8048,7 @@ class GatewayRunner:
                     session_entry.session_id,
                     {
                         "role": "user",
-                        "content": message_text,
+                        "content": _user_content_for_persistence,
                         **_user_timestamp_fields,
                         **_user_sender_fields,
                         **_user_source_fields,
@@ -8057,7 +8064,7 @@ class GatewayRunner:
                         session_entry.session_id,
                         {
                             "role": "user",
-                            "content": message_text,
+                            "content": _user_content_for_persistence,
                             **_user_timestamp_fields,
                             **_user_sender_fields,
                             **_user_source_fields,
@@ -8082,6 +8089,12 @@ class GatewayRunner:
                         entry = {**msg}
                         if "timestamp" not in entry:
                             entry["timestamp"] = ts
+                        if (
+                            persist_user_message
+                            and entry.get("role") == "user"
+                            and str(entry.get("content") or "").strip() == message_text.strip()
+                        ):
+                            entry["content"] = persist_user_message
                         self.session_store.append_to_transcript(
                             session_entry.session_id, entry,
                             skip_db=agent_persisted,
@@ -8225,7 +8238,7 @@ class GatewayRunner:
                         if isinstance(getattr(event, "raw_message", None), dict)
                         else {}
                     ),
-                    message_text=message_text,
+                    message_text=persist_user_message or message_text,
                     error_response=error_response,
                 )
             return error_response
@@ -14924,6 +14937,7 @@ class GatewayRunner:
         event_message_id: Optional[str] = None,
         event_raw_message: Optional[Dict[str, Any]] = None,
         channel_prompt: Optional[str] = None,
+        persist_user_message: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -16143,7 +16157,10 @@ class GatewayRunner:
                 else:
                     _run_message = message
 
-                result = agent.run_conversation(_run_message, conversation_history=agent_history, task_id=session_id)
+                run_kwargs = {"conversation_history": agent_history, "task_id": session_id}
+                if persist_user_message is not None:
+                    run_kwargs["persist_user_message"] = persist_user_message
+                result = agent.run_conversation(_run_message, **run_kwargs)
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
@@ -16843,6 +16860,11 @@ class GatewayRunner:
                     )
                     if next_message is None:
                         return result
+                    next_persist_user_message = None
+                    if next_source.platform == Platform.WHATSAPP:
+                        raw_next_text = str(getattr(pending_event, "text", "") or "").strip()
+                        if raw_next_text:
+                            next_persist_user_message = raw_next_text
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
 
@@ -16875,6 +16897,7 @@ class GatewayRunner:
                         else None
                     ),
                     channel_prompt=next_channel_prompt,
+                    persist_user_message=next_persist_user_message,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:

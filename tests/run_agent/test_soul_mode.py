@@ -505,3 +505,28 @@ def test_handle_turn_passes_history_to_memu(soul_agent):
     mock_client.memu_turn.assert_called_once()
     call_kwargs = mock_client.memu_turn.call_args[1]
     assert call_kwargs["history"] == db_history
+
+
+def test_handle_turn_uses_original_user_message_for_memu(soul_agent):
+    mock_client = MagicMock()
+    mock_client.memu_turn.return_value = {"ok": True, "response": "nice"}
+    soul_agent._soul_config._client = mock_client
+    soul_agent.platform = "whatsapp"
+    soul_agent._chat_id = "120363@g.us"
+    soul_agent._chat_type = "group"
+    soul_agent._gateway_session_key = "agent:main:whatsapp:group:120363@g.us:15551234567"
+
+    soul_mode.handle_turn(
+        soul_agent, soul_agent._soul_config,
+        user_message="[Marcos] Siri now has her own desk.",
+        conversation_history=[],
+        messages=[{"role": "user", "content": "[Marcos] Siri now has her own desk."}],
+        task_id="test-task",
+        original_user_message="Siri now has her own desk.",
+        summarize_for_log=lambda x: str(x)[:50],
+    )
+
+    mock_client.memu_turn.assert_called_once()
+    call_kwargs = mock_client.memu_turn.call_args[1]
+    assert call_kwargs["message"] == "Siri now has her own desk."
+    assert call_kwargs["user_name"] == str(getattr(soul_agent, "_user_name", "") or "")

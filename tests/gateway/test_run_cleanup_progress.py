@@ -148,6 +148,30 @@ class MetadataAgent:
         return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
+class PersistMessageAgent:
+    seen = {}
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(
+        self,
+        message,
+        conversation_history=None,
+        task_id=None,
+        persist_user_message=None,
+    ):
+        PersistMessageAgent.seen = {
+            "message": message,
+            "persist_user_message": persist_user_message,
+        }
+        return {
+            "final_response": "done",
+            "messages": [{"role": "user", "content": persist_user_message or message}],
+            "api_calls": 1,
+        }
+
+
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -345,6 +369,34 @@ async def test_whatsapp_raw_metadata_reaches_agent_without_nameerror(monkeypatch
         "source_chat_id": "15133278228@s.whatsapp.net",
         "timestamp": 1780566609,
     }
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_persist_user_message_keeps_group_prefix_out_of_memory(monkeypatch, tmp_path):
+    adapter = CleanupCaptureAdapter(platform=Platform.WHATSAPP)
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, PersistMessageAgent, cleanup_on=False)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    PersistMessageAgent.seen = {}
+
+    source = SessionSource(platform=Platform.WHATSAPP, chat_id="120363@g.us")
+
+    result = await runner._run_agent(
+        message="[Marcos] Siri now has her own desk.",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-1",
+        session_key="agent:main:whatsapp:group:120363@g.us:15551234567",
+        persist_user_message="Siri now has her own desk.",
+    )
+
+    assert result["final_response"] == "done"
+    assert PersistMessageAgent.seen == {
+        "message": "[Marcos] Siri now has her own desk.",
+        "persist_user_message": "Siri now has her own desk.",
+    }
+    assert result["messages"][0]["content"] == "Siri now has her own desk."
 
 
 @pytest.mark.asyncio

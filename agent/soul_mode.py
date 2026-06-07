@@ -416,7 +416,7 @@ def handle_turn(
         )
 
         history = _load_history(agent, conversation_history, config)
-        memu_message = coerce_message_text(user_message)
+        memu_message = coerce_message_text(original_user_message)
         if not memu_message:
             raise MemuClientError("memU turn requires non-empty user message")
 
