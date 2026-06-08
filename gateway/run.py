@@ -3840,9 +3840,137 @@ class GatewayRunner:
         # turn so the agent kicks off the new chat.
         asyncio.create_task(self._handoff_watcher())
 
+        if Platform.WHATSAPP in self.adapters and self._resolve_active_whatsapp_soul_config() is not None:
+            task = asyncio.create_task(self._whatsapp_memu_outbound_watcher())
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+
         logger.info("Press Ctrl+C to stop")
         
         return True
+
+    @staticmethod
+    def _chat_id_from_whatsapp_conversation_id(conversation_id: str) -> str:
+        raw = str(conversation_id or "").strip()
+        for prefix in ("whatsapp:dm:", "whatsapp:group:"):
+            if raw.startswith(prefix):
+                return raw[len(prefix):].strip()
+        return ""
+
+    def _resolve_active_whatsapp_soul_config(self) -> dict[str, Any] | None:
+        cfg = self._resolve_soul_mode_agent_config(
+            _load_gateway_config(),
+            "agent:main:whatsapp:dm:pending-outbounds",
+        )
+        if not cfg.get("enabled") or cfg.get("role") != "soul":
+            return None
+        if not str(cfg.get("user_id") or "").strip() or not str(cfg.get("soul_id") or "").strip():
+            return None
+        if not cfg.get("use_memu_turn", True):
+            return None
+        return cfg
+
+    async def _deliver_whatsapp_memu_outbound(self, client: Any, cfg: dict[str, Any], row: dict[str, Any]) -> None:
+        out_id = str(row.get("id") or "").strip()
+        target = str(row.get("target") or "").strip().lower()
+        text = str(row.get("response_text") or "").strip()
+        origin = str(row.get("origin_conversation_id") or "").strip()
+        user_id = str(cfg.get("user_id") or "").strip()
+        soul_id = str(cfg.get("soul_id") or "").strip()
+        if not out_id or not text:
+            return
+
+        async def _mark(status: str, *, provider_message_id: str | None = None, error: str | None = None) -> None:
+            await asyncio.to_thread(
+                client.mark_whatsapp_outbound,
+                user_id=user_id,
+                soul_id=soul_id,
+                outbound_id=out_id,
+                status=status,
+                provider_message_id=provider_message_id,
+                error=error,
+            )
+
+        try:
+            if target == "private":
+                from agent.soul_mode import _route_whatsapp_notice_to_self_dm
+                ok = await asyncio.to_thread(
+                    _route_whatsapp_notice_to_self_dm,
+                    text,
+                    origin,
+                    "free-turn PRIVATE reply",
+                )
+                if ok:
+                    await _mark("sent")
+                else:
+                    await _mark("failed", error="self-DM delivery failed")
+                return
+
+            if target != "respond":
+                await _mark("failed", error=f"unsupported target {target!r}")
+                return
+
+            adapter = self.adapters.get(Platform.WHATSAPP)
+            chat_id = self._chat_id_from_whatsapp_conversation_id(str(row.get("target_conversation_id") or origin))
+            if adapter is None or not chat_id:
+                await _mark("failed", error="whatsapp adapter or target chat missing")
+                return
+
+            result = await adapter.send(
+                chat_id,
+                text,
+                metadata={"origin": "memu_free_turn", "outbound_id": out_id},
+            )
+            provider_message_id = None
+            if isinstance(result, dict):
+                provider_message_id = str(result.get("message_id") or result.get("id") or "").strip() or None
+                err = str(result.get("error") or "").strip()
+                if err:
+                    await _mark("failed", error=err)
+                    return
+            elif result is False:
+                await _mark("failed", error="adapter.send returned false")
+                return
+            await _mark("sent", provider_message_id=provider_message_id)
+        except Exception as exc:
+            logger.exception("WhatsApp memU outbound delivery failed for %s", out_id)
+            try:
+                await _mark("failed", error=f"{type(exc).__name__}: {str(exc)[:220]}")
+            except Exception:
+                logger.debug("Failed to mark WhatsApp memU outbound failure", exc_info=True)
+
+    async def _drain_whatsapp_memu_outbounds(self) -> int:
+        if Platform.WHATSAPP not in self.adapters:
+            return 0
+        cfg = self._resolve_active_whatsapp_soul_config()
+        if cfg is None:
+            return 0
+        from agent.memu_client import MemuHttpClient
+        client = MemuHttpClient(
+            base_url=str(cfg.get("memu_base_url") or "http://127.0.0.1:8099"),
+            timeout_seconds=float(cfg.get("timeout_seconds") or 90.0),
+        )
+        rows = await asyncio.to_thread(
+            client.claim_whatsapp_outbounds,
+            user_id=str(cfg.get("user_id") or ""),
+            soul_id=str(cfg.get("soul_id") or ""),
+            claimed_by="hermes-gateway",
+            limit=10,
+        )
+        for row in rows:
+            if isinstance(row, dict):
+                await self._deliver_whatsapp_memu_outbound(client, cfg, row)
+        return len([row for row in rows if isinstance(row, dict)])
+
+    async def _whatsapp_memu_outbound_watcher(self, interval: float = 2.0) -> None:
+        while self._running and not self._shutdown_event.is_set():
+            try:
+                await self._drain_whatsapp_memu_outbounds()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("WhatsApp memU outbound watcher iteration failed", exc_info=True)
+            await asyncio.sleep(max(0.5, float(interval)))
 
     async def _handoff_watcher(self, interval: float = 2.0) -> None:
         """Background task that processes pending CLI→gateway session handoffs.

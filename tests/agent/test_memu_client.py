@@ -166,6 +166,58 @@ def test_memu_turn_falls_back_to_history_user_name_when_user_name_missing(monkey
     assert captured["payload"]["user_name"] == "Marcos"
 
 
+def test_claim_whatsapp_outbounds_builds_expected_payload(monkeypatch):
+    client = MemuHttpClient(base_url="http://127.0.0.1:8099")
+    captured = {}
+
+    def _fake_post(path, payload):
+        captured["path"] = path
+        captured["payload"] = payload
+        return {"ok": True, "outbounds": [{"id": "waout_1"}]}
+
+    monkeypatch.setattr(client, "_post", _fake_post)
+
+    out = client.claim_whatsapp_outbounds(
+        user_id="marcos",
+        soul_id="Siri",
+        claimed_by="hermes-test",
+        limit=3,
+    )
+
+    assert out == [{"id": "waout_1"}]
+    assert captured["path"] == "/integration/whatsapp/outbounds/claim"
+    assert captured["payload"]["user_id"] == "marcos"
+    assert captured["payload"]["soul_id"] == "Siri"
+    assert captured["payload"]["claimed_by"] == "hermes-test"
+    assert captured["payload"]["limit"] == 3
+
+
+def test_mark_whatsapp_outbound_builds_expected_payload(monkeypatch):
+    client = MemuHttpClient(base_url="http://127.0.0.1:8099")
+    captured = {}
+
+    def _fake_post(path, payload):
+        captured["path"] = path
+        captured["payload"] = payload
+        return {"ok": True, "outbound": {"id": "waout_1", "status": "sent"}}
+
+    monkeypatch.setattr(client, "_post", _fake_post)
+
+    out = client.mark_whatsapp_outbound(
+        user_id="marcos",
+        soul_id="Siri",
+        outbound_id="waout_1",
+        status="sent",
+        provider_message_id="wamid.1",
+    )
+
+    assert out["ok"] is True
+    assert captured["path"] == "/integration/whatsapp/outbounds/mark"
+    assert captured["payload"]["outbound_id"] == "waout_1"
+    assert captured["payload"]["status"] == "sent"
+    assert captured["payload"]["provider_message_id"] == "wamid.1"
+
+
 def test_post_wraps_timeout_error_as_memu_client_error(monkeypatch):
     client = MemuHttpClient(base_url="http://127.0.0.1:8099")
 

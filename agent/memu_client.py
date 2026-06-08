@@ -239,6 +239,48 @@ class MemuHttpClient:
 
         return self._post("/integration/memu/turn", payload)
 
+    def claim_whatsapp_outbounds(
+        self,
+        *,
+        user_id: str,
+        soul_id: str,
+        claimed_by: str = "hermes",
+        limit: int = 10,
+        claim_timeout_seconds: int = 300,
+    ) -> list[dict[str, Any]]:
+        payload = {
+            "user_id": str(user_id or "").strip(),
+            "soul_id": str(soul_id or "").strip(),
+            "claimed_by": str(claimed_by or "hermes").strip() or "hermes",
+            "limit": int(limit),
+            "claim_timeout_seconds": int(claim_timeout_seconds),
+        }
+        out = self._post("/integration/whatsapp/outbounds/claim", payload)
+        rows = out.get("outbounds")
+        return rows if isinstance(rows, list) else []
+
+    def mark_whatsapp_outbound(
+        self,
+        *,
+        user_id: str,
+        soul_id: str,
+        outbound_id: str,
+        status: str,
+        provider_message_id: str | None = None,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "user_id": str(user_id or "").strip(),
+            "soul_id": str(soul_id or "").strip(),
+            "outbound_id": str(outbound_id or "").strip(),
+            "status": str(status or "").strip(),
+        }
+        if provider_message_id:
+            payload["provider_message_id"] = str(provider_message_id)
+        if error:
+            payload["error"] = str(error)
+        return self._post("/integration/whatsapp/outbounds/mark", payload)
+
     def memu_retrieve(
         self,
         *,
