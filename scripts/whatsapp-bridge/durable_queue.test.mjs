@@ -234,7 +234,8 @@ test('durable queue merges history rows into later live rows', () => {
       messageId: 'm1',
       chatId: '15133278228@s.whatsapp.net',
       senderId: '15133278228@s.whatsapp.net',
-      body: 'hello',
+      senderName: 'Old name',
+      body: 'history body',
       timestamp: 1,
     });
     const queueLinesAfterHistory = readLines(path.join(queueDir, 'queue.jsonl'));
@@ -243,8 +244,9 @@ test('durable queue merges history rows into later live rows', () => {
       messageId: 'm1',
       chatId: '15133278228@s.whatsapp.net',
       senderId: '15133278228@s.whatsapp.net',
-      body: 'hello',
-      timestamp: 1,
+      senderName: 'Live name',
+      body: 'live body',
+      timestamp: 2,
     });
     const queueLinesAfterLive = readLines(path.join(queueDir, 'queue.jsonl'));
     const duplicateLive = queue.enqueue({
@@ -260,10 +262,44 @@ test('durable queue merges history rows into later live rows', () => {
     assert.equal(history.event_uid, '15133278228@s.whatsapp.net:m1');
     assert.equal(history.deliveryMode, 'live');
     assert.equal(history.eventType, undefined);
+    assert.equal(history.senderName, 'Live name');
+    assert.equal(history.body, 'live body');
+    assert.equal(history.timestamp, 2);
     assert.equal(queueLinesAfterHistory.length, 1);
     assert.equal(queueLinesAfterLive.length, 1);
     assert.equal(duplicateLive.event_uid, '15133278228@s.whatsapp.net:m1');
     assert.deepEqual(queue.readUnacked(10).map((item) => item.seq), [1]);
+  } finally {
+    rmSync(queueDir, { recursive: true, force: true });
+  }
+});
+
+test('durable queue migrates legacy prefixed seen keys', () => {
+  const queueDir = mkQueueDir();
+  try {
+    writeFileSync(
+      path.join(queueDir, 'queue.seen'),
+      'persist:15133278228@s.whatsapp.net:m1\nlive:15133278228@s.whatsapp.net:m2\n',
+      'utf8',
+    );
+
+    const queue = new DurableQueue({ queueDir, compactionEveryAcks: 1000 });
+    const seenLines = readLines(path.join(queueDir, 'queue.seen'));
+
+    assert.deepEqual(seenLines, [
+      'persist_only\t15133278228@s.whatsapp.net:m1',
+      'live\t15133278228@s.whatsapp.net:m2',
+    ]);
+    assert.equal(
+      queue.enqueue({
+        deliveryMode: 'persist_only',
+        messageId: 'm1',
+        chatId: '15133278228@s.whatsapp.net',
+        body: 'history replay',
+        timestamp: 1,
+      }),
+      null,
+    );
   } finally {
     rmSync(queueDir, { recursive: true, force: true });
   }

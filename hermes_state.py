@@ -1739,7 +1739,12 @@ class SessionDB:
             return False
         with self._lock:
             row = self._conn.execute(
-                "SELECT id, session_id FROM messages WHERE source_chat_id = ? AND source_message_id = ? LIMIT 1",
+                """
+                SELECT id, session_id FROM messages
+                 WHERE source_chat_id = ? AND source_message_id = ?
+                 ORDER BY id ASC
+                 LIMIT 1
+                """,
                 (chat_key, message_key),
             ).fetchone()
             if not row:

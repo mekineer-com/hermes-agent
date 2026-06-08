@@ -65,6 +65,27 @@ function hasValue(value) {
   return true;
 }
 
+const LIVE_OWNED_FIELDS = new Set([
+  'body',
+  'timestamp',
+  'senderId',
+  'senderName',
+  'chatName',
+  'isGroup',
+  'hasMedia',
+  'mediaType',
+  'mediaUrls',
+  'mentionedIds',
+  'quotedMessageId',
+  'quotedParticipant',
+  'quotedRemoteJid',
+  'hasQuotedMessage',
+  'botIds',
+  'fromMe',
+  'speakerRoleHint',
+  'speakerNameHint',
+]);
+
 function mergeQueuedEvent(target, incoming) {
   const targetMode = String(target?.deliveryMode || '').trim().toLowerCase();
   const incomingMode = String(incoming?.deliveryMode || '').trim().toLowerCase();
@@ -73,7 +94,9 @@ function mergeQueuedEvent(target, incoming) {
   for (const [key, value] of Object.entries(incoming || {})) {
     if (key === 'seq' || key === 'event_uid') continue;
     if (targetMode === 'live' && incomingMode !== 'live' && key === 'eventType') continue;
-    if (!hasValue(target[key]) && hasValue(value)) {
+    if (liveUpgrade && LIVE_OWNED_FIELDS.has(key) && hasValue(value)) {
+      target[key] = value;
+    } else if (!hasValue(target[key]) && hasValue(value)) {
       target[key] = value;
     }
   }
@@ -83,6 +106,25 @@ function mergeQueuedEvent(target, incoming) {
     delete target.eventType;
   }
   return target;
+}
+
+function normalizeSeenEntry(text) {
+  const tab = text.indexOf('\t');
+  if (tab >= 0) {
+    const mode = text.slice(0, tab).trim() || 'live';
+    const uid = text.slice(tab + 1).trim();
+    return { uid, mode: mode === 'persist' ? 'persist_only' : mode, migrated: mode === 'persist' };
+  }
+  for (const [prefix, mode] of [
+    ['persist:', 'persist_only'],
+    ['live:', 'live'],
+  ]) {
+    if (text.startsWith(prefix)) {
+      const uid = text.slice(prefix.length).trim();
+      return { uid, mode, migrated: true };
+    }
+  }
+  return { uid: text, mode: 'live', migrated: false };
 }
 
 function seenModeFor(event) {
@@ -119,9 +161,8 @@ export class DurableQueue {
   _load() {
     mkdirSync(this.queueDir, { recursive: true });
     this.ackedUpToSeq = this._readAckedOffset();
-    this._loadSeen();
     const seenFileExists = existsSync(this.seenPath);
-    let seenDirty = !seenFileExists;
+    let seenDirty = !seenFileExists || this._loadSeen();
 
     if (!existsSync(this.queuePath)) {
       if (seenDirty) {
@@ -179,21 +220,18 @@ export class DurableQueue {
   }
 
   _loadSeen() {
-    if (!existsSync(this.seenPath)) return;
+    if (!existsSync(this.seenPath)) return false;
+    let dirty = false;
     const raw = readFileSync(this.seenPath, 'utf8');
     const lines = raw.split('\n');
     for (const line of lines) {
       const text = String(line || '').trim();
       if (!text) continue;
-      const tab = text.indexOf('\t');
-      if (tab >= 0) {
-        const mode = text.slice(0, tab).trim() || 'live';
-        const uid = text.slice(tab + 1).trim();
-        if (uid) this.seenModeByUid.set(uid, mode);
-      } else {
-        this.seenModeByUid.set(text, 'live');
-      }
+      const entry = normalizeSeenEntry(text);
+      if (entry.uid) this.seenModeByUid.set(entry.uid, entry.mode);
+      if (entry.migrated) dirty = true;
     }
+    return dirty;
   }
 
   _appendSeenUid(eventUid, mode) {
