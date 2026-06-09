@@ -88,6 +88,38 @@ class TestSessionLifecycle:
             source_message_id="m1",
         )
 
+    def test_source_key_has_response_checks_all_duplicate_source_rows(self, db):
+        db.create_session(session_id="s1", source="whatsapp")
+        db.create_session(session_id="s2", source="whatsapp")
+        source_chat_id = "15133278228@s.whatsapp.net"
+        source_message_id = "m1"
+
+        # Legacy databases can already contain duplicate source rows; in that
+        # state the unique index creation is skipped and the read path must
+        # still find any answered duplicate.
+        db._conn.execute("DROP INDEX IF EXISTS idx_messages_source_key")
+
+        db.append_message(
+            "s1",
+            role="user",
+            content="duplicate without response",
+            source_chat_id=source_chat_id,
+            source_message_id=source_message_id,
+        )
+        db.append_message(
+            "s2",
+            role="user",
+            content="duplicate with response",
+            source_chat_id=source_chat_id,
+            source_message_id=source_message_id,
+        )
+        db.append_message("s2", role="assistant", content="already answered")
+
+        assert db.message_source_key_has_response(
+            source_chat_id=source_chat_id,
+            source_message_id=source_message_id,
+        )
+
     def test_end_session_after_reopen_allows_re_end(self, db):
         """reopen_session() is the explicit escape hatch for re-ending a
         closed session. After reopen, end_session() takes effect again.

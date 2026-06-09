@@ -608,6 +608,8 @@ function storeSentMessage(sent, content) {
 let sock = null;
 let connectionState = 'disconnected';
 let socketGeneration = 0;
+let openSocketGeneration = 0;
+let pendingNotificationsSocketGeneration = 0;
 let readySocketGeneration = 0;
 let connectReadyTimer = null;
 let reconnectTimer = null;
@@ -634,6 +636,7 @@ function scheduleStartSocket(delayMs) {
 
 function markSocketReady(socketId) {
   if (socketId !== socketGeneration) return;
+  if (openSocketGeneration !== socketId || pendingNotificationsSocketGeneration !== socketId) return;
   readySocketGeneration = socketId;
   clearConnectReadyTimer(socketId);
   if (connectionState !== 'connected') {
@@ -1109,6 +1112,8 @@ async function startSocket() {
     reconnectTimer = null;
   }
   const socketId = ++socketGeneration;
+  openSocketGeneration = 0;
+  pendingNotificationsSocketGeneration = 0;
   readySocketGeneration = 0;
   clearConnectReadyTimer();
   connectionState = 'connecting';
@@ -1223,6 +1228,7 @@ async function startSocket() {
         scheduleStartSocket(reason === 515 ? 1000 : 3000);
       }
     } else if (connection === 'open') {
+      openSocketGeneration = socketId;
       if (readySocketGeneration === socketId) {
         markSocketReady(socketId);
       } else {
@@ -1237,6 +1243,7 @@ async function startSocket() {
       }
     }
     if (receivedPendingNotifications && connection !== 'close') {
+      pendingNotificationsSocketGeneration = socketId;
       markSocketReady(socketId);
     }
   });

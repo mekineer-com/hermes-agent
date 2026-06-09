@@ -1738,22 +1738,23 @@ class SessionDB:
         if not chat_key or not message_key:
             return False
         with self._lock:
-            row = self._conn.execute(
+            response = self._conn.execute(
                 """
-                SELECT id, session_id FROM messages
-                 WHERE source_chat_id = ? AND source_message_id = ?
-                 ORDER BY id ASC
+                SELECT 1
+                  FROM messages source
+                 WHERE source.source_chat_id = ?
+                   AND source.source_message_id = ?
+                   AND EXISTS (
+                       SELECT 1
+                         FROM messages assistant
+                        WHERE assistant.session_id = source.session_id
+                          AND assistant.id > source.id
+                          AND assistant.role = 'assistant'
+                        LIMIT 1
+                   )
                  LIMIT 1
                 """,
                 (chat_key, message_key),
-            ).fetchone()
-            if not row:
-                return False
-            message_id = int(row["id"] if isinstance(row, sqlite3.Row) else row[0])
-            session_id = row["session_id"] if isinstance(row, sqlite3.Row) else row[1]
-            response = self._conn.execute(
-                "SELECT 1 FROM messages WHERE session_id = ? AND id > ? AND role = 'assistant' LIMIT 1",
-                (session_id, message_id),
             ).fetchone()
         return response is not None
 

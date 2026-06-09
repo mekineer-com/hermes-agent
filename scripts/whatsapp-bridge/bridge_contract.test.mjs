@@ -31,6 +31,8 @@ test('bridge keeps Baileys live path light and bounded', () => {
 test('bridge does not report connected until send-ready signal', () => {
   assert.match(bridgeSource, /receivedPendingNotifications/);
   assert.match(bridgeSource, /markSocketReady\(socketId\)/);
+  assert.match(bridgeSource, /openSocketGeneration\s*!==\s*socketId/);
+  assert.match(bridgeSource, /pendingNotificationsSocketGeneration\s*!==\s*socketId/);
   assert.match(bridgeSource, /status:\s*connectionState/);
   assert.match(bridgeSource, /connectionState\s*=\s*'connecting'/);
 });
