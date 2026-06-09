@@ -16,6 +16,7 @@ if "dotenv" not in sys.modules:
 
 from gateway.run import GatewayRunner
 from gateway.config import Platform
+from gateway.platforms.base import SendResult
 
 
 def test_resolve_soul_mode_agent_config_defaults_when_missing():
@@ -90,7 +91,7 @@ async def test_drain_whatsapp_memu_outbounds_sends_origin_reply(monkeypatch):
     class _Adapter:
         async def send(self, chat_id, text, metadata=None):
             sent.append((chat_id, text, dict(metadata or {})))
-            return {"message_id": "wamid.1"}
+            return SendResult(success=True, message_id="wamid.1")
 
     class _Client:
         def __init__(self, **_kwargs):
@@ -151,5 +152,66 @@ async def test_drain_whatsapp_memu_outbounds_sends_origin_reply(monkeypatch):
             "status": "sent",
             "provider_message_id": "wamid.1",
             "error": None,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_drain_whatsapp_memu_outbounds_marks_send_result_failure(monkeypatch):
+    marked: list[dict] = []
+
+    class _Adapter:
+        async def send(self, _chat_id, _text, metadata=None):
+            return SendResult(success=False, error="bridge down")
+
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def claim_whatsapp_outbounds(self, **_kwargs):
+            return [
+                {
+                    "id": "waout_1",
+                    "target": "respond",
+                    "target_conversation_id": "whatsapp:dm:151@s.whatsapp.net",
+                    "origin_conversation_id": "whatsapp:dm:151@s.whatsapp.net",
+                    "response_text": "hello from Siri",
+                }
+            ]
+
+        def mark_whatsapp_outbound(self, **kwargs):
+            marked.append(dict(kwargs))
+            return {"ok": True}
+
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.WHATSAPP: _Adapter()}
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {
+            "soul_mode": {
+                "agents": {
+                    "main": {
+                        "enabled": True,
+                        "role": "soul",
+                        "soul_id": "Siri",
+                        "user_id": "marcos",
+                    }
+                }
+            }
+        },
+    )
+    monkeypatch.setattr("agent.memu_client.MemuHttpClient", _Client)
+
+    count = await runner._drain_whatsapp_memu_outbounds()
+
+    assert count == 1
+    assert marked == [
+        {
+            "user_id": "marcos",
+            "soul_id": "Siri",
+            "outbound_id": "waout_1",
+            "status": "failed",
+            "provider_message_id": None,
+            "error": "bridge down",
         }
     ]

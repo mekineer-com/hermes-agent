@@ -3939,6 +3939,12 @@ class GatewayRunner:
                 if err:
                     await _mark("failed", error=err)
                     return
+            elif hasattr(result, "success"):
+                if not bool(getattr(result, "success")):
+                    err = str(getattr(result, "error", "") or "").strip() or "adapter send failed"
+                    await _mark("failed", error=err)
+                    return
+                provider_message_id = str(getattr(result, "message_id", "") or "").strip() or None
             elif result is False:
                 await _mark("failed", error="adapter.send returned false")
                 return
