@@ -83,6 +83,30 @@ def test_memu_turn_forwards_chat_name_and_chat_type(monkeypatch):
     assert payload["chat_type"] == "dm"
 
 
+def test_memu_turn_forwards_timezone(monkeypatch):
+    client = MemuHttpClient(base_url="http://127.0.0.1:8099")
+    captured = {}
+
+    def _fake_post(path, payload):
+        captured["payload"] = payload
+        return {"ok": True, "response": "hi"}
+
+    monkeypatch.setattr(client, "_post", _fake_post)
+
+    client.memu_turn(
+        conversation_id="whatsapp:dm:19999999999",
+        user_id="Marcos",
+        soul_id="Siri",
+        message="hi",
+        time_zone="America/Lima",
+        time_zone_offset_min=-300,
+    )
+
+    payload = captured["payload"]
+    assert payload["time_zone"] == "America/Lima"
+    assert payload["time_zone_offset_min"] == -300
+
+
 def test_memu_turn_does_not_force_fill_user_name_from_history_user_name(monkeypatch):
     client = MemuHttpClient(base_url="http://127.0.0.1:8099")
     captured = {}
