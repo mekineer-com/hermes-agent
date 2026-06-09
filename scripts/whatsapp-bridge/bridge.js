@@ -130,6 +130,9 @@ const REPLY_PREFIX = HAS_CUSTOM_REPLY_PREFIX
   : DEFAULT_REPLY_PREFIX;
 const MAX_MESSAGE_LENGTH = parseInt(process.env.WHATSAPP_MAX_MESSAGE_LENGTH || '4096', 10);
 const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10);
+const CONNECT_READY_TIMEOUT_MS = parseInt(process.env.WHATSAPP_CONNECT_READY_TIMEOUT_MS || '60000', 10);
+const BAILEYS_VERSION_FETCH_TIMEOUT_MS = parseInt(process.env.WHATSAPP_BAILEYS_VERSION_FETCH_TIMEOUT_MS || '5000', 10);
+const BAILEYS_VERSION_FALLBACK = [2, 3000, 1023223821];
 const SYNC_HISTORY_WINDOW_DAYS = parseFloat(process.env.WHATSAPP_SYNC_HISTORY_WINDOW_DAYS || '14');
 const BRIDGE_STARTED_AT_SECONDS = Math.floor(Date.now() / 1000);
 const STARTUP_REPLAY_GRACE_SECONDS = Math.max(
@@ -604,6 +607,79 @@ function storeSentMessage(sent, content) {
 
 let sock = null;
 let connectionState = 'disconnected';
+let socketGeneration = 0;
+let readySocketGeneration = 0;
+let connectReadyTimer = null;
+let reconnectTimer = null;
+
+function clearConnectReadyTimer(socketId = null) {
+  if (socketId !== null && socketId !== socketGeneration) return;
+  if (connectReadyTimer) {
+    clearTimeout(connectReadyTimer);
+    connectReadyTimer = null;
+  }
+}
+
+function scheduleStartSocket(delayMs) {
+  if (reconnectTimer) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    startSocket().catch((err) => {
+      connectionState = 'disconnected';
+      console.error(`❌ WhatsApp socket start failed: ${err?.message || err}`);
+      scheduleStartSocket(3000);
+    });
+  }, delayMs);
+}
+
+function markSocketReady(socketId) {
+  if (socketId !== socketGeneration) return;
+  readySocketGeneration = socketId;
+  clearConnectReadyTimer(socketId);
+  if (connectionState !== 'connected') {
+    connectionState = 'connected';
+    console.log('✅ WhatsApp connected!');
+  }
+}
+
+function recycleStuckSocket(socketId, reason) {
+  if (socketId !== socketGeneration) return;
+  connectionState = 'disconnected';
+  clearConnectReadyTimer(socketId);
+  console.warn(`⚠️  WhatsApp socket not ready: ${reason}. Reconnecting...`);
+  try {
+    sock?.end?.(new Error(reason));
+  } catch (err) {
+    console.warn(`⚠️  Failed to close stuck WhatsApp socket: ${err?.message || err}`);
+  }
+  scheduleStartSocket(1000);
+}
+
+function startConnectReadyTimer(socketId) {
+  clearConnectReadyTimer(socketId);
+  const timeoutMs = Number.isFinite(CONNECT_READY_TIMEOUT_MS) && CONNECT_READY_TIMEOUT_MS > 0
+    ? CONNECT_READY_TIMEOUT_MS
+    : 60000;
+  connectReadyTimer = setTimeout(
+    () => recycleStuckSocket(socketId, `ready timeout after ${timeoutMs / 1000}s`),
+    timeoutMs,
+  );
+}
+
+async function fetchBaileysVersionForBridge() {
+  const timeoutMs = Number.isFinite(BAILEYS_VERSION_FETCH_TIMEOUT_MS) && BAILEYS_VERSION_FETCH_TIMEOUT_MS > 0
+    ? BAILEYS_VERSION_FETCH_TIMEOUT_MS
+    : 5000;
+  const result = await fetchLatestBaileysVersion({ timeout: timeoutMs });
+  if (Array.isArray(result?.version) && result.version.length === 3) {
+    if (result.error) {
+      console.warn(`⚠️  Using packaged Baileys version fallback after fetch failed: ${result.error?.message || result.error}`);
+    }
+    return result.version;
+  }
+  console.warn('⚠️  Baileys version fetch returned invalid data; using bridge fallback version.');
+  return BAILEYS_VERSION_FALLBACK;
+}
 
 function rememberPushName(senderId, pushName) {
   const sid = normalizeWhatsAppId(senderId);
@@ -1028,9 +1104,18 @@ persistKnownChats();
 persistKnownContacts();
 
 async function startSocket() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  const socketId = ++socketGeneration;
+  readySocketGeneration = 0;
+  clearConnectReadyTimer();
+  connectionState = 'connecting';
+
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
   lidKeyStore = state.keys;
-  const { version } = await fetchLatestBaileysVersion();
+  const version = await fetchBaileysVersionForBridge();
 
   sock = makeWASocket({
     version,
@@ -1038,7 +1123,8 @@ async function startSocket() {
     logger,
     printQRInTerminal: false,
     browser: ['Hermes Agent', 'Chrome', '120.0'],
-    syncFullHistory: true,
+    fireInitQueries: false,
+    syncFullHistory: false,
     markOnlineOnConnect: false,
     // Required for Baileys 7.x: without this, incoming messages that need
     // E2EE session re-establishment are silently dropped (msg.message === null)
@@ -1102,7 +1188,8 @@ async function startSocket() {
   });
 
   sock.ev.on('connection.update', (update) => {
-    const { connection, lastDisconnect, qr } = update;
+    if (socketId !== socketGeneration) return;
+    const { connection, lastDisconnect, qr, receivedPendingNotifications } = update;
 
     if (qr) {
       console.log('\n📱 Scan this QR code with WhatsApp on your phone:\n');
@@ -1121,6 +1208,7 @@ async function startSocket() {
     if (connection === 'close') {
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
       connectionState = 'disconnected';
+      clearConnectReadyTimer(socketId);
 
       if (reason === DisconnectReason.loggedOut) {
         console.log('❌ Logged out. Delete session and restart to re-authenticate.');
@@ -1132,16 +1220,24 @@ async function startSocket() {
         } else {
           console.log(`⚠️  Connection closed (reason: ${reason}). Reconnecting in 3s...`);
         }
-        setTimeout(startSocket, reason === 515 ? 1000 : 3000);
+        scheduleStartSocket(reason === 515 ? 1000 : 3000);
       }
     } else if (connection === 'open') {
-      connectionState = 'connected';
-      console.log('✅ WhatsApp connected!');
+      if (readySocketGeneration === socketId) {
+        markSocketReady(socketId);
+      } else {
+        connectionState = 'connecting';
+        console.log('↻ WhatsApp socket open; waiting for send-ready state...');
+        startConnectReadyTimer(socketId);
+      }
       if (PAIR_ONLY) {
         console.log('✅ Pairing complete. Credentials saved.');
         // Give Baileys a moment to flush creds, then exit cleanly
         setTimeout(() => process.exit(0), 2000);
       }
+    }
+    if (receivedPendingNotifications && connection !== 'close') {
+      markSocketReady(socketId);
     }
   });
 
@@ -1928,7 +2024,11 @@ if (PAIR_ONLY) {
   console.log('📱 WhatsApp pairing mode');
   console.log(`📁 Session: ${SESSION_DIR}`);
   console.log();
-  startSocket();
+  startSocket().catch((err) => {
+    connectionState = 'disconnected';
+    console.error(`❌ WhatsApp socket start failed: ${err?.message || err}`);
+    scheduleStartSocket(3000);
+  });
 } else {
   app.listen(PORT, '127.0.0.1', () => {
     console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
@@ -1943,6 +2043,10 @@ if (PAIR_ONLY) {
       console.log(`   or WHATSAPP_ALLOWED_USERS=* for an explicit open bot.`);
     }
     console.log();
-    startSocket();
+    startSocket().catch((err) => {
+      connectionState = 'disconnected';
+      console.error(`❌ WhatsApp socket start failed: ${err?.message || err}`);
+      scheduleStartSocket(3000);
+    });
   });
 }

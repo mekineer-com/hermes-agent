@@ -21,3 +21,16 @@ test('bridge stamps explicit live and revoke delivery modes', () => {
   assert.match(bridgeSource, /event\.deliveryMode\s*=\s*delivery\.deliveryMode/);
   assert.match(bridgeSource, /deliveryMode:\s*'revoke'/);
 });
+
+test('bridge keeps Baileys live path light and bounded', () => {
+  assert.match(bridgeSource, /fireInitQueries:\s*false/);
+  assert.match(bridgeSource, /syncFullHistory:\s*false/);
+  assert.match(bridgeSource, /fetchLatestBaileysVersion\(\{\s*timeout:\s*timeoutMs\s*\}\)/);
+});
+
+test('bridge does not report connected until send-ready signal', () => {
+  assert.match(bridgeSource, /receivedPendingNotifications/);
+  assert.match(bridgeSource, /markSocketReady\(socketId\)/);
+  assert.match(bridgeSource, /status:\s*connectionState/);
+  assert.match(bridgeSource, /connectionState\s*=\s*'connecting'/);
+});
