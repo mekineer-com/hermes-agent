@@ -159,6 +159,49 @@ async def test_drain_whatsapp_memu_outbounds_sends_origin_reply(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_drain_whatsapp_memu_outbounds_skips_claim_when_bridge_not_connected(monkeypatch):
+    claimed = False
+
+    class _Adapter:
+        _running = True
+        _http_session = None
+        _bridge_health = {"status": "connecting"}
+
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def claim_whatsapp_outbounds(self, **_kwargs):
+            nonlocal claimed
+            claimed = True
+            return []
+
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.WHATSAPP: _Adapter()}
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {
+            "soul_mode": {
+                "agents": {
+                    "main": {
+                        "enabled": True,
+                        "role": "soul",
+                        "soul_id": "Siri",
+                        "user_id": "marcos",
+                    }
+                }
+            }
+        },
+    )
+    monkeypatch.setattr("agent.memu_client.MemuHttpClient", _Client)
+
+    count = await runner._drain_whatsapp_memu_outbounds()
+
+    assert count == 0
+    assert claimed is False
+
+
+@pytest.mark.asyncio
 async def test_drain_whatsapp_memu_outbounds_marks_send_result_failure(monkeypatch):
     marked: list[dict] = []
 

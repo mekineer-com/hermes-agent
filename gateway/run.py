@@ -3881,6 +3881,23 @@ class GatewayRunner:
             return None
         return cfg
 
+    @staticmethod
+    def _whatsapp_adapter_ready_for_outbounds(adapter: Any) -> bool:
+        if adapter is None:
+            return False
+        if bool(getattr(adapter, "has_fatal_error", False)):
+            return False
+        if hasattr(adapter, "_running") and not bool(getattr(adapter, "_running")):
+            return False
+        if hasattr(adapter, "_http_session") and getattr(adapter, "_http_session") is None:
+            return False
+        bridge_health = getattr(adapter, "_bridge_health", None)
+        if isinstance(bridge_health, dict):
+            bridge_status = str(bridge_health.get("status") or "").strip()
+            if bridge_status and bridge_status != "connected":
+                return False
+        return True
+
     async def _deliver_whatsapp_memu_outbound(self, client: Any, cfg: dict[str, Any], row: dict[str, Any]) -> None:
         out_id = str(row.get("id") or "").strip()
         target = str(row.get("target") or "").strip().lower()
@@ -3957,7 +3974,8 @@ class GatewayRunner:
                 logger.debug("Failed to mark WhatsApp memU outbound failure", exc_info=True)
 
     async def _drain_whatsapp_memu_outbounds(self) -> int:
-        if Platform.WHATSAPP not in self.adapters:
+        adapter = self.adapters.get(Platform.WHATSAPP)
+        if not self._whatsapp_adapter_ready_for_outbounds(adapter):
             return 0
         cfg = self._resolve_active_whatsapp_soul_config()
         if cfg is None:
