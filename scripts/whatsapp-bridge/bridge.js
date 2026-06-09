@@ -609,7 +609,6 @@ let sock = null;
 let connectionState = 'disconnected';
 let socketGeneration = 0;
 let openSocketGeneration = 0;
-let pendingNotificationsSocketGeneration = 0;
 let readySocketGeneration = 0;
 let connectReadyTimer = null;
 let reconnectTimer = null;
@@ -636,7 +635,7 @@ function scheduleStartSocket(delayMs) {
 
 function markSocketReady(socketId) {
   if (socketId !== socketGeneration) return;
-  if (openSocketGeneration !== socketId || pendingNotificationsSocketGeneration !== socketId) return;
+  if (openSocketGeneration !== socketId) return;
   readySocketGeneration = socketId;
   clearConnectReadyTimer(socketId);
   if (connectionState !== 'connected') {
@@ -1113,7 +1112,6 @@ async function startSocket() {
   }
   const socketId = ++socketGeneration;
   openSocketGeneration = 0;
-  pendingNotificationsSocketGeneration = 0;
   readySocketGeneration = 0;
   clearConnectReadyTimer();
   connectionState = 'connecting';
@@ -1229,13 +1227,7 @@ async function startSocket() {
       }
     } else if (connection === 'open') {
       openSocketGeneration = socketId;
-      if (readySocketGeneration === socketId) {
-        markSocketReady(socketId);
-      } else {
-        connectionState = 'connecting';
-        console.log('↻ WhatsApp socket open; waiting for send-ready state...');
-        startConnectReadyTimer(socketId);
-      }
+      markSocketReady(socketId);
       if (PAIR_ONLY) {
         console.log('✅ Pairing complete. Credentials saved.');
         // Give Baileys a moment to flush creds, then exit cleanly
@@ -1243,7 +1235,6 @@ async function startSocket() {
       }
     }
     if (receivedPendingNotifications && connection !== 'close') {
-      pendingNotificationsSocketGeneration = socketId;
       markSocketReady(socketId);
     }
   });
