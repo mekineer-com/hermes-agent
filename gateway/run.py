@@ -1944,6 +1944,17 @@ class GatewayRunner:
         from agent.soul_mode import resolve_agent_config
         return resolve_agent_config(user_config, session_key)
 
+    @staticmethod
+    def _soul_mode_config_is_active(cfg: dict[str, Any] | None) -> bool:
+        config = cfg if isinstance(cfg, dict) else {}
+        return (
+            bool(config.get("enabled"))
+            and config.get("role") == "soul"
+            and bool(str(config.get("soul_id") or "").strip())
+            and bool(str(config.get("user_id") or "").strip())
+            and bool(config.get("use_memu_turn", True))
+        )
+
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to an adapter failure after startup.
 
@@ -7844,6 +7855,18 @@ class GatewayRunner:
             raw_event_text = str(getattr(event, "text", "") or "").strip()
             if raw_event_text:
                 persist_user_message = raw_event_text
+
+        if bool(getattr(event, "internal", False)) and str(message_text or "").strip():
+            soul_mode_cfg = self._resolve_soul_mode_agent_config(
+                _load_gateway_config(),
+                session_key or "",
+            )
+            if self._soul_mode_config_is_active(soul_mode_cfg):
+                logger.info(
+                    "Dropping internal gateway event for soul-mode session %s",
+                    session_key,
+                )
+                return None
 
         # Bind this gateway run generation to the adapter's active-session
         # event so deferred post-delivery callbacks can be released by the
