@@ -27,7 +27,6 @@ class SoulModeConfig:
     use_memu_turn: bool = True
     timeout_seconds: float = 90.0
     whatsapp_reply_prefix: str = ""
-    timezone: str = ""
     _client: MemuHttpClient | None = field(default=None, repr=False)
     _session_started: bool = field(default=False, repr=False)
 
@@ -81,7 +80,6 @@ def resolve_agent_config(user_config: dict | None, session_key: str) -> dict[str
         "use_memu_turn": True,
         "timeout_seconds": 90.0,
         "whatsapp_reply_prefix": "",
-        "timezone": "",
     }
     cfg = user_config if isinstance(user_config, dict) else {}
     soul_mode = cfg.get("soul_mode")
@@ -123,7 +121,6 @@ def resolve_agent_config(user_config: dict | None, session_key: str) -> dict[str
     whatsapp_cfg = cfg.get("whatsapp")
     if isinstance(whatsapp_cfg, dict) and "reply_prefix" in whatsapp_cfg:
         out["whatsapp_reply_prefix"] = str(whatsapp_cfg.get("reply_prefix") or "")
-    out["timezone"] = str(cfg.get("timezone") or "").strip()
     return out
 
 
@@ -137,7 +134,6 @@ def configure(
     use_memu_turn: bool = True,
     timeout_seconds: float = 90.0,
     whatsapp_reply_prefix: str = "",
-    timezone: str = "",
 ) -> SoulModeConfig:
     role_norm = str(role or "standard").strip().lower()
     try:
@@ -153,7 +149,6 @@ def configure(
         use_memu_turn=bool(use_memu_turn),
         timeout_seconds=timeout,
         whatsapp_reply_prefix=str(whatsapp_reply_prefix or ""),
-        timezone=str(timezone or "").strip(),
     )
 
 

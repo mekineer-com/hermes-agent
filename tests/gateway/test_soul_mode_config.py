@@ -62,8 +62,8 @@ def test_resolve_soul_mode_agent_config_reads_main_agent():
     assert "whatsapp_history_source" not in out
     assert "whatsapp_web_source_db" not in out
     assert "whatsapp_history_limit" not in out
+    assert "timezone" not in out
     assert out["whatsapp_reply_prefix"] == "✦ *Echo*: "
-    assert out["timezone"] == "America/Lima"
 
 
 def test_resolve_soul_mode_agent_config_is_explicit_per_agent():
