@@ -198,8 +198,6 @@ class MemuHttpClient:
         memorize_chat: bool | None = None,
         external_message_id: str | None = None,
         allow_public_response: bool | None = None,
-        time_zone: str | None = None,
-        time_zone_offset_min: int | None = None,
     ) -> dict[str, Any]:
         speaker_name = str(user_name or "").strip() or str(history_user_name or "").strip()
         payload: dict[str, Any] = {
@@ -238,10 +236,6 @@ class MemuHttpClient:
             payload["allow_public_response"] = allow_public_response
         if external_message_id:
             payload["external_message_id"] = str(external_message_id)
-        if time_zone is not None:
-            payload["time_zone"] = str(time_zone)
-        if time_zone_offset_min is not None:
-            payload["time_zone_offset_min"] = int(time_zone_offset_min)
 
         return self._post("/integration/memu/turn", payload)
 
@@ -333,8 +327,6 @@ class MemuHttpClient:
         conversation: list[dict[str, Any]],
         conversation_id: str | None = None,
         force: bool = False,
-        time_zone: str | None = None,
-        time_zone_offset_min: int | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "user_id": str(user_id or "").strip(),
@@ -344,10 +336,6 @@ class MemuHttpClient:
         }
         if conversation_id is not None:
             payload["conversation_id"] = str(conversation_id)
-        if time_zone is not None:
-            payload["time_zone"] = str(time_zone)
-        if time_zone_offset_min is not None:
-            payload["time_zone_offset_min"] = int(time_zone_offset_min)
         return self._post("/integration/memu/memorize", payload)
 
     def memu_consolidate(

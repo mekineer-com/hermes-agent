@@ -83,7 +83,7 @@ def test_memu_turn_forwards_chat_name_and_chat_type(monkeypatch):
     assert payload["chat_type"] == "dm"
 
 
-def test_memu_turn_forwards_timezone(monkeypatch):
+def test_memu_turn_does_not_forward_timezone(monkeypatch):
     client = MemuHttpClient(base_url="http://127.0.0.1:8099")
     captured = {}
 
@@ -98,13 +98,11 @@ def test_memu_turn_forwards_timezone(monkeypatch):
         user_id="Marcos",
         soul_id="Siri",
         message="hi",
-        time_zone="America/Lima",
-        time_zone_offset_min=-300,
     )
 
     payload = captured["payload"]
-    assert payload["time_zone"] == "America/Lima"
-    assert payload["time_zone_offset_min"] == -300
+    assert "time_zone" not in payload
+    assert "time_zone_offset_min" not in payload
 
 
 def test_memu_turn_does_not_force_fill_user_name_from_history_user_name(monkeypatch):

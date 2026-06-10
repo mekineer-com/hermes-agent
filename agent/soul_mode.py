@@ -466,7 +466,6 @@ def handle_turn(
             memorize_chat=memorize_chat,
             external_message_id=ext_msg_id,
             allow_public_response=allow_public_response,
-            time_zone=config.timezone or None,
         )
 
         turn_ok = turn_out.get("ok", True)
