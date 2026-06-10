@@ -352,16 +352,3 @@ class MemuHttpClient:
         }
         return self._post("/integration/memu/consolidate", payload)
 
-    def memu_intentions(
-        self,
-        *,
-        user_id: str,
-        soul_id: str,
-        status: str = "active",
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "user_id": str(user_id or "").strip(),
-            "soul_id": str(soul_id or "").strip(),
-            "status": str(status or "active"),
-        }
-        return self._post("/integration/memu/intentions", payload)
