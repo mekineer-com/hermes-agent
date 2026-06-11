@@ -78,6 +78,8 @@ _wal_fallback_warned_lock = threading.Lock()
 def _coerce_message_timestamp(value: Any) -> Optional[float]:
     if value is None or isinstance(value, bool):
         return None
+    if isinstance(value, datetime):
+        return value.timestamp()
     if isinstance(value, (int, float)):
         timestamp = float(value)
     elif isinstance(value, str):

@@ -1,10 +1,11 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
 import time
+from datetime import datetime, timezone
 import pytest
 from pathlib import Path
 
-from hermes_state import SessionDB
+from hermes_state import SessionDB, _coerce_message_timestamp
 
 
 @pytest.fixture()
@@ -242,6 +243,15 @@ class TestMessageStorage:
 
         messages = db.get_messages("s1")
         assert messages[0]["timestamp"] == 1_780_000_000.25
+
+    def test_coerce_message_timestamp_handles_datetime(self):
+        dt_utc = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        result = _coerce_message_timestamp(dt_utc)
+        assert result == dt_utc.timestamp()
+
+        dt_naive = datetime(2026, 1, 15, 12, 0, 0)
+        result_naive = _coerce_message_timestamp(dt_naive)
+        assert result_naive == dt_naive.timestamp()
 
     def test_messages_can_sort_by_explicit_send_time(self, db):
         db.create_session(session_id="s1", source="cli")
