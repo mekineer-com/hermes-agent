@@ -1020,7 +1020,6 @@ class TestGatewayWalHooking:
 
         adapter.handle_message.assert_awaited_once()
         assert event.raw_message["wal_seq"] == 3
-        assert event.raw_message["bridge_seq"] == 17
         wal.mark_processed.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1104,7 +1103,6 @@ class TestGatewayWalCrashWindows:
         await adapter2._replay_gateway_wal()
 
         adapter2.handle_message.assert_awaited_once()
-        assert replay_event.raw_message["bridge_seq"] == 501
         assert replay_event.raw_message["wal_seq"] == 1
 
         await adapter2.on_processing_complete(replay_event, ProcessingOutcome.SUCCESS)
@@ -1164,7 +1162,6 @@ class TestGatewayWalCrashWindows:
 
         await adapter2._replay_gateway_wal()
         adapter2.handle_message.assert_awaited_once()
-        assert replay_event.raw_message["bridge_seq"] == 777
         assert replay_event.raw_message["wal_seq"] == 1
 
         await adapter2.on_processing_complete(replay_event, ProcessingOutcome.SUCCESS)

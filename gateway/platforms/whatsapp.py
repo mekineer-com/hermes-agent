@@ -698,7 +698,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             if not self._is_group_allowed(chat_id):
                 return False
         else:
-            sender_id = str(data.get("senderId") or data.get("from") or "")
+            sender_id = str(data.get("senderId") or "")
             if not self._is_dm_allowed(sender_id):
                 return False
             # DMs that pass the policy gate are always processed
@@ -1648,7 +1648,6 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             if event:
                                 event.raw_message = dict(event.raw_message)
                                 event.raw_message["wal_seq"] = wal_row["wal_seq"]
-                                event.raw_message["bridge_seq"] = wal_row["bridge_seq"]
                                 await self._dispatch_built_message_event(event)
                             else:
                                 wal.mark_processed(wal_row["wal_seq"])
@@ -1916,7 +1915,6 @@ class WhatsAppAdapter(BasePlatformAdapter):
             if event:
                 event.raw_message = dict(event.raw_message)
                 event.raw_message["wal_seq"] = wal_seq
-                event.raw_message["bridge_seq"] = bridge_seq
                 await self._dispatch_built_message_event(event)
             else:
                 wal.mark_processed(wal_seq)

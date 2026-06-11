@@ -10306,21 +10306,14 @@ class GatewayRunner:
         )
 
     @staticmethod
-    def _whatsapp_delivery_mode(raw: dict[str, Any]) -> str:
-        delivery_mode = str(raw.get("deliveryMode") or "").strip().lower()
-        if delivery_mode in {"live", "persist_only", "revoke"}:
-            return delivery_mode
-        if str(raw.get("eventType") or "").strip().lower() == "revoke":
-            return "revoke"
-        return "persist_only"
-
-    @staticmethod
     def _is_whatsapp_revoke_event(raw: dict[str, Any]) -> bool:
-        return GatewayRunner._whatsapp_delivery_mode(raw) == "revoke"
+        from gateway.platforms.whatsapp import WhatsAppAdapter
+        return WhatsAppAdapter._bridge_delivery_mode(raw) == "revoke"
 
     @staticmethod
     def _is_whatsapp_persist_only_event(raw: dict[str, Any]) -> bool:
-        return GatewayRunner._whatsapp_delivery_mode(raw) != "live"
+        from gateway.platforms.whatsapp import WhatsAppAdapter
+        return WhatsAppAdapter._bridge_delivery_mode(raw) != "live"
 
     def _is_duplicate_whatsapp_source_message(self, raw: dict[str, Any]) -> bool:
         session_db = getattr(self, "_session_db", None)
