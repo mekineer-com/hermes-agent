@@ -188,10 +188,7 @@ class MemuHttpClient:
         history_user_name: str | None = None,
         user_name: str | None = None,
         soul_card: str | None = None,
-        run_apimw: bool = True,
-        apply_turn_maintenance: bool = True,
         debug: bool = False,
-        temperature: float | None = None,
         channel_mode: str | None = None,
         chat_name: str | None = None,
         chat_type: str | None = None,
@@ -210,16 +207,12 @@ class MemuHttpClient:
                 user_name=str(history_user_name or "").strip() or str(user_id or ""),
                 soul_name=str(soul_id or ""),
             ),
-            "run_apimw": bool(run_apimw),
-            "apply_turn_maintenance": bool(apply_turn_maintenance),
             "debug": bool(debug),
         }
         if speaker_name:
             payload["user_name"] = speaker_name
         if soul_card:
             payload["soul_card"] = str(soul_card)
-        if temperature is not None:
-            payload["temperature"] = float(temperature)
         if channel_mode:
             payload["channel_mode"] = str(channel_mode)
         # chat_name / chat_type identify the originating chat (e.g. "Alice" / "dm").
@@ -281,74 +274,4 @@ class MemuHttpClient:
             payload["error"] = str(error)
         return self._post("/integration/whatsapp/outbounds/mark", payload)
 
-    def memu_retrieve(
-        self,
-        *,
-        user_id: str,
-        soul_id: str,
-        query: str | None = None,
-        queries: list[dict[str, Any]] | None = None,
-        conversation_id: str | None = None,
-        method: str | None = None,
-        top_k: int | None = None,
-        as_of: str | None = None,
-        history: list[dict[str, Any]] | None = None,
-        soul_card: str | None = None,
-        debug: bool = False,
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "user_id": str(user_id or "").strip(),
-            "soul_id": str(soul_id or "").strip(),
-            "debug": bool(debug),
-        }
-        if query is not None:
-            payload["query"] = str(query)
-        if queries is not None:
-            payload["queries"] = list(queries)
-        if conversation_id is not None:
-            payload["conversation_id"] = str(conversation_id)
-        if method is not None:
-            payload["method"] = str(method)
-        if top_k is not None:
-            payload["top_k"] = int(top_k)
-        if as_of is not None:
-            payload["as_of"] = str(as_of)
-        if history is not None:
-            payload["history"] = normalize_history_for_memu(history)
-        if soul_card:
-            payload["soul_card"] = str(soul_card)
-        return self._post("/integration/memu/retrieve", payload)
-
-    def memu_memorize(
-        self,
-        *,
-        user_id: str,
-        soul_id: str,
-        conversation: list[dict[str, Any]],
-        conversation_id: str | None = None,
-        force: bool = False,
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "user_id": str(user_id or "").strip(),
-            "soul_id": str(soul_id or "").strip(),
-            "conversation": normalize_history_for_memu(conversation),
-            "force": bool(force),
-        }
-        if conversation_id is not None:
-            payload["conversation_id"] = str(conversation_id)
-        return self._post("/integration/memu/memorize", payload)
-
-    def memu_consolidate(
-        self,
-        *,
-        conversation_id: str,
-        user_id: str,
-        soul_id: str,
-    ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "conversation_id": str(conversation_id or "").strip(),
-            "user_id": str(user_id or "").strip(),
-            "soul_id": str(soul_id or "").strip(),
-        }
-        return self._post("/integration/memu/consolidate", payload)
 

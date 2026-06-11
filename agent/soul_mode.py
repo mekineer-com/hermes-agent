@@ -26,7 +26,6 @@ class SoulModeConfig:
     memu_base_url: str = "http://127.0.0.1:8099"
     use_memu_turn: bool = True
     timeout_seconds: float = 90.0
-    whatsapp_reply_prefix: str = ""
     _client: MemuHttpClient | None = field(default=None, repr=False)
     _session_started: bool = field(default=False, repr=False)
 
@@ -79,7 +78,6 @@ def resolve_agent_config(user_config: dict | None, session_key: str) -> dict[str
         "memu_base_url": "http://127.0.0.1:8099",
         "use_memu_turn": True,
         "timeout_seconds": 90.0,
-        "whatsapp_reply_prefix": "",
     }
     cfg = user_config if isinstance(user_config, dict) else {}
     soul_mode = cfg.get("soul_mode")
@@ -118,9 +116,6 @@ def resolve_agent_config(user_config: dict | None, session_key: str) -> dict[str
         out["timeout_seconds"] = float(agent_cfg.get("timeout_seconds", 90.0))
     except (TypeError, ValueError):
         out["timeout_seconds"] = 90.0
-    whatsapp_cfg = cfg.get("whatsapp")
-    if isinstance(whatsapp_cfg, dict) and "reply_prefix" in whatsapp_cfg:
-        out["whatsapp_reply_prefix"] = str(whatsapp_cfg.get("reply_prefix") or "")
     return out
 
 
@@ -133,7 +128,6 @@ def configure(
     memu_base_url: str = "http://127.0.0.1:8099",
     use_memu_turn: bool = True,
     timeout_seconds: float = 90.0,
-    whatsapp_reply_prefix: str = "",
 ) -> SoulModeConfig:
     role_norm = str(role or "standard").strip().lower()
     try:
@@ -148,7 +142,6 @@ def configure(
         memu_base_url=str(memu_base_url or "http://127.0.0.1:8099").strip(),
         use_memu_turn=bool(use_memu_turn),
         timeout_seconds=timeout,
-        whatsapp_reply_prefix=str(whatsapp_reply_prefix or ""),
     )
 
 
@@ -452,8 +445,6 @@ def handle_turn(
             history=history,
             history_user_name=sender_display_name,
             user_name=sender_display_name,
-            run_apimw=True,
-            apply_turn_maintenance=True,
             debug=False,
             channel_mode=channel_mode,
             chat_name=chat_name,
