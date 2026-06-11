@@ -65,7 +65,6 @@ export function upsertEventMode(type) {
       forwardable: true,
       persistOnly: false,
       deliveryMode: 'live',
-      sourceSurface: 'messages.upsert',
     };
   }
   if (type === 'append') {
@@ -73,7 +72,6 @@ export function upsertEventMode(type) {
       forwardable: true,
       persistOnly: true,
       deliveryMode: 'persist_only',
-      sourceSurface: 'messages.upsert:append',
     };
   }
   // chats.update can carry message rows, but Baileys does not guarantee it is
@@ -82,7 +80,6 @@ export function upsertEventMode(type) {
     forwardable: false,
     persistOnly: true,
     deliveryMode: 'persist_only',
-    sourceSurface: `messages.upsert:${String(type || 'unknown')}`,
   };
 }
 
@@ -108,7 +105,6 @@ export function classifyUpsertEvent({
       forwardable: true,
       persistOnly: true,
       deliveryMode: 'persist_only',
-      sourceSurface: startupReplay ? 'messages.upsert:startup-replay' : mode.sourceSurface,
     };
   }
   return mode;
