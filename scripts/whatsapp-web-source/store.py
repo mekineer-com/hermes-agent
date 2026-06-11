@@ -116,16 +116,6 @@ def init_schema(con: sqlite3.Connection) -> None:
         create index if not exists whatsapp_contacts_local
           on whatsapp_contacts(contact_local_id);
 
-        create table if not exists whatsapp_routing_status (
-          inbound_msg_key text primary key,
-          chat_id text not null,
-          chat_local_id text not null,
-          status text not null,
-          reply_msg_key text,
-          reason text,
-          updated_at integer not null
-        );
-
         create table if not exists whatsapp_metadata (
           key text primary key,
           value text not null,
