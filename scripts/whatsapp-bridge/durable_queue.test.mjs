@@ -274,36 +274,6 @@ test('durable queue merges history rows into later live rows', () => {
   }
 });
 
-test('durable queue migrates legacy prefixed seen keys', () => {
-  const queueDir = mkQueueDir();
-  try {
-    writeFileSync(
-      path.join(queueDir, 'queue.seen'),
-      'persist:15133278228@s.whatsapp.net:m1\nlive:15133278228@s.whatsapp.net:m2\n',
-      'utf8',
-    );
-
-    const queue = new DurableQueue({ queueDir, compactionEveryAcks: 1000 });
-    const seenLines = readLines(path.join(queueDir, 'queue.seen'));
-
-    assert.deepEqual(seenLines, [
-      'persist_only\t15133278228@s.whatsapp.net:m1',
-      'live\t15133278228@s.whatsapp.net:m2',
-    ]);
-    assert.equal(
-      queue.enqueue({
-        deliveryMode: 'persist_only',
-        messageId: 'm1',
-        chatId: '15133278228@s.whatsapp.net',
-        body: 'history replay',
-        timestamp: 1,
-      }),
-      null,
-    );
-  } finally {
-    rmSync(queueDir, { recursive: true, force: true });
-  }
-});
 
 test('durable queue lets a live row upgrade a previously seen history row after restart', () => {
   const queueDir = mkQueueDir();

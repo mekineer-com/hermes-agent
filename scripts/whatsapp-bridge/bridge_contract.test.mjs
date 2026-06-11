@@ -10,10 +10,6 @@ const bridgeSource = readFileSync(join(here, 'bridge.js'), 'utf8');
 test('bridge preserves persist-only WhatsApp event field contract', () => {
   assert.match(bridgeSource, /event\.eventType\s*=\s*'history_message'/);
   assert.match(bridgeSource, /deliveryMode:\s*'persist_only'/);
-  assert.match(
-    bridgeSource,
-    /event\.sourceSurface\s*=\s*delivery\.sourceSurface/,
-  );
 });
 
 test('bridge stamps explicit live and revoke delivery modes', () => {

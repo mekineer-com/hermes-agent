@@ -25,7 +25,7 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync, unlinkSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync, unlinkSync } from 'fs';
 import { randomBytes } from 'crypto';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
@@ -67,53 +67,8 @@ const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.herme
 const BRIDGE_STATE_DIR = path.resolve(SESSION_DIR, '..');
 const KNOWN_CHATS_PATH = path.join(BRIDGE_STATE_DIR, 'known_chats.json');
 const KNOWN_CONTACTS_PATH = path.join(BRIDGE_STATE_DIR, 'known_contacts.json');
-const DISCOVERY_PROBE_LOG_PATH = path.join(BRIDGE_STATE_DIR, 'discovery_probe.log');
-const SYNC_EVENT_LOG_PATH = path.join(BRIDGE_STATE_DIR, 'sync_events.jsonl');
 const RECENTLY_SENT_IDS_PATH = path.join(BRIDGE_STATE_DIR, 'recently_sent_ids.json');
 
-function logSyncEvent(eventName, payload) {
-  try {
-    const entry = JSON.stringify({
-      ts: new Date().toISOString(),
-      event: eventName,
-      ...payload,
-    });
-    appendFileSync(SYNC_EVENT_LOG_PATH, entry + '\n', 'utf8');
-  } catch {}
-}
-
-function logUpsertObservation({
-  type = '',
-  msg = {},
-  chatId = '',
-  senderId = '',
-  deliveryMode = '',
-  sourceSurface = '',
-  action = '',
-  reason = '',
-  body = '',
-  messageType = '',
-  queued = null,
-} = {}) {
-  const key = msg?.key || {};
-  logSyncEvent('messages.upsert', {
-    type,
-    deliveryMode,
-    sourceSurface,
-    action,
-    reason,
-    queued,
-    messageId: key.id || '',
-    chatId,
-    senderId,
-    timestamp: msg?.messageTimestamp,
-    rawMessageTimestamp: msg?.messageTimestamp,
-    fromMe: typeof key.fromMe === 'boolean' ? key.fromMe : null,
-    body,
-    messageType,
-    hasPayload: !!msg?.message,
-  });
-}
 const IMAGE_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'image_cache');
 const DOCUMENT_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'document_cache');
 const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
@@ -404,15 +359,6 @@ function _atomicWriteJson(filePath, payload) {
   renameSync(tmpPath, filePath);
 }
 
-function appendDiscoveryProbe(payload) {
-  try {
-    appendFileSync(
-      DISCOVERY_PROBE_LOG_PATH,
-      `${JSON.stringify({ ts: new Date().toISOString(), ...payload })}\n`,
-      'utf8',
-    );
-  } catch {}
-}
 
 function _readJson(filePath) {
   if (!existsSync(filePath)) return null;
@@ -983,7 +929,6 @@ async function enqueueHistoryMessage(rawMsg, { chatFallback = '', surface = 'syn
       chatId,
       isGroup,
       timestamp,
-      sourceSurface: surface,
     });
   }
 
@@ -1064,7 +1009,6 @@ async function enqueueHistoryMessage(rawMsg, { chatFallback = '', surface = 'syn
   const event = {
     eventType: 'history_message',
     deliveryMode: 'persist_only',
-    sourceSurface: surface,
     messageId,
     chatId,
     senderId,
@@ -1082,7 +1026,6 @@ async function enqueueHistoryMessage(rawMsg, { chatFallback = '', surface = 'syn
     hasQuotedMessage: false,
     botIds: [],
     timestamp,
-    fromMe: !!msg.key.fromMe,
     speakerRoleHint,
     speakerNameHint,
   };
@@ -1159,32 +1102,21 @@ async function startSocket() {
     rememberPhoneNumberShares(payload);
   });
   sock.ev.on('chats.upsert', (chats) => {
-    logSyncEvent('chats.upsert', { count: Array.isArray(chats) ? chats.length : 0, chats });
     updateUnreadCountSnapshot(chats);
     rememberKnownChatsFromSnapshot(chats);
   });
   sock.ev.on('chats.update', async (chats) => {
-    logSyncEvent('chats.update', { count: Array.isArray(chats) ? chats.length : 0, chats });
     updateUnreadCountSnapshot(chats);
     rememberKnownChatsFromSnapshot(chats);
     await enqueueHistoryMessagesFromChats(chats, 'chats.update');
   });
   sock.ev.on('contacts.upsert', (contacts) => {
-    logSyncEvent('contacts.upsert', { count: Array.isArray(contacts) ? contacts.length : 0, contacts });
     rememberKnownContactsFromSnapshot(contacts);
   });
   sock.ev.on('contacts.update', (contacts) => {
-    logSyncEvent('contacts.update', { count: Array.isArray(contacts) ? contacts.length : 0, contacts });
     rememberKnownContactsFromSnapshot(contacts);
   });
-  sock.ev.on('messaging-history.set', async ({ chats, contacts, messages, isLatest, progress, syncType }) => {
-    logSyncEvent('messaging-history.set', {
-      chatCount: Array.isArray(chats) ? chats.length : 0,
-      contactCount: Array.isArray(contacts) ? contacts.length : 0,
-      messageCount: Array.isArray(messages) ? messages.length : 0,
-      isLatest, progress, syncType,
-      chats, contacts,
-    });
+  sock.ev.on('messaging-history.set', async ({ chats, contacts, messages }) => {
     rememberKnownChatsFromSnapshot(chats);
     rememberKnownContactsFromSnapshot(contacts);
     await enqueueHistoryMessages({ chats, messages }, 'messaging-history.set');
@@ -1261,30 +1193,10 @@ async function startSocket() {
             messageId: msg.key.id || '',
           }));
         }
-        logUpsertObservation({
-          type,
-          msg,
-          chatId: rawChatId,
-          deliveryMode: mode.deliveryMode,
-          sourceSurface: mode.sourceSurface,
-          action: 'dropped',
-          reason: 'status_update',
-          queued: false,
-        });
         continue;
       }
       let chatId = normalizeWhatsAppId(rawChatId);
       if (!chatId) {
-        logUpsertObservation({
-          type,
-          msg,
-          chatId: rawChatId,
-          deliveryMode: mode.deliveryMode,
-          sourceSurface: mode.sourceSurface,
-          action: 'dropped',
-          reason: 'missing_chat_id',
-          queued: false,
-        });
         continue;
       }
       const selfSenderId = normalizeWhatsAppId(sock.user?.id || sock.user?.lid || '');
@@ -1315,22 +1227,6 @@ async function startSocket() {
       const senderId = ids.senderId;
       const isGroup = ids.isGroup;
       const senderDisplayName = extractPossibleSenderName(msg);
-      appendDiscoveryProbe({
-        event: 'discovery_probe',
-        type,
-        rawChatId,
-        normalizedChatId: chatId,
-        rawParticipant: String(msg.key.participant || ''),
-        normalizedSenderId: senderId,
-        fromMe: !!msg.key.fromMe,
-        pushName: String(msg.pushName || ''),
-        notifyName: String(msg.notifyName || ''),
-        participantName: String(msg.participantName || ''),
-        extractedSenderDisplayName: senderDisplayName,
-        hasMessagePayload: !!msg.message,
-      });
-      // Keep discovery populated even when WhatsApp event decryption fails and
-      // msg.message is absent (observed as Bad MAC / missing session errors).
       if (!msg.key.fromMe) {
         rememberPushName(senderId, senderDisplayName);
       }
@@ -1338,17 +1234,6 @@ async function startSocket() {
         rememberKnownChat(chatId, {
           isGroup,
           lastSenderName: (!isGroup && !msg.key.fromMe) ? senderDisplayName : '',
-        });
-        logUpsertObservation({
-          type,
-          msg,
-          chatId,
-          senderId,
-          deliveryMode: mode.deliveryMode,
-          sourceSurface: mode.sourceSurface,
-          action: 'dropped',
-          reason: 'missing_message_payload',
-          queued: false,
         });
         continue;
       }
@@ -1363,17 +1248,6 @@ async function startSocket() {
       }
       const senderNumber = senderId.replace(/@.*/, '');
       if (!mode.forwardable) {
-        logUpsertObservation({
-          type,
-          msg,
-          chatId,
-          senderId,
-          deliveryMode: mode.deliveryMode,
-          sourceSurface: mode.sourceSurface,
-          action: 'dropped',
-          reason: 'non_forwardable_upsert_type',
-          queued: false,
-        });
         continue;
       }
 
@@ -1390,17 +1264,6 @@ async function startSocket() {
             chatId,
             senderId,
           }));
-          logUpsertObservation({
-            type,
-            msg,
-            chatId,
-            senderId,
-            deliveryMode: mode.deliveryMode,
-            sourceSurface: mode.sourceSurface,
-            action: 'dropped',
-            reason: 'self_chat_mode_rejects_non_self',
-            queued: false,
-          });
           continue;
         }
         if (!matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
@@ -1410,17 +1273,6 @@ async function startSocket() {
             chatId,
             senderId,
           }));
-          logUpsertObservation({
-            type,
-            msg,
-            chatId,
-            senderId,
-            deliveryMode: mode.deliveryMode,
-            sourceSurface: mode.sourceSurface,
-            action: 'dropped',
-            reason: 'allowlist_mismatch',
-            queued: false,
-          });
           continue;
         }
       }
@@ -1524,19 +1376,6 @@ async function startSocket() {
             messageId: msg.key.id,
           }));
         }
-        logUpsertObservation({
-          type,
-          msg,
-          chatId,
-          senderId,
-          deliveryMode: 'persist_only',
-          sourceSurface: mode.sourceSurface,
-          action: 'dropped',
-          reason: 'recently_sent_agent_echo',
-          body,
-          messageType,
-          queued: false,
-        });
         continue;
       }
       const isAgentEcho = msg.key.fromMe && !!decoratedAssistant;
@@ -1553,19 +1392,6 @@ async function startSocket() {
           if (WHATSAPP_DEBUG) {
             console.log(JSON.stringify({ event: 'ignored', reason: 'self_chat_mode_rejects_non_self_from_me', chatId, messageId: msg.key.id }));
           }
-          logUpsertObservation({
-            type,
-            msg,
-            chatId,
-            senderId,
-            deliveryMode: mode.deliveryMode,
-            sourceSurface: mode.sourceSurface,
-            action: 'dropped',
-            reason: 'self_chat_mode_rejects_non_self_from_me',
-            body,
-            messageType,
-            queued: false,
-          });
           continue;
         }
       }
@@ -1575,18 +1401,6 @@ async function startSocket() {
         if (WHATSAPP_DEBUG) {
           console.log(JSON.stringify({ event: 'ignored', reason: 'empty', chatId, messageKeys: Object.keys(msg.message || {}) }));
         }
-        logUpsertObservation({
-          type,
-          msg,
-          chatId,
-          senderId,
-          deliveryMode: mode.deliveryMode,
-          sourceSurface: mode.sourceSurface,
-          action: 'dropped',
-          reason: 'empty',
-          messageType,
-          queued: false,
-        });
         continue;
       }
 
@@ -1610,7 +1424,6 @@ async function startSocket() {
 
       const event = {
         deliveryMode: mode.deliveryMode,
-        sourceSurface: mode.sourceSurface,
         messageId: msg.key.id,
         chatId,
         senderId,
@@ -1628,7 +1441,6 @@ async function startSocket() {
         hasQuotedMessage,
         botIds,
         timestamp: msg.messageTimestamp,
-        fromMe: !!msg.key.fromMe,
         speakerRoleHint,
         speakerNameHint,
       };
@@ -1640,25 +1452,11 @@ async function startSocket() {
         startupReplayGraceSeconds: STARTUP_REPLAY_GRACE_SECONDS,
       });
       event.deliveryMode = delivery.deliveryMode;
-      event.sourceSurface = delivery.sourceSurface;
       if (delivery.persistOnly) {
         event.eventType = 'history_message';
       }
 
       const queued = durableQueue.enqueue(event);
-      logUpsertObservation({
-        type,
-        msg,
-        chatId: event.chatId,
-        senderId: event.senderId,
-        deliveryMode: event.deliveryMode,
-        sourceSurface: event.sourceSurface,
-        action: queued ? 'queued' : 'dropped',
-        reason: queued ? 'queued' : 'duplicate_event_uid',
-        body: event.body,
-        messageType,
-        queued,
-      });
       if (!queued && WHATSAPP_DEBUG) {
         console.log(JSON.stringify({
           event: 'ignored',

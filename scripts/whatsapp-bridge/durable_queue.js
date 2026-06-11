@@ -81,7 +81,6 @@ const LIVE_OWNED_FIELDS = new Set([
   'quotedRemoteJid',
   'hasQuotedMessage',
   'botIds',
-  'fromMe',
   'speakerRoleHint',
   'speakerNameHint',
 ]);
@@ -102,7 +101,6 @@ function mergeQueuedEvent(target, incoming) {
   }
   if (liveUpgrade) {
     target.deliveryMode = 'live';
-    target.sourceSurface = incoming.sourceSurface || target.sourceSurface;
     delete target.eventType;
   }
   return target;
@@ -113,18 +111,9 @@ function normalizeSeenEntry(text) {
   if (tab >= 0) {
     const mode = text.slice(0, tab).trim() || 'live';
     const uid = text.slice(tab + 1).trim();
-    return { uid, mode: mode === 'persist' ? 'persist_only' : mode, migrated: mode === 'persist' };
+    return { uid, mode };
   }
-  for (const [prefix, mode] of [
-    ['persist:', 'persist_only'],
-    ['live:', 'live'],
-  ]) {
-    if (text.startsWith(prefix)) {
-      const uid = text.slice(prefix.length).trim();
-      return { uid, mode, migrated: true };
-    }
-  }
-  return { uid: text, mode: 'live', migrated: false };
+  return { uid: text, mode: 'live' };
 }
 
 function seenModeFor(event) {
@@ -161,20 +150,16 @@ export class DurableQueue {
   _load() {
     mkdirSync(this.queueDir, { recursive: true });
     this.ackedUpToSeq = this._readAckedOffset();
-    const seenFileExists = existsSync(this.seenPath);
-    let seenDirty = !seenFileExists || this._loadSeen();
+    this._loadSeen();
 
     if (!existsSync(this.queuePath)) {
-      if (seenDirty) {
-        this._persistSeen();
-      }
       this.nextSeq = this.ackedUpToSeq + 1;
       return;
     }
 
     const raw = readFileSync(this.queuePath, 'utf8');
-    const lines = raw.split('\n');
-    for (const line of lines) {
+    let seenDirty = false;
+    for (const line of raw.split('\n')) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       let row;
@@ -220,18 +205,14 @@ export class DurableQueue {
   }
 
   _loadSeen() {
-    if (!existsSync(this.seenPath)) return false;
-    let dirty = false;
+    if (!existsSync(this.seenPath)) return;
     const raw = readFileSync(this.seenPath, 'utf8');
-    const lines = raw.split('\n');
-    for (const line of lines) {
+    for (const line of raw.split('\n')) {
       const text = String(line || '').trim();
       if (!text) continue;
       const entry = normalizeSeenEntry(text);
       if (entry.uid) this.seenModeByUid.set(entry.uid, entry.mode);
-      if (entry.migrated) dirty = true;
     }
-    return dirty;
   }
 
   _appendSeenUid(eventUid, mode) {
