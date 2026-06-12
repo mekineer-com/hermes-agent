@@ -139,7 +139,7 @@ async function main() {
     status.write({
       state: 'ready',
       wwebjs_ready: true,
-      db_writeable: true,
+      db_writeable: !store.exitedError,
       error: null,
       last_event_at: Math.floor(Date.now() / 1000),
       last_msg_key: row.msg_key,
@@ -188,7 +188,13 @@ async function main() {
 
   client.on('auth_failure', (message) => {
     console.error('WhatsApp Web source auth failure:', message);
-    status.write({ state: 'auth_failure', wwebjs_ready: false, db_writeable: true, error: String(message) }, { immediate: true });
+    status.write({ state: 'auth_failure', wwebjs_ready: false, db_writeable: !store.exitedError, error: String(message) }, { immediate: true });
+    contacts.stop();
+    memoryDiagnostics.stop();
+    client.destroy().catch(() => {});
+    store.close();
+    status.flush();
+    process.exit(1);
   });
 
   client.on('ready', async () => {
@@ -344,11 +350,16 @@ async function main() {
   });
 
   client.on('disconnected', (reason) => {
-    console.warn('WhatsApp Web source disconnected:', reason);
+    console.error('WhatsApp Web source disconnected:', reason);
     wwebjsReady = false;
+    status.write({ state: 'disconnected', wwebjs_ready: false, db_writeable: !store.exitedError, error: String(reason) }, { immediate: true });
     contacts.stop();
     memoryDiagnostics.stop();
-    status.write({ state: 'disconnected', wwebjs_ready: false, db_writeable: !store.exitedError, error: String(reason) }, { immediate: true });
+    // The library calls destroy() itself before emitting this event, so no recovery is possible.
+    // Exit so the process death is visible and the gateway can restart.
+    store.close();
+    status.flush();
+    process.exit(1);
   });
 
   process.on('SIGINT', async () => {

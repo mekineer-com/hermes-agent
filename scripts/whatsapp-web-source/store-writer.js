@@ -52,15 +52,25 @@ class StoreWriter {
     else pending.resolve(response);
   }
 
-  command(op, payload = {}) {
+  command(op, payload = {}, timeoutMs = 60_000) {
     if (this.exitedError) return Promise.reject(this.exitedError);
     if (this.closing) return Promise.reject(new Error('store writer is closing'));
     const requestId = this.nextId++;
     const command = { request_id: requestId, op, ...payload };
     return new Promise((resolve, reject) => {
-      this.pending.set(requestId, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(requestId);
+        const error = new Error(`store command timed out after ${timeoutMs}ms: op=${op}`);
+        reject(error);
+        this.proc.kill('SIGKILL');
+      }, timeoutMs);
+      this.pending.set(requestId, {
+        resolve: (v) => { clearTimeout(timer); resolve(v); },
+        reject: (e) => { clearTimeout(timer); reject(e); },
+      });
       this.proc.stdin.write(`${JSON.stringify(command)}\n`, 'utf8', (error) => {
         if (!error) return;
+        clearTimeout(timer);
         this.pending.delete(requestId);
         reject(error);
       });
