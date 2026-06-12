@@ -2837,6 +2837,7 @@ class GatewayRunner:
         notified: set[tuple[str, str, Optional[str]]] = set()
         for session_key in active:
             source = None
+            parsed_chat_type = "dm"
             try:
                 if getattr(self, "session_store", None) is not None:
                     self.session_store._ensure_loaded()
@@ -2863,6 +2864,7 @@ class GatewayRunner:
                 if not _parsed:
                     continue
                 platform_str = _parsed["platform"]
+                parsed_chat_type = _parsed.get("chat_type", "dm")
                 chat_id = _parsed["chat_id"]
                 thread_id = _parsed.get("thread_id")
 
@@ -2887,18 +2889,16 @@ class GatewayRunner:
                     )
                     continue
 
-                # Include thread_id if present so the message lands in the
-                # correct forum topic / thread.
-                metadata = {"thread_id": thread_id} if thread_id else None
-
-                result = await adapter.send(chat_id, msg, metadata=metadata)
-                if result is not None and getattr(result, "success", True) is False:
-                    logger.debug(
-                        "Failed to send shutdown notification to %s:%s: %s",
-                        platform_str,
-                        chat_id,
-                        getattr(result, "error", "send returned success=False"),
+                if source is None:
+                    source = SessionSource(
+                        platform=platform,
+                        chat_id=chat_id,
+                        chat_type=parsed_chat_type,
+                        user_id=None,
+                        thread_id=thread_id,
                     )
+
+                if not await self._deliver_platform_notice(source, msg):
                     continue
 
                 notified.add(dedup_key)
@@ -6016,11 +6016,11 @@ class GatewayRunner:
 
         return "pair"
 
-    async def _deliver_platform_notice(self, source, content: str) -> None:
+    async def _deliver_platform_notice(self, source, content: str) -> bool:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
         adapter = self.adapters.get(source.platform)
         if not adapter:
-            return
+            return False
 
         config = getattr(self, "config", None)
         notice_delivery = "public"
@@ -6028,7 +6028,8 @@ class GatewayRunner:
             notice_delivery = config.get_notice_delivery(source.platform)
 
         metadata = self._thread_metadata_for_source(source)
-        if notice_delivery == "private" and getattr(source, "user_id", None):
+        whatsapp_private_only = source.platform == Platform.WHATSAPP
+        if whatsapp_private_only or (notice_delivery == "private" and getattr(source, "user_id", None)):
             try:
                 result = await adapter.send_private_notice(
                     source.chat_id,
@@ -6037,15 +6038,29 @@ class GatewayRunner:
                     metadata=metadata,
                 )
                 if getattr(result, "success", False):
-                    return
+                    return True
             except Exception:
-                logger.debug(
-                    "[%s] send_private_notice failed, falling back to public",
-                    getattr(source, "platform", "?"),
-                    exc_info=True,
+                if whatsapp_private_only:
+                    logger.debug(
+                        "[%s] send_private_notice failed",
+                        getattr(source, "platform", "?"),
+                        exc_info=True,
+                    )
+                else:
+                    logger.debug(
+                        "[%s] send_private_notice failed, falling back to public",
+                        getattr(source, "platform", "?"),
+                        exc_info=True,
+                    )
+            if whatsapp_private_only:
+                logger.warning(
+                    "[whatsapp] private operational notice failed; suppressing public fallback for chat %s",
+                    source.chat_id,
                 )
+                return False
 
-        await adapter.send(source.chat_id, content, metadata=metadata)
+        result = await adapter.send(source.chat_id, content, metadata=metadata)
+        return result is None or getattr(result, "success", True)
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """

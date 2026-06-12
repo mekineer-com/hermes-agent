@@ -118,6 +118,12 @@ def make_restart_runner(
     runner._notify_active_sessions_of_shutdown = (
         GatewayRunner._notify_active_sessions_of_shutdown.__get__(runner, GatewayRunner)
     )
+    runner._deliver_platform_notice = GatewayRunner._deliver_platform_notice.__get__(
+        runner, GatewayRunner
+    )
+    runner._thread_metadata_for_source = GatewayRunner._thread_metadata_for_source.__get__(
+        runner, GatewayRunner
+    )
     runner._cache_session_source = GatewayRunner._cache_session_source.__get__(
         runner, GatewayRunner
     )

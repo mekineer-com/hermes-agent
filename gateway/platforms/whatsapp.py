@@ -1420,6 +1420,21 @@ class WhatsAppAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
+    async def send_private_notice(
+        self,
+        chat_id: str,
+        user_id: Optional[str],
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        from agent.whatsapp_bridge_client import read_self_dm_jid
+
+        self_dm = read_self_dm_jid()
+        if not self_dm:
+            return SendResult(success=False, error="self-DM JID unavailable")
+        return await self.send(self_dm, content, reply_to=reply_to, metadata=metadata)
+
     async def edit_message(
         self,
         chat_id: str,

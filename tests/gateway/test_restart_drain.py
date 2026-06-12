@@ -8,9 +8,10 @@ import pytest
 
 import gateway.run as gateway_run
 from agent.i18n import t
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
-from gateway.session import SessionEntry, build_session_key
+from gateway.session import SessionEntry, SessionSource, build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
 
@@ -318,3 +319,44 @@ async def test_shutdown_notification_uses_persisted_origin_for_colon_ids():
 
     assert adapter.send.await_count == 1
     assert adapter.send.await_args.args[0] == "!room123:example.org"
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_shutdown_notification_routes_to_private_notice_not_group():
+    runner, _telegram_adapter = make_restart_runner()
+    adapter = MagicMock()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="public"))
+    adapter.send_private_notice = AsyncMock(return_value=SendResult(success=True, message_id="private"))
+
+    source = SessionSource(
+        platform=Platform.WHATSAPP,
+        chat_id="familia@g.us",
+        chat_type="group",
+        user_id="marcos",
+        thread_id=None,
+    )
+    session_key = build_session_key(source)
+    runner.config.platforms[Platform.WHATSAPP] = PlatformConfig(enabled=True, token="***")
+    runner.adapters = {Platform.WHATSAPP: adapter}
+    runner._running_agents[session_key] = MagicMock()
+    runner.session_store._entries = {
+        session_key: SessionEntry(
+            session_key=session_key,
+            session_id="sess-whatsapp",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            origin=source,
+            platform=source.platform,
+            chat_type=source.chat_type,
+        )
+    }
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send_private_notice.assert_awaited_once_with(
+        "familia@g.us",
+        "marcos",
+        "⚠️ Gateway shutting down — Your current task will be interrupted.",
+        metadata=None,
+    )
+    adapter.send.assert_not_awaited()
