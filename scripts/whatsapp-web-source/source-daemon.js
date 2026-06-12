@@ -349,6 +349,21 @@ async function main() {
       .catch((error) => persistFailed('revoke_everyone update', error));
   });
 
+  client.on(Events.MESSAGE_REACTION, (reaction) => {
+    const msgId = reaction.msgId;
+    const msgKey = msgId?._serialized || (typeof msgId === 'string' ? msgId : null);
+    if (!msgKey) return;
+    const senderId = String(reaction.senderId || '');
+    const senderLocalId = senderId.split('@')[0];
+    store.command('apply_reaction', {
+      row: {
+        msg_key: msgKey,
+        sender_local_id: senderLocalId,
+        reaction: reaction.reaction || '',
+      },
+    }).catch((error) => persistFailed('apply_reaction', error));
+  });
+
   client.on('disconnected', (reason) => {
     console.error('WhatsApp Web source disconnected:', reason);
     wwebjsReady = false;

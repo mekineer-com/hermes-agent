@@ -77,7 +77,8 @@ def init_schema(con: sqlite3.Connection) -> None:
           source text not null,
           first_seen_at integer not null,
           updated_at integer not null,
-          raw_json text not null
+          raw_json text not null,
+          reactions text
         );
 
         create index if not exists whatsapp_messages_chat_time
@@ -123,6 +124,12 @@ def init_schema(con: sqlite3.Connection) -> None:
         );
         """
     )
+    existing_cols = {
+        str(r[1])
+        for r in con.execute("PRAGMA table_info(whatsapp_messages)").fetchall()
+    }
+    if "reactions" not in existing_cols:
+        con.execute("ALTER TABLE whatsapp_messages ADD COLUMN reactions text")
     con.commit()
 
 
@@ -525,6 +532,36 @@ def prune_scope(
     }
 
 
+def apply_reaction(con: sqlite3.Connection, row: dict[str, Any]) -> dict[str, Any]:
+    msg_key = str(row["msg_key"]).strip()
+    sender_local_id = str(row["sender_local_id"]).strip()
+    emoji = str(row.get("reaction") or "").strip()
+    ts = now()
+    existing = con.execute(
+        "select reactions from whatsapp_messages where msg_key = ?",
+        (msg_key,),
+    ).fetchone()
+    if existing is None:
+        return {"status": "ok", "action": "ignored", "msg_key": msg_key}
+    reactions: dict[str, str] = {}
+    raw = existing["reactions"]
+    if raw:
+        try:
+            reactions = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            reactions = {}
+    if emoji:
+        reactions[sender_local_id] = emoji
+    else:
+        reactions.pop(sender_local_id, None)
+    con.execute(
+        "update whatsapp_messages set reactions = ?, updated_at = ? where msg_key = ?",
+        (json.dumps(reactions, ensure_ascii=False) if reactions else None, ts, msg_key),
+    )
+    con.commit()
+    return {"status": "ok", "action": "reaction", "msg_key": msg_key}
+
+
 def handle(con: sqlite3.Connection, command: dict[str, Any]) -> dict[str, Any]:
     op = command.get("op")
     if op == "ping":
@@ -537,6 +574,8 @@ def handle(con: sqlite3.Connection, command: dict[str, Any]) -> dict[str, Any]:
         return mark_missing_in_chat_window(con, command["row"])
     if op == "update_ack":
         return update_ack(con, command["row"])
+    if op == "apply_reaction":
+        return apply_reaction(con, command["row"])
     if op == "get_metadata":
         return get_metadata(con, str(command["key"]))
     if op == "set_metadata":

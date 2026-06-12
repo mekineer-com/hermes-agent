@@ -403,6 +403,34 @@ class StoreTest(unittest.TestCase):
             ).fetchone()
         self.assertIsNotNone(old_contact)
 
+    def test_apply_reaction_sets_and_replaces(self):
+        store.upsert_message(self.con, row())
+        store.apply_reaction(self.con, {"msg_key": "m1", "sender_local_id": "123", "reaction": "❤️"})
+        got = self.con.execute("select reactions from whatsapp_messages where msg_key = 'm1'").fetchone()
+        self.assertEqual(json.loads(got["reactions"]), {"123": "❤️"})
+
+        store.apply_reaction(self.con, {"msg_key": "m1", "sender_local_id": "123", "reaction": "👍"})
+        got = self.con.execute("select reactions from whatsapp_messages where msg_key = 'm1'").fetchone()
+        self.assertEqual(json.loads(got["reactions"]), {"123": "👍"})
+
+    def test_apply_reaction_remove(self):
+        store.upsert_message(self.con, row())
+        store.apply_reaction(self.con, {"msg_key": "m1", "sender_local_id": "123", "reaction": "❤️"})
+        store.apply_reaction(self.con, {"msg_key": "m1", "sender_local_id": "123", "reaction": ""})
+        got = self.con.execute("select reactions from whatsapp_messages where msg_key = 'm1'").fetchone()
+        self.assertIsNone(got["reactions"])
+
+    def test_apply_reaction_missing_target_is_ignored(self):
+        result = store.apply_reaction(self.con, {"msg_key": "nonexistent", "sender_local_id": "123", "reaction": "❤️"})
+        self.assertEqual(result["action"], "ignored")
+
+    def test_apply_reaction_multiple_senders(self):
+        store.upsert_message(self.con, row())
+        store.apply_reaction(self.con, {"msg_key": "m1", "sender_local_id": "aaa", "reaction": "❤️"})
+        store.apply_reaction(self.con, {"msg_key": "m1", "sender_local_id": "bbb", "reaction": "😂"})
+        got = self.con.execute("select reactions from whatsapp_messages where msg_key = 'm1'").fetchone()
+        self.assertEqual(json.loads(got["reactions"]), {"aaa": "❤️", "bbb": "😂"})
+
     def test_malformed_json_returns_error_without_stale_request_id(self):
         proc = subprocess.Popen(
             [sys.executable, str(Path(__file__).with_name("store.py")), "--db", str(Path(self.tmp.name) / "writer.db")],
