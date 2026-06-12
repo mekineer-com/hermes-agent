@@ -122,6 +122,14 @@ def init_schema(con: sqlite3.Connection) -> None:
           value text not null,
           updated_at integer not null
         );
+
+        create table if not exists whatsapp_pending_reactions (
+          msg_key text not null,
+          sender_local_id text not null,
+          reaction text not null,
+          updated_at integer not null,
+          primary key (msg_key, sender_local_id)
+        );
         """
     )
     existing_cols = {
@@ -131,6 +139,34 @@ def init_schema(con: sqlite3.Connection) -> None:
     if "reactions" not in existing_cols:
         con.execute("ALTER TABLE whatsapp_messages ADD COLUMN reactions text")
     con.commit()
+
+
+def _merge_pending_reactions(con: sqlite3.Connection, msg_key: str, ts: int) -> None:
+    pending = con.execute(
+        "select sender_local_id, reaction from whatsapp_pending_reactions where msg_key = ?",
+        (msg_key,),
+    ).fetchall()
+    if not pending:
+        return
+    row = con.execute(
+        "select reactions from whatsapp_messages where msg_key = ?",
+        (msg_key,),
+    ).fetchone()
+    if row is None:
+        return
+    reactions: dict[str, str] = {}
+    raw = row["reactions"]
+    if raw:
+        reactions = json.loads(raw)
+    for item in pending:
+        reaction = str(item["reaction"] or "").strip()
+        if reaction:
+            reactions[str(item["sender_local_id"])] = reaction
+    con.execute(
+        "update whatsapp_messages set reactions = ?, updated_at = ? where msg_key = ?",
+        (json.dumps(reactions, ensure_ascii=False) if reactions else None, ts, msg_key),
+    )
+    con.execute("delete from whatsapp_pending_reactions where msg_key = ?", (msg_key,))
 
 
 def upsert_message(con: sqlite3.Connection, row: dict[str, Any]) -> dict[str, Any]:
@@ -217,6 +253,7 @@ def upsert_message(con: sqlite3.Connection, row: dict[str, Any]) -> dict[str, An
             int(incoming_wins),
         ),
     )
+    _merge_pending_reactions(con, row["msg_key"], ts)
     con.commit()
     return {"status": "ok", "action": "insert" if existing is None else "update", "msg_key": row["msg_key"]}
 
@@ -542,7 +579,24 @@ def apply_reaction(con: sqlite3.Connection, row: dict[str, Any]) -> dict[str, An
         (msg_key,),
     ).fetchone()
     if existing is None:
-        return {"status": "ok", "action": "ignored", "msg_key": msg_key}
+        if emoji:
+            con.execute(
+                """
+                insert into whatsapp_pending_reactions (msg_key, sender_local_id, reaction, updated_at)
+                values (?, ?, ?, ?)
+                on conflict(msg_key, sender_local_id) do update set
+                  reaction = excluded.reaction,
+                  updated_at = excluded.updated_at
+                """,
+                (msg_key, sender_local_id, emoji, ts),
+            )
+        else:
+            con.execute(
+                "delete from whatsapp_pending_reactions where msg_key = ? and sender_local_id = ?",
+                (msg_key, sender_local_id),
+            )
+        con.commit()
+        return {"status": "ok", "action": "pending_reaction", "msg_key": msg_key}
     reactions: dict[str, str] = {}
     raw = existing["reactions"]
     if raw:

@@ -32,6 +32,29 @@ def _make_runner(extra=None):
     return runner, adapter
 
 
+def _make_whatsapp_source() -> SessionSource:
+    return SessionSource(
+        platform=Platform.WHATSAPP,
+        chat_id="familia@g.us",
+        chat_type="group",
+        user_id="marcos",
+    )
+
+
+def _make_whatsapp_runner():
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={
+            Platform.WHATSAPP: PlatformConfig(enabled=True, token="***")
+        }
+    )
+    adapter = MagicMock()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="public-1"))
+    adapter.send_private_notice = AsyncMock(return_value=SendResult(success=True, message_id="private-1"))
+    runner.adapters = {Platform.WHATSAPP: adapter}
+    return runner, adapter
+
+
 @pytest.mark.asyncio
 async def test_deliver_platform_notice_uses_private_delivery_when_configured():
     runner, adapter = _make_runner(extra={"notice_delivery": "private"})
@@ -55,6 +78,23 @@ async def test_deliver_platform_notice_falls_back_to_public_when_private_fails()
     await runner._deliver_platform_notice(_make_source(), "hello")
 
     adapter.send.assert_awaited_once_with("C123", "hello", metadata={"thread_id": "111.222"})
+
+
+@pytest.mark.asyncio
+async def test_deliver_platform_notice_suppresses_whatsapp_public_fallback_when_private_fails():
+    runner, adapter = _make_whatsapp_runner()
+    adapter.send_private_notice = AsyncMock(return_value=SendResult(success=False, error="no self-dm"))
+
+    delivered = await runner._deliver_platform_notice(_make_whatsapp_source(), "hello")
+
+    assert delivered is False
+    adapter.send_private_notice.assert_awaited_once_with(
+        "familia@g.us",
+        "marcos",
+        "hello",
+        metadata=None,
+    )
+    adapter.send.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   isConversationChatId,
+  jidLocal,
   messageKey,
   normalizeContactRow,
   normalizeMessage,
@@ -48,4 +49,9 @@ test('normalize helpers reject non-conversation chats and preserve contact names
   assert.equal(contact.name, 'Raquel');
   assert.equal(contact.short_name, 'R');
   assert.equal(contact.push_name, 'Push');
+});
+
+test('jidLocal strips WhatsApp multi-device suffixes', () => {
+  assert.equal(jidLocal('15551234567:12@c.us'), '15551234567');
+  assert.equal(jidLocal('140063262396533:99@lid'), '140063262396533');
 });

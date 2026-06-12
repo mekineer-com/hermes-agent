@@ -137,6 +137,42 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(got["ack"], 2)
         self.assertEqual(got["revoked"], 1)
 
+    def test_reaction_before_message_is_merged_on_upsert(self):
+        pending = store.apply_reaction(
+            self.con,
+            {
+                "msg_key": "later",
+                "sender_local_id": "123",
+                "reaction": "❤️",
+            },
+        )
+        self.assertEqual(pending["action"], "pending_reaction")
+
+        store.upsert_message(self.con, row(msg_key="later"))
+
+        got = self.con.execute(
+            "select reactions from whatsapp_messages where msg_key = 'later'"
+        ).fetchone()
+        self.assertEqual(json.loads(got["reactions"]), {"123": "❤️"})
+        remaining = self.con.execute("select count(*) from whatsapp_pending_reactions").fetchone()
+        self.assertEqual(remaining[0], 0)
+
+    def test_reaction_remove_before_message_clears_pending_reaction(self):
+        store.apply_reaction(
+            self.con,
+            {"msg_key": "later", "sender_local_id": "123", "reaction": "❤️"},
+        )
+        store.apply_reaction(
+            self.con,
+            {"msg_key": "later", "sender_local_id": "123", "reaction": ""},
+        )
+        store.upsert_message(self.con, row(msg_key="later"))
+
+        got = self.con.execute(
+            "select reactions from whatsapp_messages where msg_key = 'later'"
+        ).fetchone()
+        self.assertIsNone(got["reactions"])
+
     def test_reconcile_missing_marks_recent_absent_rows_revoked(self):
         store.upsert_message(self.con, row(msg_key="deleted", timestamp=110))
         store.upsert_message(self.con, row(msg_key="present", timestamp=120))
@@ -420,9 +456,13 @@ class StoreTest(unittest.TestCase):
         got = self.con.execute("select reactions from whatsapp_messages where msg_key = 'm1'").fetchone()
         self.assertIsNone(got["reactions"])
 
-    def test_apply_reaction_missing_target_is_ignored(self):
+    def test_apply_reaction_missing_target_is_stored_pending(self):
         result = store.apply_reaction(self.con, {"msg_key": "nonexistent", "sender_local_id": "123", "reaction": "❤️"})
-        self.assertEqual(result["action"], "ignored")
+        self.assertEqual(result["action"], "pending_reaction")
+        got = self.con.execute(
+            "select reaction from whatsapp_pending_reactions where msg_key = 'nonexistent' and sender_local_id = '123'"
+        ).fetchone()
+        self.assertEqual(got["reaction"], "❤️")
 
     def test_apply_reaction_multiple_senders(self):
         store.upsert_message(self.con, row())
