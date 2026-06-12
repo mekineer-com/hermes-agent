@@ -312,3 +312,136 @@ async def test_deliver_whatsapp_memu_outbound_skips_duplicate(monkeypatch, tmp_p
     assert len(marked) == 1
     assert marked[0]["status"] == "sent"
     assert marked[0]["outbound_id"] == "waout_dup"
+
+
+# ---------------------------------------------------------------------------
+# Media-path (attachment) branch tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_deliver_whatsapp_memu_outbound_media_respond_success(monkeypatch, tmp_path):
+    """respond target with media_path sends document and marks sent."""
+    doc = tmp_path / "report.pdf"
+    doc.write_bytes(b"%PDF-1.4 test")
+
+    sent_docs: list[tuple] = []
+    marked: list[dict] = []
+
+    class _Adapter:
+        async def send_document(self, chat_id, file_path, caption=None, **kw):
+            sent_docs.append((chat_id, file_path, caption))
+            return SendResult(success=True, message_id="wamid.doc1")
+
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def claim_whatsapp_outbounds(self, **_kwargs):
+            return [
+                {
+                    "id": "waout_doc1",
+                    "target": "respond",
+                    "target_conversation_id": "whatsapp:dm:151@s.whatsapp.net",
+                    "origin_conversation_id": "whatsapp:dm:151@s.whatsapp.net",
+                    "response_text": "here is the file",
+                    "media_path": str(doc),
+                }
+            ]
+
+        def mark_whatsapp_outbound(self, **kwargs):
+            marked.append(dict(kwargs))
+            return {"ok": True}
+
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.WHATSAPP: _Adapter()}
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {
+            "soul_mode": {
+                "agents": {
+                    "main": {
+                        "enabled": True,
+                        "role": "soul",
+                        "soul_id": "Siri",
+                        "user_id": "marcos",
+                        "memu_base_url": "http://127.0.0.1:8099",
+                    }
+                }
+            }
+        },
+    )
+    monkeypatch.setattr("agent.memu_client.MemuHttpClient", _Client)
+
+    count = await runner._drain_whatsapp_memu_outbounds()
+
+    assert count == 1
+    assert sent_docs == [("151@s.whatsapp.net", str(doc), "here is the file")]
+    assert marked == [
+        {
+            "user_id": "marcos",
+            "soul_id": "Siri",
+            "outbound_id": "waout_doc1",
+            "status": "sent",
+            "provider_message_id": "wamid.doc1",
+            "error": None,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_deliver_whatsapp_memu_outbound_media_missing_marks_failed(monkeypatch, tmp_path):
+    """If media_path does not exist, mark failed without sending."""
+    marked: list[dict] = []
+    sent_docs: list = []
+
+    class _Adapter:
+        async def send_document(self, *args, **kw):
+            sent_docs.append(args)
+            return SendResult(success=True, message_id="wamid.x")
+
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def claim_whatsapp_outbounds(self, **_kwargs):
+            return [
+                {
+                    "id": "waout_miss",
+                    "target": "respond",
+                    "target_conversation_id": "whatsapp:dm:151@s.whatsapp.net",
+                    "origin_conversation_id": "whatsapp:dm:151@s.whatsapp.net",
+                    "response_text": "",
+                    "media_path": "/nonexistent/path/file.pdf",
+                }
+            ]
+
+        def mark_whatsapp_outbound(self, **kwargs):
+            marked.append(dict(kwargs))
+            return {"ok": True}
+
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.WHATSAPP: _Adapter()}
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {
+            "soul_mode": {
+                "agents": {
+                    "main": {
+                        "enabled": True,
+                        "role": "soul",
+                        "soul_id": "Siri",
+                        "user_id": "marcos",
+                        "memu_base_url": "http://127.0.0.1:8099",
+                    }
+                }
+            }
+        },
+    )
+    monkeypatch.setattr("agent.memu_client.MemuHttpClient", _Client)
+
+    await runner._drain_whatsapp_memu_outbounds()
+
+    assert sent_docs == [], "send_document must not be called for a missing file"
+    assert len(marked) == 1
+    assert marked[0]["status"] == "failed"
+    assert marked[0]["error"] == "attachment missing"

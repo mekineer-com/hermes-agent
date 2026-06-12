@@ -3952,10 +3952,11 @@ class GatewayRunner:
         out_id = str(row.get("id") or "").strip()
         target = str(row.get("target") or "").strip().lower()
         text = str(row.get("response_text") or "").strip()
+        media_path = str(row.get("media_path") or "").strip()
         origin = str(row.get("origin_conversation_id") or "").strip()
         user_id = str(cfg.get("user_id") or "").strip()
         soul_id = str(cfg.get("soul_id") or "").strip()
-        if not out_id or not text:
+        if not out_id or (not text and not media_path):
             return
 
         async def _mark(status: str, *, provider_message_id: str | None = None, error: str | None = None) -> None:
@@ -3978,20 +3979,47 @@ class GatewayRunner:
                 logger.debug("Re-mark sent failed for duplicate outbound %s", out_id, exc_info=True)
             return
 
+        if media_path:
+            import os as _os
+            if not _os.access(media_path, _os.R_OK):
+                logger.error("WhatsApp outbound %s: attachment missing or unreadable: %s", out_id, media_path)
+                await _mark("failed", error="attachment missing")
+                return
+
         try:
             if target == "private":
-                from agent.soul_mode import _route_whatsapp_notice_to_self_dm
-                ok = await asyncio.to_thread(
-                    _route_whatsapp_notice_to_self_dm,
-                    text,
-                    origin,
-                    "free-turn PRIVATE reply",
-                )
-                if ok:
-                    self._record_outbound_sent(out_id)
-                    await _mark("sent")
+                if media_path:
+                    from agent.whatsapp_bridge_client import read_self_dm_jid
+                    self_dm = await asyncio.to_thread(read_self_dm_jid)
+                    if not self_dm:
+                        await _mark("failed", error="self-DM delivery failed")
+                        return
+                    adapter = self.adapters.get(Platform.WHATSAPP)
+                    if adapter is None:
+                        await _mark("failed", error="whatsapp adapter missing")
+                        return
+                    result = await adapter.send_document(self_dm, media_path, caption=text or None)
+                    if hasattr(result, "success"):
+                        if not bool(getattr(result, "success")):
+                            err = str(getattr(result, "error", "") or "").strip() or "adapter send_document failed"
+                            await _mark("failed", error=err)
+                            return
+                    elif result is False:
+                        await _mark("failed", error="adapter.send_document returned false")
+                        return
                 else:
-                    await _mark("failed", error="self-DM delivery failed")
+                    from agent.soul_mode import _route_whatsapp_notice_to_self_dm
+                    ok = await asyncio.to_thread(
+                        _route_whatsapp_notice_to_self_dm,
+                        text,
+                        origin,
+                        "free-turn PRIVATE reply",
+                    )
+                    if not ok:
+                        await _mark("failed", error="self-DM delivery failed")
+                        return
+                self._record_outbound_sent(out_id)
+                await _mark("sent")
                 return
 
             if target != "respond":
@@ -4004,11 +4032,18 @@ class GatewayRunner:
                 await _mark("failed", error="whatsapp adapter or target chat missing")
                 return
 
-            result = await adapter.send(
-                chat_id,
-                text,
-                metadata={"origin": "memu_free_turn", "outbound_id": out_id},
-            )
+            if media_path:
+                result = await adapter.send_document(
+                    chat_id,
+                    media_path,
+                    caption=text or None,
+                )
+            else:
+                result = await adapter.send(
+                    chat_id,
+                    text,
+                    metadata={"origin": "memu_free_turn", "outbound_id": out_id},
+                )
             provider_message_id = None
             if isinstance(result, dict):
                 provider_message_id = str(result.get("message_id") or result.get("id") or "").strip() or None
