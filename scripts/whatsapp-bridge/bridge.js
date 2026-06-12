@@ -68,6 +68,7 @@ const BRIDGE_STATE_DIR = path.resolve(SESSION_DIR, '..');
 const KNOWN_CHATS_PATH = path.join(BRIDGE_STATE_DIR, 'known_chats.json');
 const KNOWN_CONTACTS_PATH = path.join(BRIDGE_STATE_DIR, 'known_contacts.json');
 const RECENTLY_SENT_IDS_PATH = path.join(BRIDGE_STATE_DIR, 'recently_sent_ids.json');
+const SENT_MESSAGE_STORE_PATH = path.join(BRIDGE_STATE_DIR, 'sent_message_store.json');
 
 const IMAGE_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'image_cache');
 const DOCUMENT_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'document_cache');
@@ -537,6 +538,37 @@ function rememberKnownChat(chatId, { isGroup = false, name = '', lastSenderName 
   persistKnownChats();
 }
 
+function persistSentMessageStore() {
+  const cutoff = Date.now() - SENT_MESSAGE_RETENTION_MS;
+  const entries = [];
+  for (const [k, v] of sentMessageStore) {
+    if (v.ts >= cutoff) entries.push({ k, content: v.content, ts: v.ts });
+  }
+  try {
+    _atomicWriteJson(SENT_MESSAGE_STORE_PATH, {
+      updated_at: new Date().toISOString(),
+      entries,
+    });
+  } catch (err) {
+    logger.warn({ err }, 'failed to persist sent message store');
+  }
+}
+
+function loadSentMessageStore() {
+  const data = _readJson(SENT_MESSAGE_STORE_PATH);
+  const rows = Array.isArray(data?.entries) ? data.entries : [];
+  const cutoff = Date.now() - SENT_MESSAGE_RETENTION_MS;
+  for (const row of rows) {
+    const k = String(row?.k || '').trim();
+    const ts = Number(row?.ts || 0);
+    if (!k || !Number.isFinite(ts) || ts < cutoff || !row.content) continue;
+    sentMessageStore.set(k, { content: row.content, ts });
+  }
+  while (sentMessageStore.size > MAX_SENT_STORE) {
+    sentMessageStore.delete(sentMessageStore.keys().next().value);
+  }
+}
+
 function storeSentMessage(sent, content) {
   if (!sent?.key?.id || !sent?.key?.remoteJid) return;
   const k = `${sent.key.remoteJid}:${sent.key.id}:${sent.key.fromMe ? '1' : '0'}`;
@@ -549,6 +581,7 @@ function storeSentMessage(sent, content) {
   for (const [key, val] of sentMessageStore) {
     if (val.ts < cutoff) sentMessageStore.delete(key);
   }
+  persistSentMessageStore();
 }
 
 let sock = null;
@@ -1044,6 +1077,7 @@ async function enqueueHistoryMessages(payload, surface) {
 
 loadKnownState();
 loadRecentlySentIds();
+loadSentMessageStore();
 canonicalizeKnownStateWithLidMap();
 persistKnownChats();
 persistKnownContacts();
@@ -1088,8 +1122,8 @@ async function startSocket() {
           return cv.content;
         }
       }
-      logger.warn({ event: 'getMessage_miss', remoteJid: key.remoteJid, id: key.id, fromMe: key.fromMe }, 'retry key not in cache');
-      return { conversation: '' };
+      logger.error({ event: 'getMessage_miss', remoteJid: key.remoteJid, id: key.id, fromMe: key.fromMe }, 'retry key not in cache — Baileys will skip re-delivery');
+      return undefined;
     },
   });
 
