@@ -19,6 +19,12 @@ from gateway.config import Platform
 from gateway.platforms.base import SendResult
 
 
+@pytest.fixture(autouse=True)
+def _isolate_outbound_sent_path(tmp_path, monkeypatch):
+    """Redirect the dedup record to a per-test temp dir so tests don't pollute ~/.hermes."""
+    monkeypatch.setattr(GatewayRunner, "_OUTBOUND_SENT_PATH", tmp_path / "whatsapp" / "outbound_sent.json")
+
+
 def test_resolve_soul_mode_agent_config_defaults_when_missing():
     out = GatewayRunner._resolve_soul_mode_agent_config({}, "agent:main:telegram:dm:123")
     assert out["enabled"] is False
@@ -260,3 +266,49 @@ async def test_drain_whatsapp_memu_outbounds_marks_send_result_failure(monkeypat
             "error": "bridge down",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_deliver_whatsapp_memu_outbound_skips_duplicate(monkeypatch, tmp_path):
+    """If an outbound_id is already in the sent record, send is skipped and _mark('sent') is called."""
+    sent: list = []
+    marked: list[dict] = []
+
+    class _Adapter:
+        async def send(self, chat_id, text, metadata=None):
+            sent.append((chat_id, text))
+            return SendResult(success=True, message_id="wamid.dup")
+
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def mark_whatsapp_outbound(self, **kwargs):
+            marked.append(dict(kwargs))
+            return {"ok": True}
+
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.WHATSAPP: _Adapter()}
+
+    # Seed the sent record so waout_dup is known-delivered.
+    sent_path = tmp_path / "whatsapp" / "outbound_sent.json"
+    sent_path.parent.mkdir(parents=True)
+    sent_path.write_text(json.dumps(["waout_dup"]))
+
+    monkeypatch.setattr(GatewayRunner, "_OUTBOUND_SENT_PATH", sent_path)
+
+    row = {
+        "id": "waout_dup",
+        "target": "respond",
+        "target_conversation_id": "whatsapp:dm:151@s.whatsapp.net",
+        "origin_conversation_id": "whatsapp:dm:151@s.whatsapp.net",
+        "response_text": "hello",
+    }
+    cfg = {"user_id": "marcos", "soul_id": "Siri"}
+
+    await runner._deliver_whatsapp_memu_outbound(_Client(), cfg, row)
+
+    assert sent == [], "send must not be called for a duplicate outbound"
+    assert len(marked) == 1
+    assert marked[0]["status"] == "sent"
+    assert marked[0]["outbound_id"] == "waout_dup"

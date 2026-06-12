@@ -3898,6 +3898,56 @@ class GatewayRunner:
                 return False
         return True
 
+    # -- Outbound dedup record -------------------------------------------
+
+    _OUTBOUND_SENT_PATH = _hermes_home / "whatsapp" / "outbound_sent.json"
+    _OUTBOUND_SENT_CAP = 500
+
+    def _load_outbound_sent(self) -> set[str]:
+        if "_outbound_sent_ids" in self.__dict__:
+            return self.__dict__["_outbound_sent_ids"]
+        try:
+            data = json.loads(self._OUTBOUND_SENT_PATH.read_text(encoding="utf-8"))
+            ids: set[str] = set(data) if isinstance(data, list) else set()
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            ids = set()
+        self.__dict__["_outbound_sent_ids"] = ids
+        return ids
+
+    def _record_outbound_sent(self, out_id: str) -> None:
+        ids = self._load_outbound_sent()
+        if out_id in ids:
+            return
+        ids.add(out_id)
+        # Cap: keep newest entries by rebuilding from the on-disk list.
+        try:
+            existing: list[str] = []
+            try:
+                existing = json.loads(self._OUTBOUND_SENT_PATH.read_text(encoding="utf-8"))
+                if not isinstance(existing, list):
+                    existing = []
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                pass
+            existing.append(out_id)
+            if len(existing) > self._OUTBOUND_SENT_CAP:
+                existing = existing[-self._OUTBOUND_SENT_CAP:]
+            self.__dict__["_outbound_sent_ids"] = set(existing)
+            path = self._OUTBOUND_SENT_PATH
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".outbound_sent.", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(existing, fh)
+                os.replace(tmp, path)
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+        except Exception:
+            logger.error("Failed to record outbound_sent for %s", out_id, exc_info=True)
+
     async def _deliver_whatsapp_memu_outbound(self, client: Any, cfg: dict[str, Any], row: dict[str, Any]) -> None:
         out_id = str(row.get("id") or "").strip()
         target = str(row.get("target") or "").strip().lower()
@@ -3919,6 +3969,15 @@ class GatewayRunner:
                 error=error,
             )
 
+        # If already delivered (claim expired and re-offered), skip send and re-mark.
+        if out_id in self._load_outbound_sent():
+            logger.info("Skipping duplicate outbound %s — already delivered, re-marking sent", out_id)
+            try:
+                await _mark("sent")
+            except Exception:
+                logger.debug("Re-mark sent failed for duplicate outbound %s", out_id, exc_info=True)
+            return
+
         try:
             if target == "private":
                 from agent.soul_mode import _route_whatsapp_notice_to_self_dm
@@ -3929,6 +3988,7 @@ class GatewayRunner:
                     "free-turn PRIVATE reply",
                 )
                 if ok:
+                    self._record_outbound_sent(out_id)
                     await _mark("sent")
                 else:
                     await _mark("failed", error="self-DM delivery failed")
@@ -3965,6 +4025,7 @@ class GatewayRunner:
             elif result is False:
                 await _mark("failed", error="adapter.send returned false")
                 return
+            self._record_outbound_sent(out_id)
             await _mark("sent", provider_message_id=provider_message_id)
         except Exception as exc:
             logger.exception("WhatsApp memU outbound delivery failed for %s", out_id)
