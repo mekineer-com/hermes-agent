@@ -1394,7 +1394,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 async with self._http_session.post(
                     f"http://127.0.0.1:{self._bridge_port}/send",
                     json=payload,
-                    timeout=aiohttp.ClientTimeout(total=30)
+                    timeout=aiohttp.ClientTimeout(total=75)
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
@@ -1415,6 +1415,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 message_id=last_message_id,
                 raw_response={"message_ids": message_ids},
             )
+        except (asyncio.TimeoutError, TimeoutError):
+            return SendResult(success=False, error="send timed out")
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
@@ -1860,8 +1862,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 media_types=media_types,
                 internal=persist_only,
             )
-        except Exception as e:
-            print(f"[{self.name}] Error building event: {e}")
+        except Exception:
+            logger.error("[%s] Error building event", self.name, exc_info=True)
             return None
 
     @staticmethod

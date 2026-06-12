@@ -4004,7 +4004,7 @@ class GatewayRunner:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.debug("WhatsApp memU outbound watcher iteration failed", exc_info=True)
+                logger.error("WhatsApp memU outbound watcher iteration failed", exc_info=True)
             await asyncio.sleep(max(0.5, float(interval)))
 
     async def _handoff_watcher(self, interval: float = 2.0) -> None:
@@ -10290,12 +10290,12 @@ class GatewayRunner:
                 ]
                 if len(filtered) != len(history):
                     self.session_store.rewrite_transcript(entry.session_id, filtered)
-        except Exception as exc:
-            logger.debug(
-                "Failed to apply WhatsApp revoke in transcript chat=%s message=%s: %s",
+        except Exception:
+            logger.error(
+                "Failed to apply WhatsApp revoke in transcript chat=%s message=%s",
                 source_chat_id,
                 source_message_id,
-                exc,
+                exc_info=True,
             )
 
         logger.info(
@@ -10329,7 +10329,7 @@ class GatewayRunner:
                 source_message_id=source_message_id,
             )
         except Exception:
-            logger.debug("Failed to check WhatsApp duplicate source key", exc_info=True)
+            logger.error("Failed to check WhatsApp duplicate source key", exc_info=True)
             return False
         if handled:
             logger.info(
@@ -10369,7 +10369,7 @@ class GatewayRunner:
                 content=content,
             )
         except Exception:
-            logger.debug("Failed to stamp WhatsApp delivered assistant source key", exc_info=True)
+            logger.error("Failed to stamp WhatsApp delivered assistant source key", exc_info=True)
 
     def _persist_whatsapp_exception_turn(
         self,
@@ -10426,7 +10426,7 @@ class GatewayRunner:
                 },
             )
         except Exception:
-            logger.debug("Failed to persist failed WhatsApp turn", exc_info=True)
+            logger.error("Failed to persist failed WhatsApp turn", exc_info=True)
 
     def _persist_whatsapp_history_event(self, event: MessageEvent) -> None:
         if not self._session_db:

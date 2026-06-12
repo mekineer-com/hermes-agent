@@ -846,7 +846,7 @@ class SessionStore:
             try:
                 return self._db.session_count() > 1
             except Exception:
-                pass  # fall through to heuristic
+                logger.error("session_count DB query failed", exc_info=True)
         # Fallback: check if sessions.json was loaded with existing data.
         # This covers the rare case where the DB is unavailable.
         with self._lock:
