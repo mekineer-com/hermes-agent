@@ -546,10 +546,7 @@ def apply_reaction(con: sqlite3.Connection, row: dict[str, Any]) -> dict[str, An
     reactions: dict[str, str] = {}
     raw = existing["reactions"]
     if raw:
-        try:
-            reactions = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            reactions = {}
+        reactions = json.loads(raw)
     if emoji:
         reactions[sender_local_id] = emoji
     else:

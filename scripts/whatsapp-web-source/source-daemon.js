@@ -17,6 +17,7 @@ const {
   parseArgs,
 } = require('./daemon-utils');
 const {
+  jidLocal,
   messageKey,
   normalizeMessage,
 } = require('./normalization');
@@ -353,8 +354,7 @@ async function main() {
     const msgId = reaction.msgId;
     const msgKey = msgId?._serialized || (typeof msgId === 'string' ? msgId : null);
     if (!msgKey) return;
-    const senderId = String(reaction.senderId || '');
-    const senderLocalId = senderId.split('@')[0];
+    const senderLocalId = jidLocal(reaction.senderId);
     store.command('apply_reaction', {
       row: {
         msg_key: msgKey,
