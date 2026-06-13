@@ -558,6 +558,18 @@ def prune_scope(
             active_since,
         ),
     )
+    pending_cur = con.execute(
+        """
+        delete from whatsapp_pending_reactions
+        where not exists (
+          select 1
+          from whatsapp_messages m
+          where m.msg_key = whatsapp_pending_reactions.msg_key
+        )
+          and updated_at < ?
+        """,
+        (active_since,),
+    )
     con.commit()
     return {
         "status": "ok",
@@ -565,6 +577,7 @@ def prune_scope(
         "active_since": active_since,
         "deleted_chats": chat_cur.rowcount,
         "deleted_contacts": contact_cur.rowcount,
+        "deleted_pending_reactions": pending_cur.rowcount,
         "backup_path": resolved_backup_path,
     }
 

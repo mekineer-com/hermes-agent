@@ -429,6 +429,7 @@ class StoreTest(unittest.TestCase):
 
         self.assertEqual(result["deleted_chats"], 1)
         self.assertEqual(result["deleted_contacts"], 1)
+        self.assertEqual(result["deleted_pending_reactions"], 0)
         self.assertEqual(result["backup_path"], str(backup_path))
         self.assertTrue(backup_path.exists())
         self.assertEqual(chats, ["active@g.us"])
@@ -438,6 +439,28 @@ class StoreTest(unittest.TestCase):
                 "select contact_id from whatsapp_contacts where contact_id = 'old@c.us'"
             ).fetchone()
         self.assertIsNotNone(old_contact)
+
+    def test_prune_scope_deletes_old_unresolved_pending_reactions(self):
+        store.apply_reaction(
+            self.con,
+            {"msg_key": "old-missing", "sender_local_id": "123", "reaction": "❤️"},
+        )
+        self.con.execute(
+            "update whatsapp_pending_reactions set updated_at = ? where msg_key = ?",
+            (90, "old-missing"),
+        )
+        store.apply_reaction(
+            self.con,
+            {"msg_key": "recent-missing", "sender_local_id": "123", "reaction": "👍"},
+        )
+        result = store.prune_scope(self.con, 100)
+
+        pending = [
+            row["msg_key"]
+            for row in self.con.execute("select msg_key from whatsapp_pending_reactions order by msg_key")
+        ]
+        self.assertEqual(result["deleted_pending_reactions"], 1)
+        self.assertEqual(pending, ["recent-missing"])
 
     def test_apply_reaction_sets_and_replaces(self):
         store.upsert_message(self.con, row())
