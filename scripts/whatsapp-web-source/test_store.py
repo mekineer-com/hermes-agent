@@ -441,13 +441,17 @@ class StoreTest(unittest.TestCase):
         self.assertIsNotNone(old_contact)
 
     def test_prune_scope_deletes_old_unresolved_pending_reactions(self):
+        now_value = 1_000_000
+        original_now = store.now
+        store.now = lambda: now_value
+        self.addCleanup(lambda: setattr(store, "now", original_now))
         store.apply_reaction(
             self.con,
             {"msg_key": "old-missing", "sender_local_id": "123", "reaction": "❤️"},
         )
         self.con.execute(
             "update whatsapp_pending_reactions set updated_at = ? where msg_key = ?",
-            (90, "old-missing"),
+            (now_value - store.PENDING_REACTION_MAX_AGE_SECONDS - 1, "old-missing"),
         )
         store.apply_reaction(
             self.con,

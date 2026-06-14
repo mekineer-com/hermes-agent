@@ -18,6 +18,9 @@ from pathlib import Path
 from typing import Any
 
 
+PENDING_REACTION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+
+
 def expand_path(value: str) -> Path:
     return Path(os.path.expandvars(os.path.expanduser(value))).resolve()
 
@@ -568,7 +571,7 @@ def prune_scope(
         )
           and updated_at < ?
         """,
-        (active_since,),
+        (now() - PENDING_REACTION_MAX_AGE_SECONDS,),
     )
     con.commit()
     return {
