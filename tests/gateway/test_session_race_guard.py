@@ -38,13 +38,25 @@ class _FakeAdapter:
 
 
 class _FakeSessionDb:
-    def __init__(self, handled):
+    def __init__(self, *, handled, processed=False):
         self.handled = handled
+        self.processed = processed
         self.calls = []
+        self.processed_calls = []
+        self.mark_calls = []
+
+    def message_source_key_is_processed(self, *, source_chat_id, source_message_id):
+        self.processed_calls.append((source_chat_id, source_message_id))
+        return self.processed
 
     def message_source_key_has_response(self, *, source_chat_id, source_message_id):
         self.calls.append((source_chat_id, source_message_id))
         return self.handled
+
+    def mark_message_source_key_processed(self, *, source_chat_id, source_message_id, processed_at=None):
+        self.mark_calls.append((source_chat_id, source_message_id))
+        self.processed = True
+        return True
 
 
 def _make_runner():
@@ -85,23 +97,41 @@ def _make_runner():
 
 def test_whatsapp_answered_source_message_skips_before_agent_turn():
     runner = _make_runner()
-    runner._session_db = _FakeSessionDb(True)
+    runner._session_db = _FakeSessionDb(handled=True)
 
     assert runner._is_duplicate_whatsapp_source_message({
         "chatId": "15133278228@s.whatsapp.net",
         "messageId": "3EB0OLD",
     })
+    assert runner._session_db.processed_calls == [("15133278228@s.whatsapp.net", "3EB0OLD")]
     assert runner._session_db.calls == [("15133278228@s.whatsapp.net", "3EB0OLD")]
+    assert runner._session_db.mark_calls == [("15133278228@s.whatsapp.net", "3EB0OLD")]
 
 
 def test_whatsapp_new_source_message_not_duplicate():
     runner = _make_runner()
-    runner._session_db = _FakeSessionDb(False)
+    runner._session_db = _FakeSessionDb(handled=False)
 
     assert not runner._is_duplicate_whatsapp_source_message({
         "chatId": "15133278228@s.whatsapp.net",
         "messageId": "3EB0NEW",
     })
+    assert runner._session_db.processed_calls == [("15133278228@s.whatsapp.net", "3EB0NEW")]
+    assert runner._session_db.calls == [("15133278228@s.whatsapp.net", "3EB0NEW")]
+    assert runner._session_db.mark_calls == []
+
+
+def test_whatsapp_processed_source_message_skips_without_legacy_check():
+    runner = _make_runner()
+    runner._session_db = _FakeSessionDb(handled=False, processed=True)
+
+    assert runner._is_duplicate_whatsapp_source_message({
+        "chatId": "15133278228@s.whatsapp.net",
+        "messageId": "3EB0DONE",
+    })
+    assert runner._session_db.processed_calls == [("15133278228@s.whatsapp.net", "3EB0DONE")]
+    assert runner._session_db.calls == []
+    assert runner._session_db.mark_calls == []
 
 
 def _make_event(text="hello", chat_id="12345", platform=Platform.TELEGRAM):

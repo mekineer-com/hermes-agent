@@ -8300,6 +8300,7 @@ class GatewayRunner:
                 if source.platform == Platform.WHATSAPP and _message_timestamp is not None
                 else {"timestamp": ts}
             )
+            _processed_source_keys: set[tuple[str, str]] = set()
             
             # If this is a fresh session (no history), write the full tool
             # definitions as the first entry so the transcript is self-describing
@@ -8341,6 +8342,8 @@ class GatewayRunner:
                     },
                 )
             else:
+                if source.platform == Platform.WHATSAPP and _source_chat_id and _source_message_id:
+                    _processed_source_keys.add((_source_chat_id, _source_message_id))
                 history_len = agent_result.get("history_offset", len(history))
                 new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []
 
@@ -8356,6 +8359,13 @@ class GatewayRunner:
                             **_user_source_fields,
                         }
                     )
+                    if _user_source_fields:
+                        _processed_source_keys.add(
+                            (
+                                str(_user_source_fields.get("source_chat_id") or "").strip(),
+                                str(_user_source_fields.get("source_message_id") or "").strip(),
+                            )
+                        )
                     if response:
                         self.session_store.append_to_transcript(
                             session_entry.session_id,
@@ -8381,6 +8391,13 @@ class GatewayRunner:
                             and str(entry.get("content") or "").strip() == message_text.strip()
                         ):
                             entry["content"] = persist_user_message
+                        if entry.get("role") == "user":
+                            _entry_source_chat_id = str(entry.get("source_chat_id") or "").strip()
+                            _entry_source_message_id = str(entry.get("source_message_id") or "").strip()
+                            if _entry_source_chat_id and _entry_source_message_id:
+                                _processed_source_keys.add(
+                                    (_entry_source_chat_id, _entry_source_message_id)
+                                )
                         self.session_store.append_to_transcript(
                             session_entry.session_id, entry,
                             skip_db=agent_persisted,
@@ -8413,6 +8430,12 @@ class GatewayRunner:
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
+            if source.platform == Platform.WHATSAPP and _processed_source_keys:
+                for _processed_chat_id, _processed_message_id in _processed_source_keys:
+                    self._mark_whatsapp_source_message_processed(
+                        source_chat_id=_processed_chat_id,
+                        source_message_id=_processed_message_id,
+                    )
 
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
@@ -10426,6 +10449,26 @@ class GatewayRunner:
         from gateway.platforms.whatsapp import WhatsAppAdapter
         return WhatsAppAdapter._bridge_delivery_mode(raw) != "live"
 
+    def _mark_whatsapp_source_message_processed(
+        self,
+        *,
+        source_chat_id: str,
+        source_message_id: str,
+        processed_at: Any = None,
+    ) -> None:
+        session_db = getattr(self, "_session_db", None)
+        if not session_db:
+            return
+        chat_key = str(source_chat_id or "").strip()
+        message_key = str(source_message_id or "").strip()
+        if not chat_key or not message_key:
+            return
+        session_db.mark_message_source_key_processed(
+            source_chat_id=chat_key,
+            source_message_id=message_key,
+            processed_at=processed_at,
+        )
+
     def _is_duplicate_whatsapp_source_message(self, raw: dict[str, Any]) -> bool:
         session_db = getattr(self, "_session_db", None)
         if not session_db:
@@ -10435,10 +10478,23 @@ class GatewayRunner:
         if not source_chat_id or not source_message_id:
             return False
         try:
-            handled = session_db.message_source_key_has_response(
+            handled = session_db.message_source_key_is_processed(
                 source_chat_id=source_chat_id,
                 source_message_id=source_message_id,
             )
+            if not handled:
+                handled = session_db.message_source_key_has_response(
+                    source_chat_id=source_chat_id,
+                    source_message_id=source_message_id,
+                )
+                if handled:
+                    # Legacy transition path: old rows with a later soul
+                    # message are considered handled and are promoted into the
+                    # explicit processed-key marker lazily.
+                    self._mark_whatsapp_source_message_processed(
+                        source_chat_id=source_chat_id,
+                        source_message_id=source_message_id,
+                    )
         except Exception:
             logger.error("Failed to check WhatsApp duplicate source key", exc_info=True)
             return False

@@ -267,6 +267,13 @@ CREATE TABLE IF NOT EXISTS messages (
     codex_message_items TEXT
 );
 
+CREATE TABLE IF NOT EXISTS processed_source_keys (
+    source_chat_id TEXT NOT NULL,
+    source_message_id TEXT NOT NULL,
+    processed_at REAL NOT NULL,
+    PRIMARY KEY (source_chat_id, source_message_id)
+);
+
 CREATE TABLE IF NOT EXISTS state_meta (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -1720,6 +1727,10 @@ class SessionDB:
                 (chat_key, message_key),
             )
             deleted = int(cursor.rowcount or 0)
+            conn.execute(
+                "DELETE FROM processed_source_keys WHERE source_chat_id = ? AND source_message_id = ?",
+                (chat_key, message_key),
+            )
             for sid, count in session_counts.items():
                 conn.execute(
                     "UPDATE sessions SET message_count = MAX(message_count - ?, 0) WHERE id = ?",
@@ -1728,6 +1739,60 @@ class SessionDB:
             return deleted
 
         return int(self._execute_write(_do))
+
+    def message_source_key_is_processed(
+        self,
+        *,
+        source_chat_id: str,
+        source_message_id: str,
+    ) -> bool:
+        chat_key = str(source_chat_id or "").strip()
+        message_key = str(source_message_id or "").strip()
+        if not chat_key or not message_key:
+            return False
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT 1
+                  FROM processed_source_keys
+                 WHERE source_chat_id = ?
+                   AND source_message_id = ?
+                 LIMIT 1
+                """,
+                (chat_key, message_key),
+            ).fetchone()
+        return row is not None
+
+    def mark_message_source_key_processed(
+        self,
+        *,
+        source_chat_id: str,
+        source_message_id: str,
+        processed_at: Any = None,
+    ) -> bool:
+        chat_key = str(source_chat_id or "").strip()
+        message_key = str(source_message_id or "").strip()
+        if not chat_key or not message_key:
+            return False
+
+        processed_ts = _coerce_message_timestamp(processed_at)
+        if processed_ts is None:
+            processed_ts = time.time()
+
+        def _do(conn):
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO processed_source_keys(
+                    source_chat_id,
+                    source_message_id,
+                    processed_at
+                ) VALUES (?, ?, ?)
+                """,
+                (chat_key, message_key, processed_ts),
+            )
+            return bool(cursor.rowcount)
+
+        return bool(self._execute_write(_do))
 
     def message_source_key_has_response(
         self,

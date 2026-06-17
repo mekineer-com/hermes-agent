@@ -7,6 +7,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource, SessionStore
+from gateway.session import build_session_key
 from hermes_state import SessionDB
 
 
@@ -116,6 +117,83 @@ def test_whatsapp_history_drops_missing_timestamp(tmp_path, monkeypatch):
     )
 
     assert db.message_count() == 0
+
+
+def test_whatsapp_source_key_processed_marker_round_trip(tmp_path, monkeypatch):
+    _runner(tmp_path, monkeypatch, active_since=1780160400)
+    db = SessionDB(tmp_path / "state.db")
+
+    assert not db.message_source_key_is_processed(
+        source_chat_id="15133278228@s.whatsapp.net",
+        source_message_id="m1",
+    )
+    assert db.mark_message_source_key_processed(
+        source_chat_id="15133278228@s.whatsapp.net",
+        source_message_id="m1",
+    )
+    assert db.message_source_key_is_processed(
+        source_chat_id="15133278228@s.whatsapp.net",
+        source_message_id="m1",
+    )
+
+
+def test_whatsapp_delete_source_key_clears_processed_marker(tmp_path, monkeypatch):
+    runner, db = _runner(tmp_path, monkeypatch, active_since=1780160400)
+    event = _event(text="source row", role_hint="user", timestamp=1780233002)
+    runner._persist_whatsapp_history_event(event)
+
+    assert db.mark_message_source_key_processed(
+        source_chat_id="15133278228@s.whatsapp.net",
+        source_message_id="m1",
+    )
+    assert db.message_source_key_is_processed(
+        source_chat_id="15133278228@s.whatsapp.net",
+        source_message_id="m1",
+    )
+
+    db.delete_message_by_source_key(
+        source_chat_id="15133278228@s.whatsapp.net",
+        source_message_id="m1",
+    )
+    assert not db.message_source_key_is_processed(
+        source_chat_id="15133278228@s.whatsapp.net",
+        source_message_id="m1",
+    )
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_live_turn_marks_processed_from_event_source_key(tmp_path, monkeypatch):
+    runner, db = _runner(tmp_path, monkeypatch, active_since=1780160400)
+    event = _event(text="live turn", role_hint="user", timestamp=1780233002)
+    event.raw_message["deliveryMode"] = "live"
+    event.internal = False
+    session_key = build_session_key(event.source)
+    runner._session_run_generation = {session_key: 1}
+    runner._running_agents = {}
+    runner._running_agents_ts = {}
+    runner._pending_messages = {}
+    runner.adapters = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock())
+    runner._prepare_inbound_message_text = AsyncMock(return_value="live turn")
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "handled",
+        "messages": [{"role": "user", "content": "live turn"}],
+        "history_offset": 0,
+        "api_calls": 1,
+        "failed": False,
+        "partial": False,
+        "interrupted": False,
+        "completed": True,
+        "tools": [],
+    })
+    runner._should_send_voice_reply = lambda *args, **kwargs: False
+
+    await runner._handle_message_with_agent(event, event.source, session_key, 1)
+
+    assert db.message_source_key_is_processed(
+        source_chat_id="15133278228@s.whatsapp.net",
+        source_message_id="m1",
+    )
 
 
 def test_whatsapp_exception_turn_persists_visible_error_pair(tmp_path, monkeypatch):
