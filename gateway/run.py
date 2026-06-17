@@ -8359,13 +8359,6 @@ class GatewayRunner:
                             **_user_source_fields,
                         }
                     )
-                    if _user_source_fields:
-                        _processed_source_keys.add(
-                            (
-                                str(_user_source_fields.get("source_chat_id") or "").strip(),
-                                str(_user_source_fields.get("source_message_id") or "").strip(),
-                            )
-                        )
                     if response:
                         self.session_store.append_to_transcript(
                             session_entry.session_id,
@@ -8391,13 +8384,6 @@ class GatewayRunner:
                             and str(entry.get("content") or "").strip() == message_text.strip()
                         ):
                             entry["content"] = persist_user_message
-                        if entry.get("role") == "user":
-                            _entry_source_chat_id = str(entry.get("source_chat_id") or "").strip()
-                            _entry_source_message_id = str(entry.get("source_message_id") or "").strip()
-                            if _entry_source_chat_id and _entry_source_message_id:
-                                _processed_source_keys.add(
-                                    (_entry_source_chat_id, _entry_source_message_id)
-                                )
                         self.session_store.append_to_transcript(
                             session_entry.session_id, entry,
                             skip_db=agent_persisted,
