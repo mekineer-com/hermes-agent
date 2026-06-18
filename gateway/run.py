@@ -16599,7 +16599,11 @@ class GatewayRunner:
             _effective_history_offset = 0 if _session_was_split else len(agent_history)
 
             # Auto-generate session title after first exchange (non-blocking)
-            if final_response and self._session_db:
+            if (
+                final_response
+                and self._session_db
+                and not self._soul_mode_config_is_active(soul_mode_cfg)
+            ):
                 try:
                     from agent.title_generator import maybe_auto_title
                     all_msgs = result_holder[0].get("messages", []) if result_holder[0] else []

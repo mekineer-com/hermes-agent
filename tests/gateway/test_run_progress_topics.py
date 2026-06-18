@@ -568,6 +568,7 @@ async def _run_with_agent(
     chat_type="group",
     thread_id="17585",
     adapter_cls=ProgressCaptureAdapter,
+    session_db=None,
 ):
     if config_data:
         import yaml
@@ -584,6 +585,7 @@ async def _run_with_agent(
 
     adapter = adapter_cls(platform=platform)
     runner = _make_runner(adapter)
+    runner._session_db = session_db
     gateway_run = importlib.import_module("gateway.run")
     if config_data and "streaming" in config_data:
         runner.config.streaming = StreamingConfig.from_dict(config_data["streaming"])
@@ -615,6 +617,69 @@ async def _run_with_agent(
         session_key=session_key,
     )
     return adapter, result
+
+
+@pytest.mark.asyncio
+async def test_run_agent_skips_auto_title_for_soul_mode(monkeypatch, tmp_path):
+    import agent.title_generator as title_generator
+
+    title_calls: list[tuple] = []
+
+    def _fake_maybe_auto_title(*args, **kwargs):  # type: ignore[no-untyped-def]
+        title_calls.append((args, kwargs))
+
+    monkeypatch.setattr(title_generator, "maybe_auto_title", _fake_maybe_auto_title)
+
+    _adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FakeAgent,
+        session_id="sess-soul-title-skip",
+        platform=Platform.WHATSAPP,
+        chat_id="16467326349",
+        chat_type="dm",
+        thread_id=None,
+        session_db=object(),
+        config_data={
+            "soul_mode": {
+                "agents": {
+                    "main": {
+                        "enabled": True,
+                        "role": "soul",
+                        "soul_id": "Siri",
+                        "user_id": "Marcos",
+                        "use_memu_turn": True,
+                    }
+                }
+            }
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert title_calls == []
+
+
+@pytest.mark.asyncio
+async def test_run_agent_keeps_auto_title_for_non_soul_mode(monkeypatch, tmp_path):
+    import agent.title_generator as title_generator
+
+    title_calls: list[tuple] = []
+
+    def _fake_maybe_auto_title(*args, **kwargs):  # type: ignore[no-untyped-def]
+        title_calls.append((args, kwargs))
+
+    monkeypatch.setattr(title_generator, "maybe_auto_title", _fake_maybe_auto_title)
+
+    _adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FakeAgent,
+        session_id="sess-title-kept",
+        session_db=object(),
+    )
+
+    assert result["final_response"] == "done"
+    assert len(title_calls) == 1
 
 
 @pytest.mark.asyncio
