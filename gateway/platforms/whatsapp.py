@@ -27,13 +27,14 @@ import sqlite3
 import subprocess
 import time
 
-_IS_WINDOWS = platform.system() == "Windows"
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Any
 
 from hermes_constants import get_hermes_dir, get_hermes_home
 
 logger = logging.getLogger(__name__)
+_IS_WINDOWS = platform.system() == "Windows"
 
 
 def _kill_port_process(port: int) -> None:
@@ -279,6 +280,31 @@ def _coerce_optional_float(value: Any) -> Optional[float]:
         return None
 
 
+def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.timestamp()
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value) / 1000.0 if float(value) > 10_000_000_000 else float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            numeric = float(text)
+            return numeric / 1000.0 if numeric > 10_000_000_000 else numeric
+        except ValueError:
+            pass
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
 def _resolve_configured_soul_active_since() -> Optional[float]:
     config_path = get_hermes_home() / "config.yaml"
     try:
@@ -411,6 +437,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
         ))
         self._reply_prefix: Optional[str] = config.extra.get("reply_prefix")
         self._dm_policy = str(config.extra.get("dm_policy") or os.getenv("WHATSAPP_DM_POLICY", "open")).strip().lower()
+        max_age_raw = config.extra.get("max_message_age_seconds")
+        if max_age_raw is None:
+            max_age_raw = os.getenv("WHATSAPP_MAX_MESSAGE_AGE_SECONDS") or 300
+        self._max_message_age_seconds = max(0, int(max_age_raw))
         self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "open")).strip().lower()
         self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
@@ -1900,6 +1930,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
     async def _dispatch_built_message_event(self, event: MessageEvent) -> None:
         raw = event.raw_message if isinstance(event.raw_message, dict) else {}
+        delivery_mode = self._bridge_delivery_mode(raw)
         # WhatsApp events must arrive pre-classified by the bridge. Missing
         # deliveryMode is invalid because stale chats.update history once woke Siri.
         if str(raw.get("deliveryMode") or "").strip().lower() not in {"live", "persist_only", "revoke"}:
@@ -1909,7 +1940,22 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 raw.get("messageId"),
                 raw.get("deliveryMode"),
             )
-        if self._bridge_delivery_mode(raw) == "live":
+        if delivery_mode == "live" and getattr(self, "_max_message_age_seconds", 300) > 0:
+            timestamp = _coerce_gateway_timestamp(raw.get("timestamp"))
+            if timestamp is not None:
+                age_seconds = time.time() - timestamp
+                if age_seconds > self._max_message_age_seconds:
+                    logger.info(
+                        "[whatsapp] Dropping stale WhatsApp live message age=%ss chat=%r message=%r",
+                        int(age_seconds),
+                        raw.get("chatId"),
+                        raw.get("messageId"),
+                    )
+                    wal_seq = raw.get("wal_seq")
+                    if wal_seq is not None:
+                        self._gateway_wal.mark_processed(wal_seq)
+                    return
+        if delivery_mode == "live":
             await self.handle_message(event)
             return
         wal_seq = raw.get("wal_seq")

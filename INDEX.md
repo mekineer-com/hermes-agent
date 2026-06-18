@@ -55,6 +55,7 @@ fail visibly.
 | Web-source page hooks | `scripts/whatsapp-web-source/page-hooks.js` |
 | WhatsApp ID normalization | `gateway/whatsapp_identity.py` |
 | SQLite session store | `hermes_state.py` |
+| Burst-debounce control | `gateway/platforms/base.py` `merge_pending_message_event` (~1092) |
 
 ## `gateway/run.py` WhatsApp Seam Map
 

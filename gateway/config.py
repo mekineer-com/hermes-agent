@@ -838,6 +838,7 @@ def load_gateway_config() -> GatewayConfig:
                     "web_source_disable_service_workers",
                     "web_source_resource_block",
                     "web_source_memory_diagnostics_interval",
+                    "max_message_age_seconds",
                 ):
                     if key in platform_cfg:
                         bridged[key] = platform_cfg[key]
@@ -1091,6 +1092,8 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["WHATSAPP_FREE_RESPONSE_CHATS"] = str(frc)
                 if "dm_policy" in whatsapp_cfg and not os.getenv("WHATSAPP_DM_POLICY"):
                     os.environ["WHATSAPP_DM_POLICY"] = str(whatsapp_cfg["dm_policy"]).lower()
+                if "max_message_age_seconds" in whatsapp_cfg and not os.getenv("WHATSAPP_MAX_MESSAGE_AGE_SECONDS"):
+                    os.environ["WHATSAPP_MAX_MESSAGE_AGE_SECONDS"] = str(whatsapp_cfg["max_message_age_seconds"])
                 af = whatsapp_cfg.get("allow_from")
                 if af is not None and not os.getenv("WHATSAPP_ALLOWED_USERS"):
                     if isinstance(af, list):

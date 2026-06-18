@@ -1,3 +1,4 @@
+import logging
 from types import SimpleNamespace
 import threading
 from unittest.mock import AsyncMock
@@ -309,6 +310,83 @@ async def test_whatsapp_persist_only_dispatch_marks_wal_only_after_success():
     adapter._message_handler = AsyncMock(return_value=None)
     await adapter._dispatch_built_message_event(event)
     assert marked == [7]
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_stale_live_dispatch_marks_wal_without_waking_agent(caplog):
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    adapter = object.__new__(WhatsAppAdapter)
+    adapter._max_message_age_seconds = 300
+    marked = []
+    adapter._gateway_wal = SimpleNamespace(mark_processed=lambda seq: marked.append(seq))
+    adapter.handle_message = AsyncMock()
+    event = _event(timestamp=1)
+    event.raw_message["deliveryMode"] = "live"
+    event.raw_message["wal_seq"] = 9
+
+    with caplog.at_level(logging.INFO):
+        await adapter._dispatch_built_message_event(event)
+
+    adapter.handle_message.assert_not_awaited()
+    assert marked == [9]
+    assert "Dropping stale WhatsApp live message" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_fresh_live_dispatches_to_agent():
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    adapter = object.__new__(WhatsAppAdapter)
+    adapter._max_message_age_seconds = 300
+    adapter._gateway_wal = SimpleNamespace(mark_processed=lambda seq: None)
+    adapter.handle_message = AsyncMock()
+    event = _event(timestamp=9999999999)
+    event.raw_message["deliveryMode"] = "live"
+    event.raw_message["wal_seq"] = 10
+
+    await adapter._dispatch_built_message_event(event)
+
+    adapter.handle_message.assert_awaited_once_with(event)
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_zero_max_age_disables_live_filter():
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    adapter = object.__new__(WhatsAppAdapter)
+    adapter._max_message_age_seconds = 0
+    adapter._gateway_wal = SimpleNamespace(mark_processed=lambda seq: None)
+    adapter.handle_message = AsyncMock()
+    event = _event(timestamp=1)
+    event.raw_message["deliveryMode"] = "live"
+    event.raw_message["wal_seq"] = 11
+
+    await adapter._dispatch_built_message_event(event)
+
+    adapter.handle_message.assert_awaited_once_with(event)
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_revoke_dispatch_is_not_age_filtered():
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    adapter = object.__new__(WhatsAppAdapter)
+    adapter._max_message_age_seconds = 300
+    marked = []
+    adapter._gateway_wal = SimpleNamespace(mark_processed=lambda seq: marked.append(seq))
+    adapter._message_handler = AsyncMock(return_value=None)
+    adapter.handle_message = AsyncMock()
+    event = _event(timestamp=1)
+    event.raw_message["eventType"] = "revoke"
+    event.raw_message["deliveryMode"] = "revoke"
+    event.raw_message["wal_seq"] = 12
+
+    await adapter._dispatch_built_message_event(event)
+
+    adapter.handle_message.assert_not_awaited()
+    adapter._message_handler.assert_awaited_once_with(event)
+    assert marked == [12]
 
 
 @pytest.mark.asyncio

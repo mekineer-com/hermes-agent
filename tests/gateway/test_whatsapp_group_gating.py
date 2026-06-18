@@ -253,6 +253,7 @@ def test_config_bridges_whatsapp_dm_and_group_policy(monkeypatch, tmp_path):
         "whatsapp:\n"
         "  dm_policy: disabled\n"
         "  group_policy: allowlist\n"
+        "  max_message_age_seconds: 300\n"
         "  group_allow_from:\n"
         "    - \"120363001234567890@g.us\"\n",
         encoding="utf-8",
@@ -262,15 +263,18 @@ def test_config_bridges_whatsapp_dm_and_group_policy(monkeypatch, tmp_path):
     monkeypatch.delenv("WHATSAPP_DM_POLICY", raising=False)
     monkeypatch.delenv("WHATSAPP_GROUP_POLICY", raising=False)
     monkeypatch.delenv("WHATSAPP_GROUP_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("WHATSAPP_MAX_MESSAGE_AGE_SECONDS", raising=False)
 
     config = load_gateway_config()
 
     assert config is not None
     assert config.platforms[Platform.WHATSAPP].extra["dm_policy"] == "disabled"
     assert config.platforms[Platform.WHATSAPP].extra["group_policy"] == "allowlist"
+    assert config.platforms[Platform.WHATSAPP].extra["max_message_age_seconds"] == 300
     assert config.platforms[Platform.WHATSAPP].extra["group_allow_from"] == ["120363001234567890@g.us"]
     assert __import__("os").environ["WHATSAPP_DM_POLICY"] == "disabled"
     assert __import__("os").environ["WHATSAPP_GROUP_POLICY"] == "allowlist"
+    assert __import__("os").environ["WHATSAPP_MAX_MESSAGE_AGE_SECONDS"] == "300"
     assert __import__("os").environ["WHATSAPP_GROUP_ALLOWED_USERS"] == "120363001234567890@g.us"
 
 
