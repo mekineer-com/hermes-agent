@@ -41,7 +41,7 @@ fail visibly.
 
 | Area | File |
 |------|------|
-| WhatsApp platform adapter | `gateway/platforms/whatsapp.py` |
+| WhatsApp platform adapter | `gateway/platforms/whatsapp.py` — staleness gate in `_dispatch_built_message_event`; post-turn title generation skipped for soul-mode sessions |
 | Baileys bridge | `scripts/whatsapp-bridge/bridge.js` |
 | Baileys classification helpers | `scripts/whatsapp-bridge/history_ingest.js` |
 | Baileys durable queue | `scripts/whatsapp-bridge/durable_queue.js` |
@@ -54,7 +54,7 @@ fail visibly.
 | Web-source browser options | `scripts/whatsapp-web-source/browser-options.js` |
 | Web-source page hooks | `scripts/whatsapp-web-source/page-hooks.js` |
 | WhatsApp ID normalization | `gateway/whatsapp_identity.py` |
-| SQLite session store | `hermes_state.py` |
+| SQLite session store | `hermes_state.py` — includes `processed_source_keys` table (durable dedup ledger, keyed by `source_chat_id` + `source_message_id`) |
 | Burst-debounce control | `gateway/platforms/base.py` `merge_pending_message_event` (~1092) |
 
 ## `gateway/run.py` WhatsApp Seam Map
@@ -73,8 +73,10 @@ Search targets:
 - `_is_whatsapp_persist_only_event`
   - identifies history/persist-only events that should not wake Siri
 - `_is_duplicate_whatsapp_source_message`
-  - checks `SessionDB.message_source_key_has_response`
+  - checks `processed_source_keys` table first (keyed by `source_chat_id` + `source_message_id`); falls back to legacy `SessionDB.message_source_key_has_response()` and promotes hits into the new table
   - live rows should be skipped only after the source message has an assistant response
+- `_dispatch_built_message_event`
+  - staleness gate: `live` rows older than `whatsapp.max_message_age_seconds` (config, default 300s, 0=off) are dropped, logged, and WAL-marked; `persist_only`/`revoke` still flow normally
 - post-agent transcript persistence in `_handle_message`
   - adds WhatsApp sender/source/timestamp metadata to user rows
   - updates latest user sender in `state.db`
