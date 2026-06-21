@@ -197,6 +197,12 @@ def test_dm_policy_allowlist_allows_listed_sender():
     assert adapter._should_process_message(_dm_message("hello")) is True
 
 
+def test_dm_policy_allowlist_allows_bare_number_for_jid_sender():
+    adapter = _make_adapter(dm_policy="allowlist", allow_from=["+6281234567890"])
+
+    assert adapter._should_process_message(_dm_message("hello")) is True
+
+
 def test_dm_policy_open_allows_all_dms():
     adapter = _make_adapter(dm_policy="open")
 
@@ -384,3 +390,9 @@ def test_normalize_whatsapp_id_collapses_device_suffix():
         WhatsAppAdapter._normalize_whatsapp_id("15133278228:12@s.whatsapp.net")
         == "15133278228@s.whatsapp.net"
     )
+
+
+def test_whatsapp_allowlist_key_strips_jid_domain_and_plus():
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    assert WhatsAppAdapter._whatsapp_allowlist_key("+15133278228:12@s.whatsapp.net") == "15133278228"

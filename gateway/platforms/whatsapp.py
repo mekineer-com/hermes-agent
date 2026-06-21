@@ -596,7 +596,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
-            return sender_id in self._allow_from
+            sender_key = self._whatsapp_allowlist_key(sender_id)
+            return bool(sender_key) and sender_key in {
+                self._whatsapp_allowlist_key(allowed) for allowed in self._allow_from
+            }
         # "open" — all DMs allowed
         return True
 
@@ -648,6 +651,11 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if ":" in normalized and "@" in normalized:
             normalized = re.sub(r":.*@", "@", normalized, count=1)
         return normalized
+
+    @staticmethod
+    def _whatsapp_allowlist_key(value: Optional[str]) -> str:
+        normalized = WhatsAppAdapter._normalize_whatsapp_id(value)
+        return normalized.removeprefix("+").split("@", 1)[0]
 
     def _bot_ids_from_message(self, data: Dict[str, Any]) -> set[str]:
         bot_ids = set()
