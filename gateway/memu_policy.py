@@ -12,7 +12,7 @@ import json
 import logging
 from typing import Any, Literal
 
-from gateway.whatsapp_identity import canonical_whatsapp_identifier, normalize_whatsapp_identifier
+from gateway.whatsapp_identity import expand_whatsapp_aliases, normalize_whatsapp_identifier
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -40,10 +40,10 @@ def _default_memorize_for_policy(policy: WhatsAppChannelPolicy) -> bool:
     return policy != "excluded"
 
 
-def _read_whatsapp_channel_entry(chat_id: str) -> dict | None:
+def _read_whatsapp_channel_entries(chat_id: str) -> list[dict]:
     raw = str(chat_id or "").strip()
     if not raw:
-        return None
+        return []
     config = _read_memu_config()
     channels = (
         config.get("whatsapp", {}).get("channels", {})
@@ -51,33 +51,39 @@ def _read_whatsapp_channel_entry(chat_id: str) -> dict | None:
         else {}
     )
     if not isinstance(channels, dict) or not channels:
-        return None
+        return []
 
-    canonical = canonical_whatsapp_identifier(raw) or ""
-    normalized = normalize_whatsapp_identifier(raw) or ""
-    for candidate in (raw, canonical, normalized):
-        if not candidate:
-            continue
-        entry = channels.get(candidate)
-        if isinstance(entry, dict):
-            return entry
-    return None
-
+    aliases = {alias for alias in expand_whatsapp_aliases(raw) if alias}
+    normalized = normalize_whatsapp_identifier(raw)
+    if normalized:
+        aliases.add(normalized)
+    if not aliases:
+        return []
+    return [
+        entry
+        for key, entry in channels.items()
+        if isinstance(entry, dict) and normalize_whatsapp_identifier(str(key)) in aliases
+    ]
 
 
 def whatsapp_channel_settings(chat_id: str) -> tuple[WhatsAppChannelPolicy, bool]:
     """Return (policy, memorize) for a WhatsApp chat from ``~/.hermes/memu.json``."""
-    entry = _read_whatsapp_channel_entry(chat_id)
+    entries = _read_whatsapp_channel_entries(chat_id)
     policy: WhatsAppChannelPolicy = "full"
-    if isinstance(entry, dict):
+    memorize: bool | None = None
+    for entry in entries:
         raw_policy = str(entry.get("policy") or "").strip().lower()
-        if raw_policy in {"full", "listen_only", "excluded"}:
-            policy = raw_policy  # type: ignore[assignment]
+        if raw_policy == "excluded":
+            policy = "excluded"
+        elif raw_policy == "listen_only" and policy != "excluded":
+            policy = "listen_only"
+        elif raw_policy == "full" and policy not in {"excluded", "listen_only"}:
+            policy = "full"
+        if isinstance(entry.get("memorize"), bool):
+            memorize = bool(entry.get("memorize")) if memorize is not True else True
     if policy == "excluded":
         return policy, False
-    if isinstance(entry, dict) and isinstance(entry.get("memorize"), bool):
-        return policy, bool(entry.get("memorize"))
-    return policy, _default_memorize_for_policy(policy)
+    return policy, memorize if memorize is not None else _default_memorize_for_policy(policy)
 
 
 def _is_soul_mode_session(gateway: Any, session_key: str) -> bool:
