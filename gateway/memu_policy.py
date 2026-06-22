@@ -54,9 +54,6 @@ def _read_whatsapp_channel_entries(chat_id: str) -> list[dict]:
         return []
 
     aliases = {alias for alias in expand_whatsapp_aliases(raw) if alias}
-    normalized = normalize_whatsapp_identifier(raw)
-    if normalized:
-        aliases.add(normalized)
     if not aliases:
         return []
     return [

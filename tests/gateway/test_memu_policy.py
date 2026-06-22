@@ -51,6 +51,36 @@ def test_whatsapp_channel_settings_merges_lid_and_phone_aliases(hermes_home):
     assert whatsapp_channel_settings("263801622552699@lid") == ("listen_only", True)
 
 
+def test_whatsapp_channel_settings_merges_phone_to_lid_keyed_alias(hermes_home):
+    from gateway.memu_policy import whatsapp_channel_settings
+
+    session_dir = hermes_home / "whatsapp" / "session"
+    session_dir.mkdir(parents=True)
+    (session_dir / "lid-mapping-16467326349.json").write_text(
+        json.dumps("263801622552699"),
+        encoding="utf-8",
+    )
+    (session_dir / "lid-mapping-263801622552699_reverse.json").write_text(
+        json.dumps("16467326349"),
+        encoding="utf-8",
+    )
+    _write_memu_json(
+        hermes_home,
+        {
+            "whatsapp": {
+                "channels": {
+                    "263801622552699@lid": {
+                        "policy": "listen_only",
+                        "memorize": True,
+                    },
+                }
+            }
+        },
+    )
+
+    assert whatsapp_channel_settings("16467326349@s.whatsapp.net") == ("listen_only", True)
+
+
 def test_whatsapp_channel_settings_excluded_alias_wins(hermes_home):
     from gateway.memu_policy import whatsapp_channel_settings
 
