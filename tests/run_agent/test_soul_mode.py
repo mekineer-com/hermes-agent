@@ -142,6 +142,19 @@ def test_build_conversation_id_whatsapp_gateway_key_dm():
     assert result == "whatsapp:dm:15551234567"
 
 
+def test_build_conversation_id_canonicalizes_whatsapp_gateway_key_dm():
+    result = soul_mode.build_conversation_id(
+        platform="whatsapp",
+        chat_id="270699038040215@lid",
+        chat_type="dm",
+        gateway_session_key="agent:main:whatsapp:dm:270699038040215",
+        canonical_whatsapp_fn=lambda value: {
+            "270699038040215": "19192593287",
+        }.get(str(value), str(value)),
+    )
+    assert result == "whatsapp:dm:19192593287"
+
+
 def test_build_conversation_id_whatsapp_gateway_key_group():
     result = soul_mode.build_conversation_id(
         platform="whatsapp",

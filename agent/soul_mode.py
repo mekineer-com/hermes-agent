@@ -172,6 +172,10 @@ def build_conversation_id(
         if session_key:
             parts = session_key.split(":")
             if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main" and parts[2] == "whatsapp":
+                if parts[3] == "dm" and canonical_whatsapp_fn is not None:
+                    canonical = canonical_whatsapp_fn(parts[4])
+                    if canonical:
+                        parts[4] = canonical
                 return "whatsapp:" + ":".join(parts[3:])
         if chat_id and chat_type == "dm" and canonical_whatsapp_fn is not None:
             canonical = canonical_whatsapp_fn(chat_id)
