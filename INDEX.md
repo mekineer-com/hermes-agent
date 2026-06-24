@@ -41,10 +41,11 @@ fail visibly.
 
 | Area | File |
 |------|------|
-| WhatsApp platform adapter | `gateway/platforms/whatsapp.py` — staleness gate in `_dispatch_built_message_event`; post-turn title generation skipped for soul-mode sessions |
+| WhatsApp platform adapter | `gateway/platforms/whatsapp.py` — staleness gate in `_dispatch_built_message_event`; post-turn title generation skipped for soul-mode sessions; DM allowlist matching normalized (strips suffix variants) |
 | Baileys bridge | `scripts/whatsapp-bridge/bridge.js` |
 | Baileys classification helpers | `scripts/whatsapp-bridge/history_ingest.js` |
-| Baileys durable queue | `scripts/whatsapp-bridge/durable_queue.js` |
+| Baileys durable queue | `scripts/whatsapp-bridge/durable_queue.js`; normalizes Baileys Long-shaped and millisecond timestamps to seconds before persisting queue.seen or replaying live upgrades |
+| WhatsApp channel policy lookup | `gateway/memu_policy.py` — policy lookup + reverse-alias merge so aliases resolve to canonical policy |
 | WhatsApp Web daemon | `scripts/whatsapp-web-source/source-daemon.js` |
 | Web-source projection store | `scripts/whatsapp-web-source/store.py` |
 | Web-source normalization | `scripts/whatsapp-web-source/normalization.js` |
