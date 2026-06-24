@@ -67,7 +67,6 @@ function hasValue(value) {
 
 const LIVE_OWNED_FIELDS = new Set([
   'body',
-  'timestamp',
   'senderId',
   'senderName',
   'chatName',
@@ -107,13 +106,26 @@ function mergeQueuedEvent(target, incoming) {
 }
 
 function normalizeSeenEntry(text) {
-  const tab = text.indexOf('\t');
-  if (tab >= 0) {
-    const mode = text.slice(0, tab).trim() || 'live';
-    const uid = text.slice(tab + 1).trim();
-    return { uid, mode };
+  const parts = text.split('\t');
+  if (parts.length >= 2) {
+    const mode = parts[0].trim() || 'live';
+    const uid = parts[1].trim();
+    const rawTimestamp = parts.slice(2).join('\t').trim();
+    if (!rawTimestamp) return { uid, mode };
+    try {
+      return { uid, mode, timestamp: JSON.parse(rawTimestamp) };
+    } catch {
+      return { uid, mode };
+    }
   }
   return { uid: text, mode: 'live' };
+}
+
+function serializeSeenEntry(uid, mode, timestamp) {
+  if (hasValue(timestamp)) {
+    return `${mode}\t${uid}\t${JSON.stringify(timestamp)}`;
+  }
+  return `${mode}\t${uid}`;
 }
 
 function seenModeFor(event) {
@@ -142,6 +154,7 @@ export class DurableQueue {
     this.nextSeq = 1;
     this.unacked = [];
     this.seenModeByUid = new Map();
+    this.seenTimestampByUid = new Map();
     this.ackSinceCompaction = 0;
 
     this._load();
@@ -175,6 +188,10 @@ export class DurableQueue {
       if (eventUid) row.event_uid = eventUid;
       if (eventUid && !this.seenModeByUid.has(eventUid)) {
         this.seenModeByUid.set(eventUid, seenModeFor(row));
+        seenDirty = true;
+      }
+      if (eventUid && !this.seenTimestampByUid.has(eventUid) && hasValue(row.timestamp)) {
+        this.seenTimestampByUid.set(eventUid, row.timestamp);
         seenDirty = true;
       }
       if (seq <= this.ackedUpToSeq) continue;
@@ -212,13 +229,16 @@ export class DurableQueue {
       if (!text) continue;
       const entry = normalizeSeenEntry(text);
       if (entry.uid) this.seenModeByUid.set(entry.uid, entry.mode);
+      if (entry.uid && hasValue(entry.timestamp)) {
+        this.seenTimestampByUid.set(entry.uid, entry.timestamp);
+      }
     }
   }
 
-  _appendSeenUid(eventUid, mode) {
+  _appendSeenUid(eventUid, mode, timestamp) {
     const fd = openSync(this.seenPath, 'a');
     try {
-      writeFileSync(fd, `${mode}\t${eventUid}\n`, { encoding: 'utf8' });
+      writeFileSync(fd, `${serializeSeenEntry(eventUid, mode, timestamp)}\n`, { encoding: 'utf8' });
       fsyncSync(fd);
     } finally {
       closeSync(fd);
@@ -226,7 +246,9 @@ export class DurableQueue {
   }
 
   _persistSeen() {
-    const lines = Array.from(this.seenModeByUid.entries()).map(([uid, mode]) => `${mode}\t${uid}`);
+    const lines = Array.from(this.seenModeByUid.entries()).map(([uid, mode]) => (
+      serializeSeenEntry(uid, mode, this.seenTimestampByUid.get(uid))
+    ));
     if (!lines.length) {
       atomicWriteText(this.seenPath, '');
       return;
@@ -268,6 +290,7 @@ export class DurableQueue {
       mergeQueuedEvent(existing, event);
       const mergedMode = seenModeFor(existing);
       this.seenModeByUid.set(eventUid, mergedMode);
+      if (hasValue(existing.timestamp)) this.seenTimestampByUid.set(eventUid, existing.timestamp);
       this._persistSeen();
       this._compact();
       return existing;
@@ -275,6 +298,10 @@ export class DurableQueue {
     const seenMode = this.seenModeByUid.get(eventUid);
     if (seenMode && !(seenMode === 'persist_only' && incomingSeenMode === 'live')) {
       return null;
+    }
+    const seenTimestamp = this.seenTimestampByUid.get(eventUid);
+    if (seenMode === 'persist_only' && incomingSeenMode === 'live' && hasValue(seenTimestamp)) {
+      event.timestamp = seenTimestamp;
     }
 
     const seq = this.nextSeq;
@@ -286,9 +313,10 @@ export class DurableQueue {
       ...event,
     };
     this._appendRow(row);
-    this._appendSeenUid(eventUid, incomingSeenMode);
+    this._appendSeenUid(eventUid, incomingSeenMode, row.timestamp);
     this.unacked.push(row);
     this.seenModeByUid.set(eventUid, incomingSeenMode);
+    if (hasValue(row.timestamp)) this.seenTimestampByUid.set(eventUid, row.timestamp);
     return row;
   }
 

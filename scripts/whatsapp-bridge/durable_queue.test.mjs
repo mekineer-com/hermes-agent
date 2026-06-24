@@ -172,7 +172,7 @@ test('durable queue bootstraps seen ids from queue rows when seen file is missin
 
     const queue = new DurableQueue({ queueDir, compactionEveryAcks: 1000 });
     const seenLines = readLines(path.join(queueDir, 'queue.seen'));
-    assert.deepEqual(seenLines, ['persist_only\t114628432556258@lid:ACCB6730B9B318CD8D20AF8EA94082E1']);
+    assert.deepEqual(seenLines, ['persist_only\t114628432556258@lid:ACCB6730B9B318CD8D20AF8EA94082E1\t1']);
 
     const duplicate = queue.enqueue({
       messageId: 'ACCB6730B9B318CD8D20AF8EA94082E1',
@@ -264,7 +264,7 @@ test('durable queue merges history rows into later live rows', () => {
     assert.equal(history.eventType, undefined);
     assert.equal(history.senderName, 'Live name');
     assert.equal(history.body, 'live body');
-    assert.equal(history.timestamp, 2);
+    assert.equal(history.timestamp, 1);
     assert.equal(queueLinesAfterHistory.length, 1);
     assert.equal(queueLinesAfterLive.length, 1);
     assert.equal(duplicateLive.event_uid, '15133278228@s.whatsapp.net:m1');
@@ -297,7 +297,7 @@ test('durable queue lets a live row upgrade a previously seen history row after 
       chatId: '15133278228@s.whatsapp.net',
       senderId: '15133278228@s.whatsapp.net',
       body: 'history body',
-      timestamp: 1,
+      timestamp: 2,
     });
     const duplicateHistory = queue.enqueue({
       eventType: 'history_message',
@@ -311,6 +311,7 @@ test('durable queue lets a live row upgrade a previously seen history row after 
 
     assert.equal(live.event_uid, '15133278228@s.whatsapp.net:m1');
     assert.equal(live.deliveryMode, 'live');
+    assert.equal(live.timestamp, 1);
     assert.equal(duplicateHistory, live);
     assert.equal(live.eventType, undefined);
   } finally {
