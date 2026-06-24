@@ -318,3 +318,34 @@ test('durable queue lets a live row upgrade a previously seen history row after 
     rmSync(queueDir, { recursive: true, force: true });
   }
 });
+
+test('durable queue normalizes long-shaped timestamps before live upgrade', () => {
+  const queueDir = mkQueueDir();
+  try {
+    let queue = new DurableQueue({ queueDir, compactionEveryAcks: 1000 });
+    const history = queue.enqueue({
+      eventType: 'history_message',
+      deliveryMode: 'persist_only',
+      messageId: 'm1',
+      chatId: '15133278228@s.whatsapp.net',
+      senderId: '15133278228@s.whatsapp.net',
+      body: 'history body',
+      timestamp: { low: 1000, high: 0, unsigned: true },
+    });
+    queue.ackThrough(history.seq);
+
+    queue = new DurableQueue({ queueDir, compactionEveryAcks: 1000 });
+    const live = queue.enqueue({
+      deliveryMode: 'live',
+      messageId: 'm1',
+      chatId: '15133278228@s.whatsapp.net',
+      senderId: '15133278228@s.whatsapp.net',
+      body: 'history body',
+      timestamp: 2000,
+    });
+
+    assert.equal(live.timestamp, 1000);
+  } finally {
+    rmSync(queueDir, { recursive: true, force: true });
+  }
+});

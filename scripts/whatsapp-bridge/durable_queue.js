@@ -65,6 +65,17 @@ function hasValue(value) {
   return true;
 }
 
+function normalizeTimestamp(value) {
+  if (typeof value === 'object' && value !== null) {
+    const low = Number(value.low);
+    return Number.isFinite(low) && low > 0 ? low : value;
+  }
+  if (typeof value === 'boolean') return value;
+  const ts = Number(value);
+  if (!Number.isFinite(ts) || ts <= 0) return value;
+  return ts > 10000000000 ? ts / 1000 : ts;
+}
+
 const LIVE_OWNED_FIELDS = new Set([
   'body',
   'senderId',
@@ -122,8 +133,9 @@ function normalizeSeenEntry(text) {
 }
 
 function serializeSeenEntry(uid, mode, timestamp) {
-  if (hasValue(timestamp)) {
-    return `${mode}\t${uid}\t${JSON.stringify(timestamp)}`;
+  const normalizedTimestamp = normalizeTimestamp(timestamp);
+  if (hasValue(normalizedTimestamp)) {
+    return `${mode}\t${uid}\t${JSON.stringify(normalizedTimestamp)}`;
   }
   return `${mode}\t${uid}`;
 }
@@ -185,6 +197,7 @@ export class DurableQueue {
       if (!Number.isFinite(seq) || seq < 1) continue;
       if (seq > this.maxSeq) this.maxSeq = seq;
       const eventUid = eventUidFor(row);
+      if (hasValue(row.timestamp)) row.timestamp = normalizeTimestamp(row.timestamp);
       if (eventUid) row.event_uid = eventUid;
       if (eventUid && !this.seenModeByUid.has(eventUid)) {
         this.seenModeByUid.set(eventUid, seenModeFor(row));
@@ -230,7 +243,7 @@ export class DurableQueue {
       const entry = normalizeSeenEntry(text);
       if (entry.uid) this.seenModeByUid.set(entry.uid, entry.mode);
       if (entry.uid && hasValue(entry.timestamp)) {
-        this.seenTimestampByUid.set(entry.uid, entry.timestamp);
+        this.seenTimestampByUid.set(entry.uid, normalizeTimestamp(entry.timestamp));
       }
     }
   }
@@ -284,6 +297,7 @@ export class DurableQueue {
   enqueue(event) {
     const eventUid = eventUidFor(event);
     if (!eventUid) return null;
+    if (hasValue(event.timestamp)) event.timestamp = normalizeTimestamp(event.timestamp);
     const incomingSeenMode = seenModeFor(event);
     const existing = this.unacked.find((row) => row?.event_uid === eventUid);
     if (existing) {
