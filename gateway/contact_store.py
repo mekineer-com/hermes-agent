@@ -175,7 +175,10 @@ class WhatsAppContactStore:
         data = self._load()
         contacts = data.setdefault("contacts", {})
         aliases = set(record.get("aliases") or [])
-        preferred = canonical_whatsapp_jid(next(iter(aliases), record.get("preferred_jid", ""))) or record.get("preferred_jid", "")
+        preferred = (
+            canonical_whatsapp_jid(next(iter(aliases), record.get("preferred_jid", "")))
+            or record.get("preferred_jid", "")
+        )
         if not preferred:
             return
         aliases.add(preferred)
@@ -206,13 +209,19 @@ class WhatsAppContactStore:
         return {}
 
     def _mapping_pair(self, raw_key: str, mapped: Any, *, reverse: bool) -> tuple[str, str] | None:
+        """Return ``(phone_jid, lid_jid)`` for one bridge mapping file.
+
+        Current bridge files are typed by filename, not by the JSON value:
+        forward files are keyed by phone and contain a bare LID; reverse files
+        are keyed by LID and contain a bare phone.
+        """
         key = str(raw_key or "").strip()
         mapped_str = str(mapped or "").strip()
         if not key or not mapped_str:
             return None
         if reverse:
             return (to_whatsapp_jid(mapped_str), f"{key}@lid")
-        if mapped_str.endswith("@lid") or ("@" not in mapped_str and not mapped_str.endswith("@s.whatsapp.net")):
+        if mapped_str.endswith("@lid") or "@" not in mapped_str:
             return (to_whatsapp_jid(key), _ensure_lid_jid(mapped_str))
         if mapped_str.endswith("@s.whatsapp.net") or mapped_str.endswith("@c.us"):
             return (to_whatsapp_jid(mapped_str), _ensure_lid_jid(key))
@@ -271,7 +280,14 @@ def _merge_records(target: dict[str, Any], source: dict[str, Any]) -> None:
     )
     target.setdefault("evidence", [])
     for row in source.get("evidence") or []:
-        if isinstance(row, dict) and not any(_same_evidence(existing, row) for existing in target["evidence"] if isinstance(existing, dict)):
+        if not isinstance(row, dict):
+            continue
+        duplicate = any(
+            _same_evidence(existing, row)
+            for existing in target["evidence"]
+            if isinstance(existing, dict)
+        )
+        if not duplicate:
             target["evidence"].append(row)
     target_display = target.setdefault("display", {})
     for key, value in (source.get("display") or {}).items():

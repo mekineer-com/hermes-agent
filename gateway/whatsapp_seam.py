@@ -4,6 +4,11 @@ Upstream Hermes keeps ``canonical_whatsapp_identifier`` phone-preferred and
 domain-stripping. OpenAlma needs durable, domain-preserving conversation IDs,
 with LID preferred when the bridge has evidence that a phone and LID are the
 same contact.
+
+The bridge mapping files use the filename to carry identity type:
+``lid-mapping-{phone}.json`` contains a bare LID, and
+``lid-mapping-{lid}_reverse.json`` contains a bare phone. Do not infer LID vs
+phone solely from the JSON value; current bridge values are often domain-less.
 """
 
 from __future__ import annotations
@@ -79,6 +84,7 @@ def _ensure_lid_jid(value: str) -> str:
 
 
 def _mapping_pair(raw_key: str, raw_mapped: object, *, reverse: bool) -> tuple[set[str], str] | None:
+    """Return alias graph endpoints for one bridge LID mapping file."""
     key = str(raw_key or "").strip()
     if not key:
         return None
@@ -89,10 +95,13 @@ def _mapping_pair(raw_key: str, raw_mapped: object, *, reverse: bool) -> tuple[s
         normalized = _normalize_jid(key)
         key_candidates = {normalized} | _phone_equivalents(normalized)
     elif reverse:
+        # Reverse files are keyed by LID and contain the phone value.
         key_candidates = {f"{key}@lid"}
     elif mapped.endswith("@s.whatsapp.net") or mapped.endswith("@c.us"):
+        # Historical/full-JID forward shape: keyed by LID, content is phone.
         key_candidates = {f"{key}@lid"}
     else:
+        # Current bridge forward shape: keyed by phone, content is bare LID.
         key_candidates = {f"{key}@s.whatsapp.net", f"{key}@c.us"}
 
     if reverse:
@@ -171,6 +180,9 @@ def _preferred_jid(aliases: set[str], *, fallback: str) -> str:
     lids = sorted(alias for alias in aliases if alias.endswith("@lid"))
     if lids:
         return lids[0]
+
+    if fallback in aliases and (fallback.endswith("@s.whatsapp.net") or fallback.endswith("@c.us")):
+        return fallback
 
     phones = sorted(alias for alias in aliases if alias.endswith("@s.whatsapp.net"))
     if phones:
