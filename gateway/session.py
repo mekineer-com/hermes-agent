@@ -64,6 +64,7 @@ from .whatsapp_identity import (
     canonical_whatsapp_identifier,
     normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
 )
+from .whatsapp_seam import resolve_whatsapp_jid as _resolve_whatsapp_jid
 from utils import atomic_replace
 
 
@@ -629,7 +630,7 @@ def build_session_key(
     if source.chat_type == "dm":
         dm_chat_id = source.chat_id
         if source.platform == Platform.WHATSAPP:
-            dm_chat_id = canonical_whatsapp_identifier(source.chat_id)
+            dm_chat_id = _resolve_whatsapp_jid(source.chat_id)
 
         if dm_chat_id:
             if source.thread_id:
@@ -644,7 +645,7 @@ def build_session_key(
         # Same JID/LID-flip bug as the DM case: without canonicalisation, a
         # single group member gets two isolated per-user sessions when the
         # bridge reshuffles alias forms.
-        participant_id = canonical_whatsapp_identifier(str(participant_id)) or participant_id
+        participant_id = _resolve_whatsapp_jid(str(participant_id)) or participant_id
     key_parts = ["agent:main", platform, source.chat_type]
 
     if source.chat_id:

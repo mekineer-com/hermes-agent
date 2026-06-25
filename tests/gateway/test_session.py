@@ -791,7 +791,8 @@ class TestWhatsAppSessionKeyConsistency:
         s._loaded = True
         return s
 
-    def test_whatsapp_dm_uses_canonical_identifier(self):
+    def test_whatsapp_dm_uses_canonical_identifier(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         source = SessionSource(
             platform=Platform.WHATSAPP,
             chat_id="15551234567@s.whatsapp.net",
@@ -799,14 +800,21 @@ class TestWhatsAppSessionKeyConsistency:
             user_name="Phone User",
         )
         key = build_session_key(source)
-        assert key == "agent:main:whatsapp:dm:15551234567"
+        # Domain-preserving: full JID is kept, not stripped to bare digits.
+        assert key == "agent:main:whatsapp:dm:15551234567@s.whatsapp.net"
 
     def test_whatsapp_dm_aliases_share_one_session_key(self, tmp_path, monkeypatch):
         tmp_home = tmp_path / "hermes-home"
         mapping_dir = tmp_home / "whatsapp" / "session"
         mapping_dir.mkdir(parents=True, exist_ok=True)
+        # Forward mapping: LID → phone
         (mapping_dir / "lid-mapping-999999999999999.json").write_text(
             json.dumps("15551234567@s.whatsapp.net"),
+            encoding="utf-8",
+        )
+        # Reverse mapping: phone → LID (needed so phone input also finds the LID)
+        (mapping_dir / "lid-mapping-15551234567_reverse.json").write_text(
+            json.dumps("999999999999999@lid"),
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_home))
@@ -824,8 +832,10 @@ class TestWhatsAppSessionKeyConsistency:
             user_name="Phone User",
         )
 
-        assert build_session_key(lid_source) == "agent:main:whatsapp:dm:15551234567"
-        assert build_session_key(phone_source) == "agent:main:whatsapp:dm:15551234567"
+        # LID-preferred: both forms resolve to the LID JID.
+        expected = "agent:main:whatsapp:dm:999999999999999@lid"
+        assert build_session_key(lid_source) == expected
+        assert build_session_key(phone_source) == expected
 
     def test_whatsapp_group_participant_aliases_share_session_key(self, tmp_path, monkeypatch):
         """With group_sessions_per_user, the same human flipping between
@@ -834,8 +844,14 @@ class TestWhatsAppSessionKeyConsistency:
         tmp_home = tmp_path / "hermes-home"
         mapping_dir = tmp_home / "whatsapp" / "session"
         mapping_dir.mkdir(parents=True, exist_ok=True)
+        # Forward mapping: LID → phone
         (mapping_dir / "lid-mapping-999999999999999.json").write_text(
             json.dumps("15551234567@s.whatsapp.net"),
+            encoding="utf-8",
+        )
+        # Reverse mapping: phone → LID
+        (mapping_dir / "lid-mapping-15551234567_reverse.json").write_text(
+            json.dumps("999999999999999@lid"),
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_home))
@@ -855,7 +871,8 @@ class TestWhatsAppSessionKeyConsistency:
             user_name="Group Member",
         )
 
-        expected = "agent:main:whatsapp:group:120363000000000000@g.us:15551234567"
+        # LID-preferred: both participant forms resolve to the LID JID.
+        expected = "agent:main:whatsapp:group:120363000000000000@g.us:999999999999999@lid"
         assert build_session_key(lid_source, group_sessions_per_user=True) == expected
         assert build_session_key(phone_source, group_sessions_per_user=True) == expected
 

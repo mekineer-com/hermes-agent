@@ -401,7 +401,7 @@ def handle_turn(
     try:
         client = config.get_client()
 
-        from gateway.whatsapp_identity import canonical_whatsapp_identifier
+        from gateway.whatsapp_seam import resolve_whatsapp_jid as _resolve_whatsapp_jid
         conversation_id = build_conversation_id(
             platform=str(getattr(agent, "platform", "") or ""),
             chat_id=str(getattr(agent, "_chat_id", "") or ""),
@@ -409,7 +409,7 @@ def handle_turn(
             chat_type=str(getattr(agent, "_chat_type", "") or ""),
             gateway_session_key=str(getattr(agent, "_gateway_session_key", "") or ""),
             session_id=str(getattr(agent, "session_id", "") or ""),
-            canonical_whatsapp_fn=canonical_whatsapp_identifier,
+            canonical_whatsapp_fn=_resolve_whatsapp_jid,
         )
 
         history = _load_history(agent, conversation_history, config)

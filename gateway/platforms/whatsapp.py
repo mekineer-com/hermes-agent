@@ -364,6 +364,8 @@ from gateway.platforms.base import (
     cache_audio_from_url,
 )
 from gateway.platforms.whatsapp_wal import WhatsAppGatewayWal
+from gateway.contact_store import load_contact_store
+from gateway.whatsapp_identity import to_whatsapp_jid as _to_whatsapp_jid
 
 
 def check_whatsapp_requirements() -> bool:
@@ -511,6 +513,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             offset_path=wal_root / "gateway_wal.offset",
             compact_every=compact_every,
         )
+        self._contact_store = load_contact_store(get_hermes_home())
         # Set to True by disconnect() before we SIGTERM our child bridge so
         # _check_managed_bridge_exit() can distinguish an intentional
         # shutdown-time exit (returncode -15 / -2 / 0) from a real crash.
@@ -1420,9 +1423,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
             last_message_id = None
             message_ids = []
+            chat_jid = _to_whatsapp_jid(chat_id)
             for chunk in chunks:
                 payload: Dict[str, Any] = {
-                    "chatId": chat_id,
+                    "chatId": chat_jid,
                     "message": chunk,
                 }
                 if reply_to and last_message_id is None:
@@ -1492,7 +1496,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             async with self._http_session.post(
                 f"http://127.0.0.1:{self._bridge_port}/edit",
                 json={
-                    "chatId": chat_id,
+                    "chatId": _to_whatsapp_jid(chat_id),
                     "messageId": message_id,
                     "message": content,
                 },
@@ -1527,7 +1531,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=f"File not found: {file_path}")
 
             payload: Dict[str, Any] = {
-                "chatId": chat_id,
+                "chatId": _to_whatsapp_jid(chat_id),
                 "filePath": file_path,
                 "mediaType": media_type,
             }
@@ -1632,7 +1636,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             # socket in CLOSE_WAIT. See #18451.
             async with self._http_session.post(
                 f"http://127.0.0.1:{self._bridge_port}/typing",
-                json={"chatId": chat_id},
+                json={"chatId": _to_whatsapp_jid(chat_id)},
                 timeout=aiohttp.ClientTimeout(total=5)
             ):
                 pass
@@ -1650,7 +1654,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             import aiohttp
 
             async with self._http_session.get(
-                f"http://127.0.0.1:{self._bridge_port}/chat/{chat_id}",
+                f"http://127.0.0.1:{self._bridge_port}/chat/{_to_whatsapp_jid(chat_id)}",
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
                 if resp.status == 200:
@@ -1694,6 +1698,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             drained = True
                             break
                         for msg_data in messages:
+                            self._contact_store.ingest_event(msg_data)
                             wal_row = wal.append(msg_data)
                             if wal_row is None:
                                 await self._ack_bridge_message(msg_data.get("seq"))
@@ -1982,6 +1987,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             event_data = row.get("event")
             if not isinstance(event_data, dict):
                 raise ValueError(f"Invalid WhatsApp WAL row payload at wal_seq={wal_seq!r}")
+            self._contact_store.ingest_event(event_data)
             event = await self._build_message_event(event_data)
             if event:
                 event.raw_message = dict(event.raw_message)

@@ -190,3 +190,29 @@ def canonical_whatsapp_identifier(identifier: str) -> str:
     # when no alias mapping data is present.
     aliases = expand_whatsapp_aliases(normalized)
     return min(aliases, key=lambda candidate: (len(candidate), candidate))
+
+
+def to_whatsapp_jid(chat_id: str) -> str:
+    """Return a proper WhatsApp JID for *chat_id*.
+
+    If *chat_id* already contains ``@`` (i.e. it is already a full JID such as
+    ``15551234567@s.whatsapp.net``, ``123@lid``, or ``120363@g.us``) it is
+    returned as-is after stripping the device suffix.
+
+    If *chat_id* is a bare phone number (no ``@``), the ``@s.whatsapp.net``
+    suffix is appended so Baileys receives a valid JID instead of a bare
+    number (which would crash the bridge's ``sendMessage`` call).
+
+    Ported from upstream ``gateway/whatsapp_identity.py:77`` (present in
+    upstream, absent in our fork before this commit).
+    """
+    raw = str(chat_id or "").strip()
+    if not raw:
+        return raw
+    if "@" in raw:
+        # Already a JID — strip device suffix only.
+        local, _, domain = raw.partition("@")
+        local = local.split(":")[0]
+        return f"{local}@{domain}"
+    # Bare phone number — add the standard suffix.
+    return f"{raw}@s.whatsapp.net"
