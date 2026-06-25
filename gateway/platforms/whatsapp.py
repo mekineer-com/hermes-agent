@@ -353,6 +353,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.contact_store import WhatsAppContactStore
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -364,6 +365,7 @@ from gateway.platforms.base import (
     cache_audio_from_url,
 )
 from gateway.platforms.whatsapp_wal import WhatsAppGatewayWal
+from gateway.whatsapp_identity import to_whatsapp_jid
 
 
 def check_whatsapp_requirements() -> bool:
@@ -510,6 +512,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
             wal_path=wal_root / "gateway_wal.jsonl",
             offset_path=wal_root / "gateway_wal.offset",
             compact_every=compact_every,
+        )
+        self._contact_store = WhatsAppContactStore(
+            store_path=wal_root / "contact_store.json",
+            session_dir=wal_root / "session",
         )
         # Set to True by disconnect() before we SIGTERM our child bridge so
         # _check_managed_bridge_exit() can distinguish an intentional
@@ -1417,6 +1423,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             # Format and chunk the message
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self._outgoing_chunk_limit())
+            chat_id = to_whatsapp_jid(chat_id)
 
             last_message_id = None
             message_ids = []
@@ -1492,7 +1499,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             async with self._http_session.post(
                 f"http://127.0.0.1:{self._bridge_port}/edit",
                 json={
-                    "chatId": chat_id,
+                    "chatId": to_whatsapp_jid(chat_id),
                     "messageId": message_id,
                     "message": content,
                 },
@@ -1527,7 +1534,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=f"File not found: {file_path}")
 
             payload: Dict[str, Any] = {
-                "chatId": chat_id,
+                "chatId": to_whatsapp_jid(chat_id),
                 "filePath": file_path,
                 "mediaType": media_type,
             }
@@ -1632,7 +1639,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             # socket in CLOSE_WAIT. See #18451.
             async with self._http_session.post(
                 f"http://127.0.0.1:{self._bridge_port}/typing",
-                json={"chatId": chat_id},
+                json={"chatId": to_whatsapp_jid(chat_id)},
                 timeout=aiohttp.ClientTimeout(total=5)
             ):
                 pass
@@ -1650,7 +1657,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             import aiohttp
 
             async with self._http_session.get(
-                f"http://127.0.0.1:{self._bridge_port}/chat/{chat_id}",
+                f"http://127.0.0.1:{self._bridge_port}/chat/{to_whatsapp_jid(chat_id)}",
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
                 if resp.status == 200:
@@ -1695,6 +1702,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             break
                         for msg_data in messages:
                             wal_row = wal.append(msg_data)
+                            self._update_contact_store_from_event(msg_data)
                             if wal_row is None:
                                 await self._ack_bridge_message(msg_data.get("seq"))
                                 continue
@@ -1982,6 +1990,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             event_data = row.get("event")
             if not isinstance(event_data, dict):
                 raise ValueError(f"Invalid WhatsApp WAL row payload at wal_seq={wal_seq!r}")
+            self._update_contact_store_from_event(event_data, source="gateway_wal_replay")
             event = await self._build_message_event(event_data)
             if event:
                 event.raw_message = dict(event.raw_message)
@@ -1989,6 +1998,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 await self._dispatch_built_message_event(event)
             else:
                 wal.mark_processed(wal_seq)
+
+    def _update_contact_store_from_event(self, event_data: Dict[str, Any], *, source: str = "gateway_wal") -> None:
+        try:
+            self._contact_store.update_from_event(event_data, source=source)
+        except Exception:
+            logger.warning("Failed to update WhatsApp contact store", exc_info=True)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         wal_seq = event.raw_message.get("wal_seq")

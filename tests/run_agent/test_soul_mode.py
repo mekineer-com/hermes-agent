@@ -137,22 +137,22 @@ def test_build_conversation_id_whatsapp_gateway_key_dm():
         platform="whatsapp",
         chat_id="999999999999999@lid",
         chat_type="dm",
-        gateway_session_key="agent:main:whatsapp:dm:15551234567",
+        gateway_session_key="agent:main:whatsapp:dm:15551234567@s.whatsapp.net",
     )
-    assert result == "whatsapp:dm:15551234567"
+    assert result == "whatsapp:dm:15551234567@s.whatsapp.net"
 
 
 def test_build_conversation_id_canonicalizes_whatsapp_gateway_key_dm():
     result = soul_mode.build_conversation_id(
         platform="whatsapp",
-        chat_id="270699038040215@lid",
+        chat_id="19192593287@s.whatsapp.net",
         chat_type="dm",
-        gateway_session_key="agent:main:whatsapp:dm:270699038040215",
+        gateway_session_key="agent:main:whatsapp:dm:19192593287@s.whatsapp.net",
         canonical_whatsapp_fn=lambda value: {
-            "270699038040215": "19192593287",
+            "19192593287@s.whatsapp.net": "270699038040215@lid",
         }.get(str(value), str(value)),
     )
-    assert result == "whatsapp:dm:19192593287"
+    assert result == "whatsapp:dm:270699038040215@lid"
 
 
 def test_build_conversation_id_whatsapp_gateway_key_group():
@@ -456,17 +456,17 @@ def test_conversation_id_different_contacts_different_ids():
         platform="whatsapp",
         chat_id="alice@lid",
         chat_type="dm",
-        gateway_session_key="agent:main:whatsapp:dm:15550001111",
+        gateway_session_key="agent:main:whatsapp:dm:15550001111@s.whatsapp.net",
     )
     id_bob = soul_mode.build_conversation_id(
         platform="whatsapp",
         chat_id="bob@lid",
         chat_type="dm",
-        gateway_session_key="agent:main:whatsapp:dm:15550002222",
+        gateway_session_key="agent:main:whatsapp:dm:15550002222@s.whatsapp.net",
     )
     assert id_alice != id_bob
-    assert id_alice == "whatsapp:dm:15550001111"
-    assert id_bob == "whatsapp:dm:15550002222"
+    assert id_alice == "whatsapp:dm:15550001111@s.whatsapp.net"
+    assert id_bob == "whatsapp:dm:15550002222@s.whatsapp.net"
 
 
 def test_conversation_id_cron_uses_job_name():

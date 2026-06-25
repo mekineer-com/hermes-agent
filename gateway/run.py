@@ -659,6 +659,7 @@ from gateway.whatsapp_identity import (
     expand_whatsapp_aliases as _expand_whatsapp_auth_aliases,
     normalize_whatsapp_identifier as _normalize_whatsapp_identifier,
 )
+from gateway.whatsapp_seam import chat_id_from_whatsapp_conversation_id
 
 
 logger = logging.getLogger(__name__)
@@ -3862,11 +3863,7 @@ class GatewayRunner:
 
     @staticmethod
     def _chat_id_from_whatsapp_conversation_id(conversation_id: str) -> str:
-        raw = str(conversation_id or "").strip()
-        for prefix in ("whatsapp:dm:", "whatsapp:group:"):
-            if raw.startswith(prefix):
-                return raw[len(prefix):].strip()
-        return ""
+        return chat_id_from_whatsapp_conversation_id(conversation_id)
 
     def _resolve_active_whatsapp_soul_config(self) -> dict[str, Any] | None:
         cfg = self._resolve_soul_mode_agent_config(

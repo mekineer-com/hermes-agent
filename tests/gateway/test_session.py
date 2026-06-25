@@ -799,7 +799,7 @@ class TestWhatsAppSessionKeyConsistency:
             user_name="Phone User",
         )
         key = build_session_key(source)
-        assert key == "agent:main:whatsapp:dm:15551234567"
+        assert key == "agent:main:whatsapp:dm:15551234567@s.whatsapp.net"
 
     def test_whatsapp_dm_aliases_share_one_session_key(self, tmp_path, monkeypatch):
         tmp_home = tmp_path / "hermes-home"
@@ -824,8 +824,8 @@ class TestWhatsAppSessionKeyConsistency:
             user_name="Phone User",
         )
 
-        assert build_session_key(lid_source) == "agent:main:whatsapp:dm:15551234567"
-        assert build_session_key(phone_source) == "agent:main:whatsapp:dm:15551234567"
+        assert build_session_key(lid_source) == "agent:main:whatsapp:dm:999999999999999@lid"
+        assert build_session_key(phone_source) == "agent:main:whatsapp:dm:999999999999999@lid"
 
     def test_whatsapp_group_participant_aliases_share_session_key(self, tmp_path, monkeypatch):
         """With group_sessions_per_user, the same human flipping between
@@ -855,7 +855,7 @@ class TestWhatsAppSessionKeyConsistency:
             user_name="Group Member",
         )
 
-        expected = "agent:main:whatsapp:group:120363000000000000@g.us:15551234567"
+        expected = "agent:main:whatsapp:group:120363000000000000@g.us:999999999999999@lid"
         assert build_session_key(lid_source, group_sessions_per_user=True) == expected
         assert build_session_key(phone_source, group_sessions_per_user=True) == expected
 

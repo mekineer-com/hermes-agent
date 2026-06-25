@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 # ``@``, ``.`` and ``:`` separators. ``\w`` is pinned to ASCII so
 # full-width digits / Unicode word chars can't sneak through.
 _SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9@.+\-]+$")
+_BARE_PHONE_RE = re.compile(r"^\+?[\d\s().\-]+$")
 
 from hermes_constants import get_hermes_home
 
@@ -65,6 +66,27 @@ def normalize_whatsapp_identifier(value: str) -> str:
         .split(":", 1)[0]
         .split("@", 1)[0]
     )
+
+
+def to_whatsapp_jid(value: str) -> str:
+    """Normalize an outbound WhatsApp target to a bridge-safe JID."""
+    if not value:
+        return ""
+
+    normalized = str(value).strip()
+    if ":" in normalized and "@" in normalized:
+        prefix, _, domain = normalized.partition("@")
+        normalized = f"{prefix.split(':', 1)[0]}@{domain}"
+
+    if "@" in normalized:
+        return normalized
+
+    if _BARE_PHONE_RE.fullmatch(normalized):
+        digits = re.sub(r"\D+", "", normalized)
+        if digits:
+            return f"{digits}@s.whatsapp.net"
+
+    return normalized
 
 
 def expand_whatsapp_aliases(identifier: str) -> Set[str]:
