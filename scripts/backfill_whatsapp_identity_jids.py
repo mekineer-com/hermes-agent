@@ -317,14 +317,33 @@ def migrate_memu(path: Path, idmap: IdentityMap) -> tuple[dict[str, Any] | None,
     return data, {"memu_keys_changed": changed, "memu_collisions": len(collisions)}, collisions
 
 
+def placeholder_channel_name(name: Any) -> bool:
+    raw = str(name or "").strip()
+    if not raw:
+        return True
+    normalized = normalize_jid(raw)
+    local = normalized.split("@", 1)[0]
+    if not local or not re.fullmatch(r"\d+", local):
+        return False
+    return normalized in {
+        local,
+        f"{local}@lid",
+        f"{local}@s.whatsapp.net",
+        f"{local}@c.us",
+    }
+
+
 def better_channel(existing: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
-    old_name = str(existing.get("name") or "")
+    merged = dict(existing)
     new_name = str(candidate.get("name") or "")
-    old_numeric = bool(re.fullmatch(r"[0-9@.\-]+", old_name))
-    new_numeric = bool(re.fullmatch(r"[0-9@.\-]+", new_name))
-    if old_numeric and new_name and not new_numeric:
-        return candidate
-    return existing
+    if placeholder_channel_name(existing.get("name")) and new_name and not placeholder_channel_name(new_name):
+        merged["name"] = new_name
+    for key, value in candidate.items():
+        if key == "name":
+            continue
+        if merged.get(key) in (None, "") and value not in (None, ""):
+            merged[key] = value
+    return merged
 
 
 def migrate_channel_directory(path: Path, idmap: IdentityMap) -> tuple[dict[str, Any] | None, dict[str, int], list[str]]:
