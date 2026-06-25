@@ -659,6 +659,7 @@ from gateway.whatsapp_identity import (
     expand_whatsapp_aliases as _expand_whatsapp_auth_aliases,
     normalize_whatsapp_identifier as _normalize_whatsapp_identifier,
 )
+from gateway.whatsapp_seam import chat_id_from_whatsapp_conversation_id as _chat_id_from_whatsapp_conversation_id
 
 
 logger = logging.getLogger(__name__)
@@ -3860,14 +3861,6 @@ class GatewayRunner:
         
         return True
 
-    @staticmethod
-    def _chat_id_from_whatsapp_conversation_id(conversation_id: str) -> str:
-        raw = str(conversation_id or "").strip()
-        for prefix in ("whatsapp:dm:", "whatsapp:group:"):
-            if raw.startswith(prefix):
-                return raw[len(prefix):].strip()
-        return ""
-
     def _resolve_active_whatsapp_soul_config(self) -> dict[str, Any] | None:
         cfg = self._resolve_soul_mode_agent_config(
             _load_gateway_config(),
@@ -4027,7 +4020,7 @@ class GatewayRunner:
                 return
 
             adapter = self.adapters.get(Platform.WHATSAPP)
-            chat_id = self._chat_id_from_whatsapp_conversation_id(str(row.get("target_conversation_id") or origin))
+            chat_id = _chat_id_from_whatsapp_conversation_id(str(row.get("target_conversation_id") or origin))
             if adapter is None or not chat_id:
                 await _mark("failed", error="whatsapp adapter or target chat missing")
                 return

@@ -17,6 +17,7 @@ if "dotenv" not in sys.modules:
 from gateway.run import GatewayRunner
 from gateway.config import Platform
 from gateway.platforms.base import SendResult
+from gateway.whatsapp_seam import chat_id_from_whatsapp_conversation_id
 
 
 @pytest.fixture(autouse=True)
@@ -86,9 +87,9 @@ def test_resolve_soul_mode_agent_config_is_explicit_per_agent():
 
 
 def test_chat_id_from_whatsapp_conversation_id():
-    assert GatewayRunner._chat_id_from_whatsapp_conversation_id("whatsapp:dm:151@s.whatsapp.net") == "151@s.whatsapp.net"
-    assert GatewayRunner._chat_id_from_whatsapp_conversation_id("whatsapp:group:123@g.us") == "123@g.us"
-    assert GatewayRunner._chat_id_from_whatsapp_conversation_id("telegram:123") == ""
+    assert chat_id_from_whatsapp_conversation_id("whatsapp:dm:151@s.whatsapp.net") == "151@s.whatsapp.net"
+    assert chat_id_from_whatsapp_conversation_id("whatsapp:group:123@g.us") == "123@g.us"
+    assert chat_id_from_whatsapp_conversation_id("telegram:123") == ""
 
 
 @pytest.mark.asyncio

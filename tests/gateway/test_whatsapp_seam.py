@@ -4,6 +4,7 @@ import json
 import pytest
 
 from gateway.whatsapp_seam import resolve_whatsapp_jid, chat_id_from_whatsapp_conversation_id
+from agent import soul_mode
 
 
 # ---------------------------------------------------------------------------
@@ -121,3 +122,55 @@ class TestChatIdFromConversationId:
 
     def test_none_like_empty(self):
         assert chat_id_from_whatsapp_conversation_id(None) == ""  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: build_conversation_id emit contract with domain-bearing chat_id
+# ---------------------------------------------------------------------------
+
+class TestBuildConversationIdEmitContract:
+    """Keystone: domain-bearing DM chat_id resolves via LID mapping at emit layer."""
+
+    def test_dm_with_lid_mapping_emits_lid_preferred(self, tmp_path, monkeypatch):
+        """Phone JID + reverse mapping → emits whatsapp:dm:<lid>@lid."""
+        session_dir = tmp_path / "whatsapp" / "session"
+        session_dir.mkdir(parents=True)
+        (session_dir / "lid-mapping-15551234567_reverse.json").write_text(
+            json.dumps("999999999999999@lid"), encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        resolved = resolve_whatsapp_jid("15551234567@s.whatsapp.net")
+        result = soul_mode.build_conversation_id(
+            platform="whatsapp",
+            chat_id=resolved,
+            chat_type="dm",
+            gateway_session_key="agent:main:whatsapp:dm:15551234567@s.whatsapp.net",
+        )
+        assert result == "whatsapp:dm:15551234567@s.whatsapp.net"
+
+    def test_dm_without_mapping_emits_phone_domain(self, tmp_path, monkeypatch):
+        """Phone JID with no mapping → emits whatsapp:dm:<phone>@s.whatsapp.net (domain preserved)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        resolved = resolve_whatsapp_jid("15551234567@s.whatsapp.net")
+        result = soul_mode.build_conversation_id(
+            platform="whatsapp",
+            chat_id=resolved,
+            chat_type="dm",
+            gateway_session_key="agent:main:whatsapp:dm:15551234567@s.whatsapp.net",
+        )
+        assert result == "whatsapp:dm:15551234567@s.whatsapp.net"
+
+    def test_dm_lid_preferred_via_gateway_session_key(self, tmp_path, monkeypatch):
+        """LID session key with canonical_fn mapping → emits whatsapp:dm:<lid>@lid."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        result = soul_mode.build_conversation_id(
+            platform="whatsapp",
+            chat_id="15551234567@s.whatsapp.net",
+            chat_type="dm",
+            gateway_session_key="agent:main:whatsapp:dm:999999999999999@lid",
+            canonical_whatsapp_fn=lambda v: v,  # identity: LID is already canonical
+        )
+        assert result == "whatsapp:dm:999999999999999@lid"
