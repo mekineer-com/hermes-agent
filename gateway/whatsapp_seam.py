@@ -79,21 +79,59 @@ def _read_mapping(path: Path) -> Optional[str]:
     return None
 
 
+def _jid_type(jid: str) -> str:
+    """Return 'lid', 'phone', or 'unknown' for a JID or bare id."""
+    if jid.endswith("@lid"):
+        return "lid"
+    if jid.endswith("@s.whatsapp.net") or jid.endswith("@c.us"):
+        return "phone"
+    return "unknown"
+
+
+def _to_full_jid(bare: str, id_type: str, input_domain: str) -> str:
+    """Reconstruct a full JID from a bare id and its known type.
+
+    - 'lid'   → ``<bare>@lid``
+    - 'phone' → ``<bare>@s.whatsapp.net`` (unless input was @c.us, preserve that)
+    - 'unknown' → preserve the original input domain if available, else bare
+    """
+    if id_type == "lid":
+        return f"{bare}@lid"
+    if id_type == "phone":
+        # Preserve @c.us when the input itself was @c.us and this is the same bare id.
+        if input_domain == "@c.us":
+            return f"{bare}@c.us"
+        return f"{bare}@s.whatsapp.net"
+    # unknown: if we have the original domain, use it; otherwise return bare.
+    if input_domain:
+        return f"{bare}{input_domain}"
+    return bare
+
+
 def _resolve(jid: str, session_dir: Path) -> str:
-    """Core resolver: returns LID JID if known, else phone JID, else input."""
+    """Core resolver: returns LID JID if known, else phone JID, else input.
+
+    Identity type is determined from the *filename scheme*, not the file content,
+    because the bridge writes bare (domain-less) values:
+    - ``lid-mapping-{phone}.json``         → current is PHONE, mapped value is LID
+    - ``lid-mapping-{lid}_reverse.json``   → current is LID,   mapped value is PHONE
+    """
     norm = _normalize_jid(jid)
     bare = _bare(norm)
 
     if not bare:
         return jid
 
-    # Collect all bare aliases reachable from this JID.
+    # Domain of the original input (e.g. "@s.whatsapp.net"), used for @c.us preservation.
+    _, _, input_domain_part = norm.partition("@")
+    input_domain = f"@{input_domain_part}" if input_domain_part else ""
+
+    # bare → full JID (first seen wins per bare).  Seed with the typed input.
+    input_type = _jid_type(norm)
+    all_jids: dict[str, str] = {bare: _to_full_jid(bare, input_type, input_domain)}
+
     seen: set[str] = set()
     queue: list[str] = [bare]
-    all_jids: dict[str, str] = {}  # bare → full JID (first seen wins per bare)
-
-    # Record the input JID itself.
-    all_jids[bare] = norm
 
     while queue:
         current = queue.pop(0)
@@ -101,21 +139,45 @@ def _resolve(jid: str, session_dir: Path) -> str:
             continue
         seen.add(current)
 
-        for suffix in ("", "_reverse"):
-            mapping_path = session_dir / f"lid-mapping-{current}{suffix}.json"
-            if not mapping_path.exists():
-                continue
-            raw = _read_mapping(mapping_path)
-            if raw is None:
-                continue
-            mapped_norm = _normalize_jid(raw)
-            mapped_bare = _bare(mapped_norm)
-            if mapped_bare and mapped_bare not in all_jids:
-                all_jids[mapped_bare] = mapped_norm
-            if mapped_bare and mapped_bare not in seen:
-                queue.append(mapped_bare)
+        # current's own type comes from what we already know about it.
+        current_full = all_jids.get(current, current)
+        current_type = _jid_type(current_full)
 
-    # Prefer LID; fall back to phone (@s.whatsapp.net or @c.us); else bare.
+        # Forward file: lid-mapping-{current}.json → current is PHONE, content is LID.
+        fwd_path = session_dir / f"lid-mapping-{current}.json"
+        if fwd_path.exists():
+            raw = _read_mapping(fwd_path)
+            if raw is not None:
+                mapped_bare = _bare(raw)
+                # File scheme says: forward file → content is a LID.
+                mapped_type = "lid"
+                if mapped_bare and mapped_bare not in all_jids:
+                    all_jids[mapped_bare] = _to_full_jid(mapped_bare, mapped_type, input_domain)
+                if mapped_bare and mapped_bare not in seen:
+                    queue.append(mapped_bare)
+                # Also refine current's type: forward file implies current is a phone.
+                if current_type == "unknown" and current not in all_jids:
+                    all_jids[current] = _to_full_jid(current, "phone", input_domain)
+
+        # Reverse file: lid-mapping-{current}_reverse.json → current is LID, content is PHONE.
+        rev_path = session_dir / f"lid-mapping-{current}_reverse.json"
+        if rev_path.exists():
+            raw = _read_mapping(rev_path)
+            if raw is not None:
+                mapped_bare = _bare(raw)
+                # File scheme says: reverse file → content is a PHONE.
+                mapped_type = "phone"
+                if mapped_bare and mapped_bare not in all_jids:
+                    all_jids[mapped_bare] = _to_full_jid(mapped_bare, mapped_type, input_domain)
+                if mapped_bare and mapped_bare not in seen:
+                    queue.append(mapped_bare)
+                # Also refine current's type: reverse file implies current is a LID.
+                if current_type == "unknown":
+                    existing = all_jids.get(current)
+                    if existing is None or _jid_type(existing) == "unknown":
+                        all_jids[current] = _to_full_jid(current, "lid", input_domain)
+
+    # Prefer LID; fall back to phone (@s.whatsapp.net or @c.us); else norm.
     lid_jid: Optional[str] = None
     phone_jid: Optional[str] = None
     for full in all_jids.values():

@@ -5,6 +5,7 @@ import pytest
 
 from gateway.whatsapp_seam import resolve_whatsapp_jid, chat_id_from_whatsapp_conversation_id
 from agent import soul_mode
+from agent.soul_mode import build_conversation_id
 
 
 # ---------------------------------------------------------------------------
@@ -37,23 +38,63 @@ class TestResolveWhatsappJid:
         assert result == "15551234567@s.whatsapp.net"
 
     def test_lid_input_preferred_when_mapping_exists(self, tmp_path, monkeypatch):
-        """LID input with a forward mapping → returns LID (LID-preferred)."""
+        """LID input with a forward mapping (bare phone content) → returns LID (LID-preferred).
+
+        Bridge writes: lid-mapping-{phone}.json → bare LID content.
+        When the input is already a LID, a forward file keyed by the LID's bare id
+        would only exist if something were keyed on the LID — here we verify LID
+        input without any matching forward file still returns LID.
+        """
         session_dir = tmp_path / "whatsapp" / "session"
         session_dir.mkdir(parents=True)
-        (session_dir / "lid-mapping-999999999999999.json").write_text(
-            json.dumps("15551234567@s.whatsapp.net"), encoding="utf-8"
+        # Forward file keyed by PHONE (bare LID content) — bridge's real scheme.
+        (session_dir / "lid-mapping-15551234567.json").write_text(
+            json.dumps("999999999999999"), encoding="utf-8"
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
         result = resolve_whatsapp_jid("999999999999999@lid")
         assert result == "999999999999999@lid"
 
-    def test_phone_input_finds_lid_via_reverse_mapping(self, tmp_path, monkeypatch):
-        """Phone input with a reverse mapping → returns LID (LID-preferred)."""
+    def test_phone_input_upgrade_via_forward_mapping(self, tmp_path, monkeypatch):
+        """Keystone: phone JID + forward file (bare LID content) → resolver returns <lid>@lid.
+
+        This is the upgrade that was broken: bridge writes lid-mapping-{phone}.json
+        containing a bare LID string (no @lid domain). The resolver must infer the
+        LID type from the filename scheme (forward → content is a LID), not the value.
+        Input:  15551234567@s.whatsapp.net
+        Output: 999999999999999@lid
+        """
         session_dir = tmp_path / "whatsapp" / "session"
         session_dir.mkdir(parents=True)
-        (session_dir / "lid-mapping-15551234567_reverse.json").write_text(
-            json.dumps("999999999999999@lid"), encoding="utf-8"
+        # Forward file: filename scheme says phone→LID; content is bare LID.
+        (session_dir / "lid-mapping-15551234567.json").write_text(
+            json.dumps("999999999999999"), encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        result = resolve_whatsapp_jid("15551234567@s.whatsapp.net")
+        assert result == "999999999999999@lid"
+
+    def test_phone_input_finds_lid_via_reverse_mapping(self, tmp_path, monkeypatch):
+        """Phone input + reverse file (bare phone content) → returns LID (LID-preferred).
+
+        Bridge writes: lid-mapping-{lid}_reverse.json → bare phone content.
+        Resolver infers: current id is the LID; mapped value is the phone.
+        Input comes as phone JID → resolver walks phone→(reverse file on LID side,
+        which requires first knowing LID bare).  For this case, we use the forward
+        file scheme which is more common; reverse is exercised via both-forms test.
+        Here we use a _reverse file keyed by the LID bare id, with bare phone content.
+        """
+        session_dir = tmp_path / "whatsapp" / "session"
+        session_dir.mkdir(parents=True)
+        # Forward file keyed by phone → bare LID content (the real bridge path).
+        (session_dir / "lid-mapping-15551234567.json").write_text(
+            json.dumps("999999999999999"), encoding="utf-8"
+        )
+        # Reverse file keyed by LID → bare phone content.
+        (session_dir / "lid-mapping-999999999999999_reverse.json").write_text(
+            json.dumps("15551234567"), encoding="utf-8"
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
@@ -61,14 +102,19 @@ class TestResolveWhatsappJid:
         assert result == "999999999999999@lid"
 
     def test_both_forms_resolve_to_same_lid(self, tmp_path, monkeypatch):
-        """LID and phone forms both resolve to the LID JID — no history split."""
+        """LID and phone forms both resolve to the LID JID — no history split.
+
+        Fixtures use the real bridge scheme: bare values, typed by filename.
+        """
         session_dir = tmp_path / "whatsapp" / "session"
         session_dir.mkdir(parents=True)
-        (session_dir / "lid-mapping-999999999999999.json").write_text(
-            json.dumps("15551234567@s.whatsapp.net"), encoding="utf-8"
+        # Forward: phone → bare LID.
+        (session_dir / "lid-mapping-15551234567.json").write_text(
+            json.dumps("999999999999999"), encoding="utf-8"
         )
-        (session_dir / "lid-mapping-15551234567_reverse.json").write_text(
-            json.dumps("999999999999999@lid"), encoding="utf-8"
+        # Reverse: LID → bare phone.
+        (session_dir / "lid-mapping-999999999999999_reverse.json").write_text(
+            json.dumps("15551234567"), encoding="utf-8"
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
@@ -132,22 +178,29 @@ class TestBuildConversationIdEmitContract:
     """Keystone: domain-bearing DM chat_id resolves via LID mapping at emit layer."""
 
     def test_dm_with_lid_mapping_emits_lid_preferred(self, tmp_path, monkeypatch):
-        """Phone JID + reverse mapping → emits whatsapp:dm:<lid>@lid."""
+        """Phone JID + forward mapping (bare LID) → emits whatsapp:dm:<lid>@lid.
+
+        Uses the real bridge file scheme: lid-mapping-{phone}.json with bare LID content.
+        The resolver must upgrade phone→LID and build_conversation_id must emit the LID form.
+        """
         session_dir = tmp_path / "whatsapp" / "session"
         session_dir.mkdir(parents=True)
-        (session_dir / "lid-mapping-15551234567_reverse.json").write_text(
-            json.dumps("999999999999999@lid"), encoding="utf-8"
+        # Real bridge scheme: forward file, bare LID content.
+        (session_dir / "lid-mapping-15551234567.json").write_text(
+            json.dumps("999999999999999"), encoding="utf-8"
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-        resolved = resolve_whatsapp_jid("15551234567@s.whatsapp.net")
+        # Mirror real call site: canonical_whatsapp_fn=resolve_whatsapp_jid so
+        # the session key's phone JID gets upgraded to LID via the mapping files.
         result = soul_mode.build_conversation_id(
             platform="whatsapp",
-            chat_id=resolved,
+            chat_id="15551234567@s.whatsapp.net",
             chat_type="dm",
             gateway_session_key="agent:main:whatsapp:dm:15551234567@s.whatsapp.net",
+            canonical_whatsapp_fn=resolve_whatsapp_jid,
         )
-        assert result == "whatsapp:dm:15551234567@s.whatsapp.net"
+        assert result == "whatsapp:dm:999999999999999@lid"
 
     def test_dm_without_mapping_emits_phone_domain(self, tmp_path, monkeypatch):
         """Phone JID with no mapping → emits whatsapp:dm:<phone>@s.whatsapp.net (domain preserved)."""
