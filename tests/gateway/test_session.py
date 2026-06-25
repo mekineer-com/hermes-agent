@@ -807,14 +807,14 @@ class TestWhatsAppSessionKeyConsistency:
         tmp_home = tmp_path / "hermes-home"
         mapping_dir = tmp_home / "whatsapp" / "session"
         mapping_dir.mkdir(parents=True, exist_ok=True)
-        # Forward mapping: LID → phone
-        (mapping_dir / "lid-mapping-999999999999999.json").write_text(
-            json.dumps("15551234567@s.whatsapp.net"),
+        # Forward mapping: phone → bare LID
+        (mapping_dir / "lid-mapping-15551234567.json").write_text(
+            json.dumps("999999999999999"),
             encoding="utf-8",
         )
-        # Reverse mapping: phone → LID (needed so phone input also finds the LID)
-        (mapping_dir / "lid-mapping-15551234567_reverse.json").write_text(
-            json.dumps("999999999999999@lid"),
+        # Reverse mapping: LID → bare phone
+        (mapping_dir / "lid-mapping-999999999999999_reverse.json").write_text(
+            json.dumps("15551234567"),
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_home))
@@ -844,14 +844,14 @@ class TestWhatsAppSessionKeyConsistency:
         tmp_home = tmp_path / "hermes-home"
         mapping_dir = tmp_home / "whatsapp" / "session"
         mapping_dir.mkdir(parents=True, exist_ok=True)
-        # Forward mapping: LID → phone
-        (mapping_dir / "lid-mapping-999999999999999.json").write_text(
-            json.dumps("15551234567@s.whatsapp.net"),
+        # Forward mapping: phone → bare LID
+        (mapping_dir / "lid-mapping-15551234567.json").write_text(
+            json.dumps("999999999999999"),
             encoding="utf-8",
         )
-        # Reverse mapping: phone → LID
-        (mapping_dir / "lid-mapping-15551234567_reverse.json").write_text(
-            json.dumps("999999999999999@lid"),
+        # Reverse mapping: LID → bare phone
+        (mapping_dir / "lid-mapping-999999999999999_reverse.json").write_text(
+            json.dumps("15551234567"),
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_home))
