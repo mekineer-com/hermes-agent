@@ -55,8 +55,13 @@ fail visibly.
 | Web-source browser options | `scripts/whatsapp-web-source/browser-options.js` |
 | Web-source page hooks | `scripts/whatsapp-web-source/page-hooks.js` |
 | WhatsApp ID normalization | `gateway/whatsapp_identity.py` |
+| WhatsApp identity seam | `gateway/whatsapp_seam.py` — OpenAlma-owned resolver: LID-preferred alias resolution, outbound `to_whatsapp_jid` normalization at the 5 adapter send sites, full JID preservation |
+| WhatsApp contact store | `gateway/contact_store.py` — append-only evidence store; derives explicit columns (`id`, `lid_jid`, `phone_jid`, `legacy_jids`, `bare_phone`, `display_name`, `observed_names`); LID-preferred key stable when later phone evidence arrives; display-name derivation ignores numeric/JID placeholders; persists to `~/.hermes/whatsapp/contact_store.json` |
+| Bridge known-name reader | `gateway/whatsapp_known_contacts.py` — shared Python reader for bridge `known_contacts.json` / `known_chats.json`; used by `channel_directory.py` and backfill to fill blank/numeric/JID-like names from bridge-known human names |
+| Channel directory | `gateway/channel_directory.py` — fallback rows use bridge known names when session/directory names are blank or JID-like; LID-first collision during backfill merges human contact name from the phone entry |
 | SQLite session store | `hermes_state.py` — includes `processed_source_keys` table (durable dedup ledger, keyed by `source_chat_id` + `source_message_id`) |
 | Burst-debounce control | `gateway/platforms/base.py` `merge_pending_message_event` (~1092) |
+| WhatsApp JID backfill | `scripts/backfill_whatsapp_identity_jids.py` — normalizes `sessions.json`, `memu.json`, `channel_directory.json`, and `state.db` session `user_id`s to canonical LID JIDs; skips `messages.source_chat_id` (unique-index constraint); rehearse on a copy before running live |
 
 ## `gateway/run.py` WhatsApp Seam Map
 
@@ -101,7 +106,11 @@ cd hermes-agent
   tests/gateway/test_whatsapp_history_persist.py \
   tests/gateway/test_session_race_guard.py \
   tests/gateway/test_run_cleanup_progress.py::test_whatsapp_raw_metadata_reaches_agent_without_nameerror \
-  tests/test_hermes_state.py
+  tests/test_hermes_state.py \
+  tests/gateway/test_whatsapp_contact_store.py \
+  tests/gateway/test_whatsapp_known_contacts.py \
+  tests/gateway/test_channel_directory.py \
+  tests/scripts/test_backfill_whatsapp_identity_jids.py
 
 cd scripts/whatsapp-web-source
 npm run check && npm test
