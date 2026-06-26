@@ -13,6 +13,11 @@ from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
 from utils import atomic_json_write
+from gateway.whatsapp_known_contacts import (
+    is_placeholder_whatsapp_name,
+    known_whatsapp_name,
+    load_known_whatsapp_names,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -210,34 +215,65 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
 
 def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
     """Pull known channels/contacts from sessions.json origin data."""
-    sessions_path = get_hermes_home() / "sessions" / "sessions.json"
+    home = get_hermes_home()
+    sessions_path = home / "sessions" / "sessions.json"
     if not sessions_path.exists():
         return []
 
-    entries = []
+    known_names: dict[str, str] = {}
+    if platform_name == "whatsapp":
+        from gateway.whatsapp_seam import canonical_whatsapp_jid
+
+        known_names = load_known_whatsapp_names(home, canonicalize=canonical_whatsapp_jid)
+
+    entries_by_id: dict[str, Dict[str, str]] = {}
     try:
         with open(sessions_path, encoding="utf-8") as f:
             data = json.load(f)
 
-        seen_ids = set()
         for _key, session in data.items():
             origin = session.get("origin") or {}
             if origin.get("platform") != platform_name:
                 continue
             entry_id = _session_entry_id(origin)
-            if not entry_id or entry_id in seen_ids:
+            if not entry_id:
                 continue
-            seen_ids.add(entry_id)
-            entries.append({
+            name = _session_entry_name(origin)
+            if platform_name == "whatsapp" and is_placeholder_whatsapp_name(name):
+                name = known_whatsapp_name(known_names, origin.get("chat_id")) or name
+            entry = {
                 "id": entry_id,
-                "name": _session_entry_name(origin),
+                "name": name,
                 "type": session.get("chat_type", "dm"),
                 "thread_id": origin.get("thread_id"),
-            })
+            }
+            existing = entries_by_id.get(entry_id)
+            entries_by_id[entry_id] = _better_session_entry(existing, entry) if existing else entry
     except Exception as e:
         logger.debug("Channel directory: failed to read sessions for %s: %s", platform_name, e)
 
-    return entries
+    return list(entries_by_id.values())
+
+
+def _better_session_entry(
+    existing: Dict[str, str],
+    candidate: Dict[str, str],
+) -> Dict[str, str]:
+    merged = dict(existing)
+    existing_name = existing.get("name")
+    candidate_name = candidate.get("name")
+    if (
+        is_placeholder_whatsapp_name(existing_name)
+        and candidate_name
+        and not is_placeholder_whatsapp_name(candidate_name)
+    ):
+        merged["name"] = candidate_name
+    for key, value in candidate.items():
+        if key == "name":
+            continue
+        if merged.get(key) in (None, "") and value not in (None, ""):
+            merged[key] = value
+    return merged
 
 
 # ---------------------------------------------------------------------------

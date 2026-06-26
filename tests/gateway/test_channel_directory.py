@@ -231,6 +231,42 @@ class TestBuildFromSessions:
 
         assert len(entries) == 1
 
+    def test_whatsapp_uses_known_contact_name_for_lid_placeholder(self, tmp_path):
+        self._write_sessions(tmp_path, {
+            "s1": {
+                "origin": {
+                    "platform": "whatsapp",
+                    "chat_id": "270699038040215@lid",
+                    "chat_name": "270699038040215",
+                },
+                "chat_type": "dm",
+            },
+        })
+        session_dir = tmp_path / "whatsapp" / "session"
+        session_dir.mkdir(parents=True)
+        (session_dir / "lid-mapping-19192593287.json").write_text(
+            json.dumps("270699038040215"),
+            encoding="utf-8",
+        )
+        (tmp_path / "whatsapp" / "known_contacts.json").write_text(
+            json.dumps({
+                "contacts": [
+                    {"id": "19192593287@s.whatsapp.net", "display_name": "Annie Gottlieb"}
+                ]
+            }),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = _build_from_sessions("whatsapp")
+
+        assert entries == [{
+            "id": "270699038040215@lid",
+            "name": "Annie Gottlieb",
+            "type": "dm",
+            "thread_id": None,
+        }]
+
     def test_keeps_distinct_topics_with_same_chat_id(self, tmp_path):
         self._write_sessions(tmp_path, {
             "group_root": {

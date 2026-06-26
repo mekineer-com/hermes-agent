@@ -19,12 +19,22 @@ import json
 import os
 import re
 import shutil
+import sys
 import sqlite3
 import tempfile
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from gateway.whatsapp_known_contacts import (  # noqa: E402
+    known_whatsapp_name,
+    load_known_whatsapp_names,
+)
 
 LID_MAPPING_RE = re.compile(r"^lid-mapping-(.+?)(?:_reverse)?\.json$")
 PHONE_DOMAINS = {"s.whatsapp.net", "c.us"}
@@ -357,11 +367,15 @@ def migrate_channel_directory(path: Path, idmap: IdentityMap) -> tuple[dict[str,
     changed = 0
     out: dict[str, dict[str, Any]] = {}
     collisions = []
+    known_names = load_known_whatsapp_names(path.parent, canonicalize=idmap.canonical_jid)
     for entry in entries:
         if not isinstance(entry, dict):
             continue
         migrated = dict(entry)
         if migrated.get("type") == "dm":
+            known_name = known_whatsapp_name(known_names, migrated.get("id"))
+            if known_name and placeholder_channel_name(migrated.get("name")):
+                migrated["name"] = known_name
             canonical = idmap.canonical_jid(migrated.get("id"))
             if canonical and canonical != migrated.get("id"):
                 migrated["id"] = canonical
