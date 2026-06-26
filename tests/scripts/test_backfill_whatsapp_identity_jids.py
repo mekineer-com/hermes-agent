@@ -10,6 +10,21 @@ assert spec.loader is not None
 spec.loader.exec_module(backfill)
 
 
+def test_merge_policy_entries_preserves_metadata_from_all_aliases():
+    merged = backfill.merge_policy_entries([
+        {"policy": "full", "memorize": True, "display_name": "Annie Gottlieb", "source": "phone"},
+        {"policy": "listen_only", "memorize": False, "lid_jid": "270699038040215@lid", "source": "lid"},
+    ])
+
+    assert merged == {
+        "display_name": "Annie Gottlieb",
+        "source": ["phone", "lid"],
+        "lid_jid": "270699038040215@lid",
+        "policy": "listen_only",
+        "memorize": True,
+    }
+
+
 def test_channel_directory_rekey_keeps_name_when_lid_entry_exists_first(tmp_path):
     session_dir = tmp_path / "whatsapp" / "session"
     session_dir.mkdir(parents=True)

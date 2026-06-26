@@ -286,7 +286,12 @@ def migrate_sessions(path: Path, idmap: IdentityMap) -> tuple[dict[str, Any] | N
 def merge_policy_entries(entries: list[dict[str, Any]]) -> dict[str, Any]:
     policy = "full"
     memorize: bool | None = None
+    out: dict[str, Any] = {}
     for entry in entries:
+        for key, value in entry.items():
+            if key in {"policy", "memorize"}:
+                continue
+            merge_metadata_field(out, key, value)
         raw_policy = str(entry.get("policy") or "").strip().lower()
         if raw_policy == "excluded":
             policy = "excluded"
@@ -296,10 +301,26 @@ def merge_policy_entries(entries: list[dict[str, Any]]) -> dict[str, Any]:
             policy = "full"
         if isinstance(entry.get("memorize"), bool):
             memorize = bool(entry["memorize"]) if memorize is not True else True
-    out = dict(entries[-1]) if entries else {}
     out["policy"] = policy
     out["memorize"] = False if policy == "excluded" else (memorize if memorize is not None else policy != "excluded")
     return out
+
+
+def merge_metadata_field(out: dict[str, Any], key: str, value: Any) -> None:
+    if value in (None, "", [], {}):
+        return
+    existing = out.get(key)
+    if existing in (None, "", [], {}):
+        out[key] = value
+    elif existing == value:
+        return
+    else:
+        values = existing if isinstance(existing, list) else [existing]
+        incoming = value if isinstance(value, list) else [value]
+        for item in incoming:
+            if item not in values:
+                values.append(item)
+        out[key] = values
 
 
 def migrate_memu(path: Path, idmap: IdentityMap) -> tuple[dict[str, Any] | None, dict[str, int], list[str]]:
