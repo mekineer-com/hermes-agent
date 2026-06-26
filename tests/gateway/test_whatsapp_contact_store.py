@@ -140,3 +140,68 @@ def test_contact_store_refreshes_old_records_on_load(tmp_path, monkeypatch):
     assert record["bare_phone"] == "15551234567"
     assert record["display_name"] == "Annie Gottlieb"
     assert record["observed_names"] == ["Annie Gottlieb"]
+
+
+def test_contact_store_phone_event_does_not_downgrade_lid_preferred_record(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    root = tmp_path / "whatsapp"
+    session_dir = root / "session"
+    session_dir.mkdir(parents=True)
+    store_path = root / "contact_store.json"
+    store_path.write_text(
+        json.dumps({
+            "version": 1,
+            "contacts": {
+                "999999999999999@lid": {
+                    "preferred_jid": "999999999999999@lid",
+                    "aliases": [
+                        "15551234567@s.whatsapp.net",
+                        "999999999999999@lid",
+                    ],
+                    "display": {"chat_name": "Annie Gottlieb"},
+                    "evidence": [],
+                }
+            },
+        }),
+        encoding="utf-8",
+    )
+    store = WhatsAppContactStore(store_path=store_path, session_dir=session_dir)
+
+    store.update_from_event({"chatId": "15551234567@s.whatsapp.net", "chatName": "Annie Gottlieb"})
+
+    data = json.loads(store_path.read_text(encoding="utf-8"))
+    assert list(data["contacts"]) == ["999999999999999@lid"]
+    record = data["contacts"]["999999999999999@lid"]
+    assert record["preferred_jid"] == "999999999999999@lid"
+    assert record["id"] == "999999999999999@lid"
+    assert record["phone_jid"] == "15551234567@s.whatsapp.net"
+
+
+def test_contact_store_saves_refreshed_columns_on_load(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    root = tmp_path / "whatsapp"
+    session_dir = root / "session"
+    session_dir.mkdir(parents=True)
+    store_path = root / "contact_store.json"
+    store_path.write_text(
+        json.dumps({
+            "version": 1,
+            "contacts": {
+                "999999999999999@lid": {
+                    "preferred_jid": "999999999999999@lid",
+                    "aliases": ["999999999999999@lid"],
+                    "display": {"chat_name": "Annie Gottlieb"},
+                    "evidence": [],
+                }
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    WhatsAppContactStore(store_path=store_path, session_dir=session_dir)._load()
+
+    data = json.loads(store_path.read_text(encoding="utf-8"))
+    record = data["contacts"]["999999999999999@lid"]
+    assert record["id"] == "999999999999999@lid"
+    assert record["lid_jid"] == "999999999999999@lid"
+    assert record["display_name"] == "Annie Gottlieb"

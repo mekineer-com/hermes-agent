@@ -132,7 +132,10 @@ class WhatsAppContactStore:
                 aliases.add(alias)
                 changed = True
         record["aliases"] = sorted(aliases)
-        record["preferred_jid"] = canonical_whatsapp_jid(jid) or jid
+        preferred = _preferred_contact_jid(record, aliases)
+        if preferred and record.get("preferred_jid") != preferred:
+            record["preferred_jid"] = preferred
+            changed = True
         record.setdefault("first_seen_at", now)
         if record.get("last_seen_at") != now:
             changed = True
@@ -243,7 +246,9 @@ class WhatsAppContactStore:
             parsed = {}
         parsed.setdefault("version", 1)
         parsed.setdefault("contacts", {})
-        _refresh_all_contact_columns(parsed)
+        if _refresh_all_contact_columns(parsed):
+            self._data = parsed
+            self._save()
         self._data = parsed
         return parsed
 
@@ -299,14 +304,16 @@ def _merge_records(target: dict[str, Any], source: dict[str, Any]) -> None:
     _refresh_contact_columns(target)
 
 
-def _refresh_all_contact_columns(data: dict[str, Any]) -> None:
+def _refresh_all_contact_columns(data: dict[str, Any]) -> bool:
     contacts = data.get("contacts")
     if not isinstance(contacts, dict):
         data["contacts"] = {}
-        return
+        return True
+    changed = False
     for record in contacts.values():
-        if isinstance(record, dict):
-            _refresh_contact_columns(record)
+        if isinstance(record, dict) and _refresh_contact_columns(record):
+            changed = True
+    return changed
 
 
 def _refresh_contact_columns(record: dict[str, Any]) -> bool:
