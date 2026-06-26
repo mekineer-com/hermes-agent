@@ -39,7 +39,8 @@ def load_known_whatsapp_names(
     names: dict[str, str] = {}
 
     for chat in _rows(root / "known_chats.json", "chats"):
-        name = str(chat.get("name") or chat.get("last_sender_name") or "").strip()
+        is_group = bool(chat.get("is_group"))
+        name = str(chat.get("name") or ("" if is_group else chat.get("last_sender_name")) or "").strip()
         _add_name(names, chat.get("id"), name, canonicalize=canonicalize, replace=False)
 
     for contact in _rows(root / "known_contacts.json", "contacts"):

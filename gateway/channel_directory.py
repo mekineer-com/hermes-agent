@@ -248,6 +248,8 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
                 "thread_id": origin.get("thread_id"),
             }
             existing = entries_by_id.get(entry_id)
+            if existing and platform_name != "whatsapp":
+                continue
             entries_by_id[entry_id] = _better_session_entry(existing, entry) if existing else entry
     except Exception as e:
         logger.debug("Channel directory: failed to read sessions for %s: %s", platform_name, e)

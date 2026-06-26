@@ -231,6 +231,17 @@ class TestBuildFromSessions:
 
         assert len(entries) == 1
 
+    def test_non_whatsapp_duplicate_keeps_first_entry(self, tmp_path):
+        self._write_sessions(tmp_path, {
+            "s1": {"origin": {"platform": "telegram", "chat_id": "123", "chat_name": "123"}},
+            "s2": {"origin": {"platform": "telegram", "chat_id": "123", "chat_name": "Alice"}},
+        })
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = _build_from_sessions("telegram")
+
+        assert entries == [{"id": "123", "name": "123", "type": "dm", "thread_id": None}]
+
     def test_whatsapp_uses_known_contact_name_for_lid_placeholder(self, tmp_path):
         self._write_sessions(tmp_path, {
             "s1": {
