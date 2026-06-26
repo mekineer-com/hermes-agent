@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .whatsapp_identity import to_whatsapp_jid
+from .whatsapp_known_contacts import is_placeholder_whatsapp_name
 from .whatsapp_seam import canonical_whatsapp_jid
 
 logger = logging.getLogger(__name__)
@@ -115,6 +116,8 @@ class WhatsAppContactStore:
             record["aliases"] = sorted(aliases)
             changed = True
         self._move_record_to_preferred(record)
+        if _refresh_contact_columns(record):
+            changed = True
         return changed
 
     def _upsert_evidence(self, jid: str, evidence: dict[str, Any]) -> bool:
@@ -156,6 +159,8 @@ class WhatsAppContactStore:
                     changed = True
 
         self._move_record_to_preferred(record)
+        if _refresh_contact_columns(record):
+            changed = True
         data["updated_at"] = now
         return changed
 
@@ -200,6 +205,7 @@ class WhatsAppContactStore:
             if value is record and key != preferred:
                 del contacts[key]
         contacts[preferred] = record
+        _refresh_contact_columns(record)
 
     def _display_for_field(self, raw_field: str, event: dict[str, Any]) -> dict[str, str]:
         if raw_field == "chatId":
@@ -292,6 +298,92 @@ def _merge_records(target: dict[str, Any], source: dict[str, Any]) -> None:
     target_display = target.setdefault("display", {})
     for key, value in (source.get("display") or {}).items():
         target_display.setdefault(key, value)
+    _refresh_contact_columns(target)
+
+
+def _refresh_contact_columns(record: dict[str, Any]) -> bool:
+    before = {key: record.get(key) for key in _CONTACT_COLUMNS}
+    aliases = _contact_aliases(record)
+    lid_jids = sorted(alias for alias in aliases if alias.endswith("@lid"))
+    phone_jids = sorted(alias for alias in aliases if alias.endswith("@s.whatsapp.net"))
+    legacy_jids = sorted(
+        alias
+        for alias in aliases
+        if "@" in alias
+        and not alias.endswith(("@lid", "@s.whatsapp.net", "@g.us"))
+    )
+    display_names = _observed_display_names(record)
+
+    _set_or_remove(record, "id", str(record.get("preferred_jid") or "").strip())
+    _set_or_remove(record, "lid_jid", lid_jids[0] if lid_jids else "")
+    _set_or_remove(record, "phone_jid", phone_jids[0] if phone_jids else "")
+    _set_or_remove(record, "legacy_jids", legacy_jids)
+    _set_or_remove(record, "bare_phone", _bare_phone(phone_jids, legacy_jids))
+    _set_or_remove(record, "display_name", display_names[0] if display_names else "")
+    _set_or_remove(record, "observed_names", display_names)
+
+    return before != {key: record.get(key) for key in _CONTACT_COLUMNS}
+
+
+_CONTACT_COLUMNS = (
+    "id",
+    "lid_jid",
+    "phone_jid",
+    "legacy_jids",
+    "bare_phone",
+    "display_name",
+    "observed_names",
+)
+
+
+def _contact_aliases(record: dict[str, Any]) -> set[str]:
+    aliases = {str(alias).strip() for alias in record.get("aliases") or [] if str(alias).strip()}
+    for row in record.get("evidence") or []:
+        if not isinstance(row, dict):
+            continue
+        for key in ("jid", "raw_id", "lid_jid", "phone_jid"):
+            jid = _normalize_contact_jid(row.get(key))
+            if jid:
+                aliases.add(jid)
+    preferred = str(record.get("preferred_jid") or "").strip()
+    if preferred:
+        aliases.add(preferred)
+    return aliases
+
+
+def _observed_display_names(record: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    for value in (record.get("display") or {}).values():
+        _append_display_name(out, value)
+    for row in record.get("evidence") or []:
+        if not isinstance(row, dict):
+            continue
+        display = row.get("display")
+        if isinstance(display, dict):
+            for value in display.values():
+                _append_display_name(out, value)
+    return out
+
+
+def _append_display_name(out: list[str], value: Any) -> None:
+    name = str(value or "").strip()
+    if name and not is_placeholder_whatsapp_name(name) and name not in out:
+        out.append(name)
+
+
+def _bare_phone(phone_jids: list[str], legacy_jids: list[str]) -> str:
+    for jid in [*phone_jids, *legacy_jids]:
+        local = jid.split("@", 1)[0]
+        if local.isdigit():
+            return local
+    return ""
+
+
+def _set_or_remove(record: dict[str, Any], key: str, value: Any) -> None:
+    if value in ("", None, [], {}):
+        record.pop(key, None)
+    else:
+        record[key] = value
 
 
 def _utc_now() -> str:
