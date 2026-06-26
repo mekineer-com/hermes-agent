@@ -180,10 +180,7 @@ class WhatsAppContactStore:
         data = self._load()
         contacts = data.setdefault("contacts", {})
         aliases = set(record.get("aliases") or [])
-        preferred = (
-            canonical_whatsapp_jid(next(iter(aliases), record.get("preferred_jid", "")))
-            or record.get("preferred_jid", "")
-        )
+        preferred = _preferred_contact_jid(record, aliases)
         if not preferred:
             return
         aliases.add(preferred)
@@ -246,6 +243,7 @@ class WhatsAppContactStore:
             parsed = {}
         parsed.setdefault("version", 1)
         parsed.setdefault("contacts", {})
+        _refresh_all_contact_columns(parsed)
         self._data = parsed
         return parsed
 
@@ -301,6 +299,16 @@ def _merge_records(target: dict[str, Any], source: dict[str, Any]) -> None:
     _refresh_contact_columns(target)
 
 
+def _refresh_all_contact_columns(data: dict[str, Any]) -> None:
+    contacts = data.get("contacts")
+    if not isinstance(contacts, dict):
+        data["contacts"] = {}
+        return
+    for record in contacts.values():
+        if isinstance(record, dict):
+            _refresh_contact_columns(record)
+
+
 def _refresh_contact_columns(record: dict[str, Any]) -> bool:
     before = {key: record.get(key) for key in _CONTACT_COLUMNS}
     aliases = _contact_aliases(record)
@@ -349,6 +357,19 @@ def _contact_aliases(record: dict[str, Any]) -> set[str]:
     if preferred:
         aliases.add(preferred)
     return aliases
+
+
+def _preferred_contact_jid(record: dict[str, Any], aliases: set[str]) -> str:
+    current = str(record.get("preferred_jid") or "").strip()
+    if current:
+        return canonical_whatsapp_jid(current) or current
+    lids = sorted(alias for alias in aliases if str(alias).endswith("@lid"))
+    if lids:
+        return canonical_whatsapp_jid(lids[0]) or lids[0]
+    phones = sorted(alias for alias in aliases if str(alias).endswith("@s.whatsapp.net"))
+    if phones:
+        return canonical_whatsapp_jid(phones[0]) or phones[0]
+    return canonical_whatsapp_jid(next(iter(aliases), "")) or ""
 
 
 def _observed_display_names(record: dict[str, Any]) -> list[str]:
