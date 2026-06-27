@@ -37,7 +37,7 @@ Shared files stay `pending` until their slice ports the narrow OpenAlma seam.
 - `agent/soul_mode.py`: copy
 - `agent/whatsapp_bridge_client.py`: copy
 - `gateway/channel_directory.py`: copy
-- `gateway/config.py`: pending
+- `gateway/config.py`: hunk-port
 - `gateway/contact_store.py`: copy
 - `gateway/memu_policy.py`: copy
 - `gateway/mirror.py`: pending
@@ -145,3 +145,5 @@ Shared files stay `pending` until their slice ports the narrow OpenAlma seam.
 
 - `gateway/platforms/whatsapp.py`: pending — bridge pidfile cleanup hunk ported; web-source, WAL, deliveryMode, contact store, send normalization still pending.
 - `tests/gateway/test_whatsapp_connect.py`: pending — bridge pidfile cleanup tests ported; remaining WhatsApp adapter coverage still pending.
+
+- `tests/gateway/test_whatsapp_config_openalma.py`: copy — focused YAML bridge coverage for OpenAlma WhatsApp adapter config.

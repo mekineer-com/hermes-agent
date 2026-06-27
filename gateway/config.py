@@ -1006,6 +1006,32 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_policy"] = platform_cfg["group_policy"]
                 if "group_allow_from" in platform_cfg:
                     bridged["group_allow_from"] = platform_cfg["group_allow_from"]
+                if plat == Platform.WHATSAPP:
+                    for key in (
+                        "bridge_port",
+                        "bridge_script",
+                        "session_path",
+                        "max_message_age_seconds",
+                        "mode",
+                        "web_source_enabled",
+                        "web_source_script",
+                        "web_source_db",
+                        "web_source_status",
+                        "web_source_auth",
+                        "web_source_client_id",
+                        "web_source_backfill_limit",
+                        "web_source_backfill_since",
+                        "web_source_contact_snapshot",
+                        "web_source_contact_snapshot_interval",
+                        "web_source_user_agent",
+                        "web_source_chromium_path",
+                        "web_source_headful",
+                        "web_source_disable_service_workers",
+                        "web_source_resource_block",
+                        "web_source_memory_diagnostics_interval",
+                    ):
+                        if key in platform_cfg:
+                            bridged[key] = platform_cfg[key]
                 if "group_allow_admin_from" in platform_cfg:
                     bridged["group_allow_admin_from"] = platform_cfg["group_allow_admin_from"]
                 if "group_user_allowed_commands" in platform_cfg:
