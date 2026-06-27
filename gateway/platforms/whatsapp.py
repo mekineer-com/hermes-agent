@@ -237,6 +237,7 @@ from gateway.platforms.base import (
     cache_image_from_url,
     cache_audio_from_url,
 )
+from gateway.whatsapp_seam import to_whatsapp_jid
 
 
 def _file_content_hash(path: Path) -> str:
@@ -377,6 +378,25 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not math.isfinite(parsed) or parsed < 0:
             return float(default)
         return parsed
+
+    def _whatsapp_mode(self) -> str:
+        configured = str(self.config.extra.get("mode") or "").strip().lower()
+        if configured in {"bot", "self-chat"}:
+            return configured
+        env_mode = os.getenv("WHATSAPP_MODE", "").strip().lower()
+        if env_mode in {"bot", "self-chat"}:
+            return env_mode
+        return "self-chat"
+
+    def _effective_reply_prefix(self) -> str:
+        if self._whatsapp_mode() != "self-chat":
+            return ""
+        if self._reply_prefix is not None:
+            return self._reply_prefix.replace("\\n", "\n")
+        env_prefix = os.getenv("WHATSAPP_REPLY_PREFIX")
+        if env_prefix is not None:
+            return env_prefix.replace("\\n", "\n")
+        return self.DEFAULT_REPLY_PREFIX
 
     async def connect(self) -> bool:
         """
@@ -531,7 +551,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # Start the bridge process in its own process group.
             # Route output to a log file so QR codes, errors, and reconnection
             # messages are preserved for troubleshooting.
-            whatsapp_mode = os.getenv("WHATSAPP_MODE", "self-chat")
+            whatsapp_mode = self._whatsapp_mode()
             self._bridge_log = self._session_path.parent / "bridge.log"
             bridge_log_fh = open(self._bridge_log, "a", encoding="utf-8")
             self._bridge_log_fh = bridge_log_fh
@@ -775,9 +795,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             chunks = self.truncate_message(formatted, self._outgoing_chunk_limit())
 
             last_message_id = None
+            message_ids: list[str] = []
             for chunk in chunks:
                 payload: Dict[str, Any] = {
-                    "chatId": chat_id,
+                    "chatId": to_whatsapp_jid(chat_id),
                     "message": chunk,
                 }
                 if reply_to and last_message_id is None:
@@ -792,6 +813,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     if resp.status == 200:
                         data = await resp.json()
                         last_message_id = data.get("messageId")
+                        if last_message_id:
+                            message_ids.append(last_message_id)
                     else:
                         error = await resp.text()
                         return SendResult(success=False, error=error)
@@ -803,9 +826,27 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return SendResult(
                 success=True,
                 message_id=last_message_id,
+                raw_response={"message_ids": message_ids},
             )
+        except (asyncio.TimeoutError, TimeoutError):
+            return SendResult(success=False, error="send timed out")
         except Exception as e:
             return SendResult(success=False, error=str(e))
+
+    async def send_private_notice(
+        self,
+        chat_id: str,
+        user_id: Optional[str],
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        from agent.whatsapp_bridge_client import read_self_dm_jid
+
+        self_dm = read_self_dm_jid()
+        if not self_dm:
+            return SendResult(success=False, error="self-DM JID unavailable")
+        return await self.send(self_dm, content, reply_to=reply_to, metadata=metadata)
 
     async def edit_message(
         self,
@@ -826,7 +867,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             async with self._http_session.post(
                 f"http://127.0.0.1:{self._bridge_port}/edit",
                 json={
-                    "chatId": chat_id,
+                    "chatId": to_whatsapp_jid(chat_id),
                     "messageId": message_id,
                     "message": content,
                 },
@@ -861,7 +902,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 return SendResult(success=False, error=f"File not found: {file_path}")
 
             payload: Dict[str, Any] = {
-                "chatId": chat_id,
+                "chatId": to_whatsapp_jid(chat_id),
                 "filePath": file_path,
                 "mediaType": media_type,
             }
@@ -973,7 +1014,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # socket in CLOSE_WAIT. See #18451.
             async with self._http_session.post(
                 f"http://127.0.0.1:{self._bridge_port}/typing",
-                json={"chatId": chat_id},
+                json={"chatId": to_whatsapp_jid(chat_id)},
                 timeout=aiohttp.ClientTimeout(total=5)
             ):
                 pass
@@ -991,7 +1032,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             import aiohttp
 
             async with self._http_session.get(
-                f"http://127.0.0.1:{self._bridge_port}/chat/{chat_id}",
+                f"http://127.0.0.1:{self._bridge_port}/chat/{to_whatsapp_jid(chat_id)}",
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
                 if resp.status == 200:

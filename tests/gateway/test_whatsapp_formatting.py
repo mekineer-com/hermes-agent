@@ -171,6 +171,24 @@ class TestMessageLimits:
 
         assert adapter._outgoing_chunk_limit() == adapter.MAX_MESSAGE_LENGTH
 
+    def test_configured_bot_mode_beats_env_self_chat(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter.config.extra = {"mode": "bot"}
+        monkeypatch.setenv("WHATSAPP_MODE", "self-chat")
+
+        assert adapter._whatsapp_mode() == "bot"
+        assert adapter._outgoing_chunk_limit() == adapter.MAX_MESSAGE_LENGTH
+
+    def test_invalid_configured_mode_falls_back_to_env_then_default(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter.config.extra = {"mode": "invalid"}
+        monkeypatch.setenv("WHATSAPP_MODE", "bot")
+
+        assert adapter._whatsapp_mode() == "bot"
+
+        monkeypatch.setenv("WHATSAPP_MODE", "invalid")
+        assert adapter._whatsapp_mode() == "self-chat"
+
 
 # ---------------------------------------------------------------------------
 # send() chunking tests
@@ -190,6 +208,22 @@ class TestSendChunking:
         assert result.success
         # Only one call to bridge /send
         assert adapter._http_session.post.call_count == 1
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert payload["chatId"] == "chat1"
+        assert result.raw_response == {"message_ids": ["msg1"]}
+
+    @pytest.mark.asyncio
+    async def test_send_normalizes_bare_phone_chat_id(self):
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        result = await adapter.send("+1 (555) 123-4567", "hello")
+
+        assert result.success
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert payload["chatId"] == "15551234567@s.whatsapp.net"
 
     @pytest.mark.asyncio
     async def test_long_message_chunked(self):
@@ -296,6 +330,37 @@ class TestSendChunking:
         result = await adapter.send("chat1", "hello")
         assert not result.success
         assert "Not connected" in result.error
+
+    @pytest.mark.asyncio
+    async def test_private_notice_sends_to_self_dm(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter.send = AsyncMock(return_value=MagicMock(success=True, message_id="self-msg"))
+        monkeypatch.setattr(
+            "agent.whatsapp_bridge_client.read_self_dm_jid",
+            lambda: "15133278228@s.whatsapp.net",
+        )
+
+        result = await adapter.send_private_notice("familia@g.us", "marcos", "notice")
+
+        assert result.success
+        adapter.send.assert_awaited_once_with(
+            "15133278228@s.whatsapp.net",
+            "notice",
+            reply_to=None,
+            metadata=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_private_notice_fails_when_self_dm_missing(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter.send = AsyncMock()
+        monkeypatch.setattr("agent.whatsapp_bridge_client.read_self_dm_jid", lambda: "")
+
+        result = await adapter.send_private_notice("familia@g.us", "marcos", "notice")
+
+        assert not result.success
+        assert "self-DM JID unavailable" in result.error
+        adapter.send.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
