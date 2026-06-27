@@ -1,5 +1,6 @@
 import path from 'path';
-import { readFileSync, readdirSync } from 'fs';
+import { readdirSync } from 'fs';
+import { readJson } from './bridge_fs.js';
 
 const nullLogger = {
   warn() {},
@@ -162,18 +163,16 @@ export class LidIdentity {
         const m = f.match(/^lid-mapping-(\d+)\.json$/);
         if (!m) continue;
         const phone = m[1];
-        const lid = JSON.parse(readFileSync(path.join(this.sessionDir, f), 'utf8'));
+        const lid = readJson(path.join(this.sessionDir, f));
         if (lid) map[String(lid)] = phone;
       }
     } catch {}
-    try {
-      const creds = JSON.parse(readFileSync(path.join(this.sessionDir, 'creds.json'), 'utf8'));
-      const meId = String(creds?.me?.id || '').replace(/:.*@/, '@').split('@')[0];
-      const meLid = String(creds?.me?.lid || '').replace(/:.*@/, '@').split('@')[0];
-      if (meId && meLid && meId !== meLid) {
-        map[meLid] = meId;
-      }
-    } catch {}
+    const creds = readJson(path.join(this.sessionDir, 'creds.json'));
+    const meId = String(creds?.me?.id || '').replace(/:.*@/, '@').split('@')[0];
+    const meLid = String(creds?.me?.lid || '').replace(/:.*@/, '@').split('@')[0];
+    if (meId && meLid && meId !== meLid) {
+      map[meLid] = meId;
+    }
     return map;
   }
 

@@ -7,6 +7,10 @@ const nullLogger = {
   warn() {},
 };
 
+function keyForBaileysKey(key) {
+  return `${key.remoteJid}:${key.id}:${key.fromMe ? '1' : '0'}`;
+}
+
 export class SentMessageStore {
   constructor({
     recentlySentIdsPath,
@@ -50,7 +54,7 @@ export class SentMessageStore {
 
   storeSent(sent, content) {
     if (!sent?.key?.id || !sent?.key?.remoteJid) return;
-    const key = this.keyForBaileysKey(sent.key);
+    const key = keyForBaileysKey(sent.key);
     const nowMs = Date.now();
     this.sentMessageStore.set(key, { content, ts: nowMs });
     if (this.sentMessageStore.size > MAX_SENT_STORE) {
@@ -64,7 +68,7 @@ export class SentMessageStore {
   }
 
   getForBaileysKey(key) {
-    return this.sentMessageStore.get(this.keyForBaileysKey(key))?.content;
+    return this.sentMessageStore.get(keyForBaileysKey(key))?.content;
   }
 
   getByMessageId(id) {
@@ -74,10 +78,6 @@ export class SentMessageStore {
       if (storeKey.includes(`:${messageId}:`)) return value.content;
     }
     return undefined;
-  }
-
-  keyForBaileysKey(key) {
-    return `${key.remoteJid}:${key.id}:${key.fromMe ? '1' : '0'}`;
   }
 
   persistRecentlySentIds() {
