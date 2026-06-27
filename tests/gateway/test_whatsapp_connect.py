@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import ProcessingOutcome
 from gateway.platforms.whatsapp_wal import WhatsAppGatewayWal
 
@@ -69,6 +69,14 @@ def _make_adapter():
     adapter._message_queue = asyncio.Queue()
     adapter._http_session = None
     adapter._max_message_age_seconds = 300
+    adapter._bridge_health = {}
+    adapter._web_source_enabled = False
+    adapter._web_source_process = None
+    adapter._web_source_pid_path = Path("/tmp/test-wa-web-source.pid")
+    adapter._web_source_log_fh = None
+    adapter._web_source_error = None
+    adapter._web_source_intentionally_stopped = False
+    adapter._last_runtime_status_refresh = 0.0
     adapter._contact_store = MagicMock()
     adapter._gateway_wal = MagicMock()
     adapter._gateway_wal.append.side_effect = (
@@ -806,44 +814,32 @@ class TestGatewayWalCrashWindows:
 
 
 # ---------------------------------------------------------------------------
-# Pre-flight: refuse to start the bridge when creds.json is missing
+# Pre-flight: keep setup/status alive when creds.json is missing
 # ---------------------------------------------------------------------------
 
 
 class TestNoCredsPreflight:
-    """Verify ``connect()`` fast-fails as non-retryable when WhatsApp is
-    enabled but the user never finished pairing (no ``creds.json``).
-
-    Without this guard, every gateway boot:
-      • spawned the bridge subprocess (npm install if needed)
-      • waited 30s for status:connected (never happens without creds)
-      • queued WhatsApp for indefinite retries that would just repeat
-    With the guard, ``connect()`` returns False immediately with a
-    non-retryable fatal error so the reconnect watcher drops the platform
-    and the gateway gets a single clear log line telling the user to run
-    ``hermes whatsapp``.
-    """
+    """Missing reply-bridge creds should enter setup mode, not bootstrap Baileys."""
 
     @pytest.mark.asyncio
-    async def test_connect_returns_false_when_no_creds(self, tmp_path):
+    async def test_connect_enters_setup_mode_when_no_creds(self, tmp_path):
         from gateway.platforms.whatsapp import WhatsAppAdapter
 
-        adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
-        adapter.platform = Platform.WHATSAPP
-        adapter.config = MagicMock()
-        adapter._bridge_port = 19876
-        # Point bridge_script at a real existing file so the earlier
-        # bridge-missing check doesn't trip — we want to exercise the
-        # creds.json check specifically.
         bridge = tmp_path / "bridge.js"
         bridge.write_text("// stub")
-        adapter._bridge_script = str(bridge)
-        adapter._session_path = tmp_path / "session"  # no creds.json inside
-        adapter._session_path.mkdir()
-        adapter._bridge_log_fh = None
-        adapter._fatal_error_code = None
-        adapter._fatal_error_message = None
-        adapter._fatal_error_retryable = True
+        session_path = tmp_path / "session"
+        session_path.mkdir()
+        adapter = WhatsAppAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "bridge_script": str(bridge),
+                    "session_path": str(session_path),
+                    "web_source_enabled": False,
+                    "web_source_status": str(tmp_path / "status.json"),
+                },
+            )
+        )
 
         with patch(
             "gateway.platforms.whatsapp.check_whatsapp_requirements",
@@ -851,10 +847,11 @@ class TestNoCredsPreflight:
         ):
             result = await adapter.connect()
 
-        assert result is False
-        # Non-retryable so the reconnect watcher drops it cleanly
+        assert result is True
         assert adapter._fatal_error_code == "whatsapp_not_paired"
         assert adapter._fatal_error_retryable is False
+        assert adapter._bridge_health["status"] == "not_paired"
+        await adapter.disconnect()
 
     @pytest.mark.asyncio
     async def test_connect_proceeds_when_creds_present(self, tmp_path):

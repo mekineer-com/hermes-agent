@@ -16,15 +16,18 @@ with different backends via a bridge pattern.
 """
 
 import asyncio
+import json
 import logging
 import os
 import platform
 import shutil
 import signal
+import sqlite3
 import subprocess
 import time
 
 _IS_WINDOWS = platform.system() == "Windows"
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Any
 
@@ -177,6 +180,25 @@ def _write_bridge_pidfile(session_path: Path, pid: int) -> None:
         pass
 
 
+def _web_source_pidfile(status_path: Path) -> Path:
+    return status_path.with_name("web_source.pid")
+
+
+def _kill_stale_web_source_by_pidfile(
+    pid_file: Path,
+    *,
+    script_path: Path,
+    db_path: Path,
+    status_path: Path,
+    auth_path: Path,
+) -> None:
+    _kill_stale_pidfile_process(
+        pid_file,
+        markers=[str(script_path), str(db_path), str(status_path), str(auth_path)],
+        label="web-source",
+    )
+
+
 def _terminate_bridge_process(proc, *, force: bool = False) -> None:
     """Terminate the bridge process using process-tree semantics where possible."""
     if _IS_WINDOWS:
@@ -202,6 +224,12 @@ def _terminate_bridge_process(proc, *, force: bool = False) -> None:
             raise OSError(details or f"taskkill failed for PID {proc.pid}")
         return
 
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL if force else signal.SIGTERM)
+        return
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
     import psutil
     try:
         parent = psutil.Process(proc.pid)
@@ -222,6 +250,33 @@ def _terminate_bridge_process(proc, *, force: bool = False) -> None:
             parent.terminate()
     except psutil.NoSuchProcess:
         return
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+        return default
+    return bool(value)
+
+
+def _expand_user_path(value: Any) -> Path:
+    return Path(os.path.expandvars(os.path.expanduser(str(value))))
+
+
+def _coerce_optional_float(value: Any) -> Optional[float]:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -260,7 +315,11 @@ def _file_content_hash(path: Path) -> str:
 
 
 def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
-    if value is None or isinstance(value, bool):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.timestamp()
+    if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
         numeric = float(value)
@@ -273,8 +332,56 @@ def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
             numeric = float(text)
             return numeric / 1000.0 if numeric > 10_000_000_000 else numeric
         except ValueError:
+            pass
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+        except ValueError:
             return None
     return None
+
+
+def _resolve_configured_soul_active_since() -> Optional[float]:
+    config_path = get_hermes_home() / "config.yaml"
+    try:
+        import yaml
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return None
+    soul_mode = data.get("soul_mode")
+    agents = soul_mode.get("agents") if isinstance(soul_mode, dict) else None
+    if not isinstance(agents, dict):
+        return None
+    soul_ids = []
+    for agent_cfg in agents.values():
+        if not isinstance(agent_cfg, dict):
+            continue
+        if str(agent_cfg.get("role") or "").strip().lower() != "soul":
+            continue
+        if str(agent_cfg.get("enabled", "true")).strip().lower() in {"false", "0", "no", "off"}:
+            continue
+        soul_id = str(agent_cfg.get("soul_id") or "").strip()
+        if soul_id:
+            soul_ids.append(soul_id)
+    if not soul_ids:
+        return None
+    state_path = get_hermes_home() / "state.db"
+    if not state_path.exists():
+        return None
+    try:
+        with sqlite3.connect(str(state_path)) as con:
+            placeholders = ",".join("?" for _ in soul_ids)
+            rows = con.execute(
+                f"SELECT active_since FROM souls WHERE soul_id IN ({placeholders})",
+                soul_ids,
+            ).fetchall()
+    except sqlite3.Error:
+        return None
+    values = []
+    for row in rows:
+        parsed = _coerce_optional_float(row[0])
+        if parsed is not None:
+            values.append(parsed)
+    return min(values) if values else None
 
 
 def check_whatsapp_requirements() -> bool:
@@ -331,6 +438,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     # Default bridge location relative to the hermes-agent install
     _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
+    _DEFAULT_WEB_SOURCE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-web-source"
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP)
@@ -357,9 +465,62 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None
         self._bridge_log: Optional[Path] = None
+        self._bridge_health: Dict[str, Any] = {}
         self._poll_task: Optional[asyncio.Task] = None
         self._http_session: Optional["aiohttp.ClientSession"] = None
         whatsapp_home = get_hermes_home() / "whatsapp"
+        self._web_source_enabled = _coerce_bool(
+            config.extra.get("web_source_enabled", os.getenv("WHATSAPP_WEB_SOURCE_ENABLED")),
+            True,
+        )
+        self._web_source_script = _expand_user_path(
+            config.extra.get("web_source_script", self._DEFAULT_WEB_SOURCE_DIR / "source-daemon.js")
+        )
+        self._web_source_db = _expand_user_path(
+            config.extra.get("web_source_db", whatsapp_home / "web_source.db")
+        )
+        self._web_source_status_path = _expand_user_path(
+            config.extra.get("web_source_status", whatsapp_home / "web_source_status.json")
+        )
+        self._web_source_pid_path = _web_source_pidfile(self._web_source_status_path)
+        self._web_source_auth_path = _expand_user_path(
+            config.extra.get("web_source_auth", whatsapp_home / "wwebjs_auth")
+        )
+        self._web_source_client_id = str(config.extra.get("web_source_client_id", "memu-web-source"))
+        self._web_source_backfill_limit = int(config.extra.get("web_source_backfill_limit", 100))
+        self._web_source_backfill_since = _coerce_optional_float(
+            config.extra.get("web_source_backfill_since")
+        )
+        if self._web_source_backfill_since is None:
+            self._web_source_backfill_since = _resolve_configured_soul_active_since()
+        self._web_source_contact_snapshot_interval = int(
+            config.extra.get("web_source_contact_snapshot_interval", 900)
+        )
+        self._web_source_contact_snapshot = _coerce_bool(
+            config.extra.get("web_source_contact_snapshot", True),
+            True,
+        )
+        self._web_source_user_agent = config.extra.get("web_source_user_agent")
+        self._web_source_chromium_path = str(config.extra.get("web_source_chromium_path") or "").strip()
+        self._web_source_headful = _coerce_bool(config.extra.get("web_source_headful"), False)
+        self._web_source_disable_service_workers = _coerce_bool(
+            config.extra.get("web_source_disable_service_workers"),
+            False,
+        )
+        self._web_source_resource_block = _coerce_bool(
+            config.extra.get("web_source_resource_block"),
+            True,
+        )
+        self._web_source_memory_diagnostics_interval = int(
+            config.extra.get("web_source_memory_diagnostics_interval", 60)
+        )
+        self._web_source_pairing_headful = False
+        self._web_source_process: Optional[subprocess.Popen] = None
+        self._web_source_log_fh = None
+        self._web_source_log: Optional[Path] = None
+        self._web_source_error: Optional[str] = None
+        self._web_source_intentionally_stopped = False
+        self._last_runtime_status_refresh = 0.0
         compact_every = int(os.getenv("WHATSAPP_GATEWAY_WAL_COMPACT_EVERY", "100"))
         self._gateway_wal = WhatsAppGatewayWal(
             wal_path=whatsapp_home / "gateway_wal.jsonl",
@@ -459,19 +620,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             )
             return False
 
-        # Pre-flight: skip the 30s bridge bootstrap entirely if the user
-        # never finished pairing.  Without creds.json the bridge prints
-        # QR codes to its log file and never reaches status:connected,
-        # so every gateway restart paid the 30s timeout + queued WhatsApp
-        # for indefinite retries.  Mark non-retryable so the user gets a
-        # clear "run hermes whatsapp" message instead of the watcher
-        # silently hammering an unconfigured platform.
+        # If the live reply bridge was never paired, keep the adapter alive as
+        # setup/status owner so the web-source can open its pairing browser.
         creds_path = self._session_path / "creds.json"
         if not creds_path.exists():
             logger.warning(
                 "[%s] WhatsApp is enabled but not paired (no creds.json at %s). "
-                "Run `hermes whatsapp` to pair, or remove WHATSAPP_ENABLED from "
-                "your .env to disable.",
+                "Use OpenAlma's Pair reply bridge action or run `hermes whatsapp`.",
                 self.name, creds_path,
             )
             self._set_fatal_error(
@@ -479,7 +634,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 "WhatsApp enabled but not paired — run `hermes whatsapp` to pair.",
                 retryable=False,
             )
-            return False
+            self._bridge_health = {
+                "status": "not_paired",
+                "mode": self._whatsapp_mode(),
+            }
+            self._running = True
+            if self._web_source_enabled and not self._web_source_headful:
+                self._web_source_pairing_headful = True
+            self._start_web_source()
+            self._write_whatsapp_runtime_status(force=True)
+            self._poll_task = asyncio.create_task(self._monitor_web_source_setup())
+            return True
 
         logger.info("[%s] Bridge found at %s", self.name, bridge_path)
         
@@ -567,7 +732,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                     print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
                                     self._mark_connected()
                                     self._bridge_process = None  # Not managed by us
+                                    self._bridge_health = data
                                     self._http_session = aiohttp.ClientSession()
+                                    self._running = True
+                                    self._start_web_source()
+                                    await self._replay_gateway_wal()
+                                    self._write_whatsapp_runtime_status(force=True)
                                     self._poll_task = asyncio.create_task(self._poll_messages())
                                     return True
                                 print(
@@ -690,17 +860,18 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     print(f"[{self.name}] ⚠ WhatsApp not connected after 30s")
                     print(f"[{self.name}]   Bridge log: {self._bridge_log}")
                     print(f"[{self.name}]   If session expired, re-pair: hermes whatsapp")
-            
+            self._bridge_health = data
             # Create a persistent HTTP session for all bridge communication
             self._http_session = aiohttp.ClientSession()
             self._running = True
 
+            self._start_web_source()
             await self._replay_gateway_wal()
+            self._mark_connected()
+            self._write_whatsapp_runtime_status(force=True)
 
             # Start message polling task
             self._poll_task = asyncio.create_task(self._poll_messages())
-            
-            self._mark_connected()
             print(f"[{self.name}] Bridge started on port {self._bridge_port}")
             return True
             
@@ -725,6 +896,263 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             except Exception:
                 pass
             self._bridge_log_fh = None
+
+    def _web_source_command(self) -> list[str]:
+        command = [
+            "node",
+            str(self._web_source_script),
+            "--db", str(self._web_source_db),
+            "--status", str(self._web_source_status_path),
+            "--auth", str(self._web_source_auth_path),
+            "--client-id", self._web_source_client_id,
+            "--backfill-limit", str(self._web_source_backfill_limit),
+            "--contact-snapshot-interval", str(self._web_source_contact_snapshot_interval),
+            "--memory-diagnostics-interval", str(self._web_source_memory_diagnostics_interval),
+        ]
+        if self._web_source_backfill_since is not None:
+            command.extend(["--backfill-since", str(int(self._web_source_backfill_since))])
+            command.extend(["--active-since", str(int(self._web_source_backfill_since))])
+        if not self._web_source_contact_snapshot:
+            command.append("--no-contact-snapshot")
+        if self._web_source_user_agent:
+            command.extend(["--user-agent", str(self._web_source_user_agent)])
+        if self._web_source_disable_service_workers:
+            command.append("--disable-service-workers")
+        if not self._web_source_resource_block:
+            command.append("--no-resource-block")
+        if self._web_source_headful or self._web_source_pairing_headful:
+            command.append("--headful")
+        return command
+
+    def _read_web_source_status(self) -> Dict[str, Any]:
+        try:
+            data = json.loads(self._web_source_status_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _web_source_status_details(self) -> Dict[str, Any]:
+        if not self._web_source_enabled:
+            return {"enabled": False, "state": "disabled"}
+
+        status = self._read_web_source_status()
+        process = self._web_source_process
+        returncode = process.poll() if process else None
+        pid = process.pid if process else None
+        state = str(status.get("state") or "starting")
+        error = self._web_source_error
+        if error:
+            state = "degraded"
+        elif returncode is not None:
+            state = "degraded"
+        elif process is None and self._web_source_intentionally_stopped:
+            state = "stopped"
+        return {
+            "enabled": True,
+            "state": state,
+            "pid": pid,
+            "managed": process is not None,
+            "returncode": returncode,
+            "db_path": str(self._web_source_db),
+            "status_path": str(self._web_source_status_path),
+            "wwebjs_ready": bool(status.get("wwebjs_ready")),
+            "db_writeable": bool(status.get("db_writeable")),
+            "last_persist_at": status.get("last_persist_at"),
+            "last_contact_snapshot_at": status.get("last_contact_snapshot_at"),
+            "error": error or status.get("error"),
+        }
+
+    def _write_whatsapp_runtime_status(self, *, force: bool = False) -> None:
+        now = time.monotonic()
+        last_refresh = getattr(self, "_last_runtime_status_refresh", 0.0)
+        if not force and now - last_refresh < 5:
+            return
+        self._last_runtime_status_refresh = now
+
+        bridge_health = getattr(self, "_bridge_health", {})
+        bridge_status = str(bridge_health.get("status") or "").strip()
+        bridge_connected = bool(self._running and self._http_session) and (
+            not bridge_status or bridge_status == "connected"
+        )
+        bridge_process = getattr(self, "_bridge_process", None)
+        setup_needed = self.fatal_error_code == "whatsapp_not_paired"
+        bridge_managed = bridge_process is not None
+        bridge_unmanaged = bridge_connected and not bridge_managed
+        if bridge_unmanaged:
+            bridge_state = "degraded"
+        elif bridge_connected:
+            bridge_state = "ready"
+        else:
+            bridge_state = "setup_needed" if setup_needed else "starting"
+        bridge_details = {
+            "state": bridge_state,
+            "pid": bridge_process.pid if bridge_process else None,
+            "managed": bridge_managed,
+            "port": self._bridge_port,
+            "status": bridge_status or None,
+            "mode": bridge_health.get("mode"),
+        }
+        if bridge_unmanaged:
+            bridge_details["error"] = "WhatsApp bridge is connected but not owned by Hermes"
+        if setup_needed:
+            bridge_details["error"] = self.fatal_error_message
+        web_source = self._web_source_status_details()
+        if self.has_fatal_error and not setup_needed:
+            aggregate_state = "fatal"
+        elif bridge_unmanaged:
+            aggregate_state = "degraded"
+        elif not bridge_connected:
+            aggregate_state = "degraded" if setup_needed else ("starting" if self._running else "disconnected")
+        elif self._web_source_enabled and web_source.get("state") not in {"ready"}:
+            aggregate_state = "degraded" if web_source.get("state") == "degraded" else "starting"
+        else:
+            aggregate_state = "healthy" if self._web_source_enabled else "connected"
+
+        self._write_runtime_status_safe(
+            "whatsapp_runtime",
+            platform_state=aggregate_state,
+            platform_details={
+                "bridge": bridge_details,
+                "web_source": web_source,
+            },
+            error_code=self.fatal_error_code if self.has_fatal_error else None,
+            error_message=self.fatal_error_message if self.has_fatal_error else None,
+        )
+
+    def _start_web_source(self) -> bool:
+        if not self._web_source_enabled:
+            self._web_source_error = None
+            self._write_whatsapp_runtime_status(force=True)
+            return True
+        process = self._web_source_process
+        if process and process.poll() is None:
+            self._write_whatsapp_runtime_status(force=True)
+            return True
+        if not self._web_source_script.exists():
+            self._web_source_error = f"WhatsApp web-source script not found: {self._web_source_script}"
+            logger.warning("[%s] %s", self.name, self._web_source_error)
+            self._write_whatsapp_runtime_status(force=True)
+            return False
+
+        web_source_dir = self._web_source_script.parent
+        if not (web_source_dir / "node_modules").exists():
+            self._web_source_error = (
+                f"WhatsApp web-source dependencies missing — run `npm install` in {web_source_dir}"
+            )
+            logger.warning("[%s] %s", self.name, self._web_source_error)
+            self._write_whatsapp_runtime_status(force=True)
+            return False
+
+        self._web_source_db.parent.mkdir(parents=True, exist_ok=True)
+        self._web_source_status_path.parent.mkdir(parents=True, exist_ok=True)
+        self._web_source_auth_path.mkdir(parents=True, exist_ok=True)
+        _kill_stale_web_source_by_pidfile(
+            self._web_source_pid_path,
+            script_path=self._web_source_script,
+            db_path=self._web_source_db,
+            status_path=self._web_source_status_path,
+            auth_path=self._web_source_auth_path,
+        )
+        self._web_source_log = self._web_source_status_path.with_suffix(".log")
+        self._web_source_log_fh = open(self._web_source_log, "a", encoding="utf-8")
+        self._web_source_error = None
+        self._web_source_intentionally_stopped = False
+        try:
+            self._web_source_status_path.unlink()
+        except OSError:
+            pass
+        env = os.environ.copy()
+        if self._web_source_chromium_path:
+            env["PUPPETEER_EXECUTABLE_PATH"] = self._web_source_chromium_path
+        self._web_source_process = subprocess.Popen(
+            self._web_source_command(),
+            cwd=str(web_source_dir),
+            stdout=self._web_source_log_fh,
+            stderr=self._web_source_log_fh,
+            preexec_fn=None if _IS_WINDOWS else os.setsid,
+            env=env,
+        )
+        try:
+            self._web_source_pid_path.write_text(str(self._web_source_process.pid))
+        except OSError:
+            pass
+        self._write_whatsapp_runtime_status(force=True)
+        return True
+
+    def _check_web_source_exit(self) -> None:
+        if not self._web_source_enabled or not self._web_source_process:
+            return
+        if self._web_source_process.poll() is not None:
+            self._write_whatsapp_runtime_status(force=True)
+            return
+        status = self._read_web_source_status()
+        if (
+            status.get("state") == "pairing"
+            and not self._web_source_headful
+            and not self._web_source_pairing_headful
+        ):
+            logger.info("[%s] WhatsApp web-source needs pairing; opening Chromium window", self.name)
+            if not self._stop_web_source():
+                self._web_source_error = (
+                    "WhatsApp web-source could not stop cleanly before opening pairing window"
+                )
+                logger.warning("[%s] %s", self.name, self._web_source_error)
+                self._write_whatsapp_runtime_status(force=True)
+                return
+            self._web_source_pairing_headful = True
+            self._start_web_source()
+        elif (
+            status.get("state") == "ready"
+            and self._web_source_pairing_headful
+            and not self._web_source_headful
+        ):
+            logger.info("[%s] WhatsApp web-source paired; returning Chromium to headless mode", self.name)
+            if not self._stop_web_source():
+                self._web_source_error = (
+                    "WhatsApp web-source could not stop cleanly before returning to headless mode"
+                )
+                logger.warning("[%s] %s", self.name, self._web_source_error)
+                self._write_whatsapp_runtime_status(force=True)
+                return
+            self._web_source_pairing_headful = False
+            self._start_web_source()
+
+    def _stop_web_source(self) -> bool:
+        proc = self._web_source_process
+        stopped = True
+        if proc and proc.poll() is None:
+            try:
+                _terminate_bridge_process(proc, force=False)
+                if proc.poll() is None:
+                    proc.wait(timeout=2)
+            except Exception:
+                try:
+                    _terminate_bridge_process(proc, force=True)
+                    if proc.poll() is None:
+                        proc.wait(timeout=2)
+                except Exception:
+                    pass
+            stopped = proc.poll() is not None
+        if stopped:
+            self._web_source_process = None
+            try:
+                self._web_source_pid_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        self._web_source_intentionally_stopped = stopped
+        if stopped and self._web_source_log_fh:
+            try:
+                self._web_source_log_fh.close()
+            except Exception:
+                pass
+            self._web_source_log_fh = None
+        return stopped
+
+    async def _monitor_web_source_setup(self) -> None:
+        while self._running and self._web_source_enabled and not self._http_session:
+            self._check_web_source_exit()
+            self._write_whatsapp_runtime_status()
+            await asyncio.sleep(2)
 
     async def _check_managed_bridge_exit(self) -> Optional[str]:
         """Return a fatal error message if the managed bridge child exited."""
@@ -755,6 +1183,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             logger.error("[%s] %s", self.name, message)
             self._set_fatal_error("whatsapp_bridge_exited", message, retryable=True)
             self._close_bridge_log()
+            self._write_whatsapp_runtime_status(force=True)
             await self._notify_fatal_error()
         return self.fatal_error_message or message
 
@@ -764,6 +1193,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # path (which runs from other tasks like send() and the poll loop)
         # doesn't race us and report the intentional termination as fatal.
         self._shutting_down = True
+        self._stop_web_source()
         if self._bridge_process:
             try:
                 try:
@@ -807,6 +1237,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._mark_disconnected()
         self._bridge_process = None
         self._close_bridge_log()
+        self._write_whatsapp_runtime_status(force=True)
         print(f"[{self.name}] Disconnected")
     
     async def send(
@@ -1098,6 +1529,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         while self._running:
             if not self._http_session:
                 break
+            self._check_web_source_exit()
+            self._write_whatsapp_runtime_status()
             bridge_exit = await self._check_managed_bridge_exit()
             if bridge_exit:
                 print(f"[{self.name}] {bridge_exit}")
