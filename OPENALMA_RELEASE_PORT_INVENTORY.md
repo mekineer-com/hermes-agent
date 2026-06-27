@@ -140,3 +140,8 @@ Shared files stay `pending` until their slice ports the narrow OpenAlma seam.
 
 - `gateway/platforms/whatsapp_common.py`: hunk-port — fixed release JID suffix normalization and DM allowlist matching used by OpenAlma WhatsApp.
 - `tests/gateway/test_whatsapp_common_openalma.py`: copy — focused regression tests for the shared WhatsApp mixin change.
+
+## Partial WhatsApp Adapter Port
+
+- `gateway/platforms/whatsapp.py`: pending — bridge pidfile cleanup hunk ported; web-source, WAL, deliveryMode, contact store, send normalization still pending.
+- `tests/gateway/test_whatsapp_connect.py`: pending — bridge pidfile cleanup tests ported; remaining WhatsApp adapter coverage still pending.

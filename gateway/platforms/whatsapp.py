@@ -22,6 +22,7 @@ import platform
 import shutil
 import signal
 import subprocess
+import time
 
 _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
@@ -87,16 +88,38 @@ def _kill_port_process(port: int) -> None:
         pass
 
 
-def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
-    """Kill a bridge process recorded in a PID file from a previous run.
+def _pid_cmdline(pid: int) -> list[str]:
+    try:
+        import psutil
+        return psutil.Process(pid).cmdline()
+    except Exception:
+        if _IS_WINDOWS:
+            return []
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return []
+    return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
 
-    The bridge writes ``bridge.pid`` into the session directory when it
-    starts.  If the gateway crashed without a clean shutdown the old bridge
-    process becomes orphaned — this helper finds and kills it.
-    """
-    pid_file = session_path / "bridge.pid"
-    if not pid_file.exists():
+
+def _cmdline_contains_all(cmdline: list[str], markers: list[str]) -> bool:
+    joined = "\0".join(cmdline)
+    return bool(joined) and all(marker in joined for marker in markers)
+
+
+def _terminate_pid_tree(pid: int, *, force: bool = False) -> None:
+    if _IS_WINDOWS:
+        cmd = ["taskkill", "/PID", str(pid), "/T"]
+        if force:
+            cmd.append("/F")
+        subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         return
+    os.killpg(os.getpgid(pid), signal.SIGKILL if force else signal.SIGTERM)
+
+
+def _read_pidfile(pid_file: Path) -> Optional[int]:
+    if not pid_file.exists():
+        return None
     try:
         pid = int(pid_file.read_text().strip())
     except (ValueError, OSError, TypeError):
@@ -104,20 +127,46 @@ def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
             pid_file.unlink()
         except OSError:
             pass
+        return None
+    return pid
+
+
+def _kill_stale_pidfile_process(pid_file: Path, *, markers: list[str], label: str) -> None:
+    pid = _read_pidfile(pid_file)
+    if pid is None:
         return
-    # ``os.kill(pid, 0)`` is NOT a no-op on Windows (bpo-14484) — use the
-    # cross-platform existence check before sending a real signal.
     from gateway.status import _pid_exists
+
     if _pid_exists(pid):
-        try:
-            os.kill(pid, signal.SIGTERM)
-            logger.info("[whatsapp] Killed stale bridge PID %d from pidfile", pid)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+        cmdline = _pid_cmdline(pid)
+        if _cmdline_contains_all(cmdline, markers):
+            try:
+                _terminate_pid_tree(pid, force=False)
+                time.sleep(0.5)
+                if _pid_exists(pid):
+                    _terminate_pid_tree(pid, force=True)
+                logger.info("[whatsapp] Killed stale %s PID %d from pidfile", label, pid)
+            except (ProcessLookupError, PermissionError, OSError, subprocess.SubprocessError):
+                pass
+        else:
+            logger.warning(
+                "[whatsapp] Ignoring stale %s pidfile for PID %d because command line did not match",
+                label,
+                pid,
+            )
     try:
         pid_file.unlink()
     except OSError:
         pass
+
+
+def _kill_stale_bridge_by_pidfile(session_path: Path, bridge_script: Path) -> None:
+    """Kill a prior bridge only when the pidfile still points at our bridge."""
+    _kill_stale_pidfile_process(
+        session_path / "bridge.pid",
+        markers=[str(bridge_script), str(session_path)],
+        label="bridge",
+    )
 
 
 def _write_bridge_pidfile(session_path: Path, pid: int) -> None:
@@ -475,7 +524,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 pass  # Bridge not running, start a new one
             
             # Kill any orphaned bridge from a previous gateway run
-            _kill_stale_bridge_by_pidfile(self._session_path)
+            _kill_stale_bridge_by_pidfile(self._session_path, bridge_path)
             _kill_port_process(self._bridge_port)
             await asyncio.sleep(1)
             

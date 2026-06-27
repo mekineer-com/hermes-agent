@@ -506,6 +506,42 @@ class TestKillPortProcess:
             _kill_port_process(3000)  # must not raise
 
 
+class TestStaleBridgePidfile:
+    def test_kills_only_matching_bridge_process(self, tmp_path):
+        from gateway.platforms.whatsapp import _kill_stale_bridge_by_pidfile
+
+        session = tmp_path / "session"
+        session.mkdir()
+        bridge = tmp_path / "bridge.js"
+        bridge.write_text("// stub")
+        (session / "bridge.pid").write_text("123")
+
+        with patch("gateway.status._pid_exists", side_effect=[True, False]), \
+             patch("gateway.platforms.whatsapp._pid_cmdline", return_value=["node", str(bridge), "--session", str(session)]), \
+             patch("gateway.platforms.whatsapp._terminate_pid_tree") as terminate:
+            _kill_stale_bridge_by_pidfile(session, bridge)
+
+        terminate.assert_called_once_with(123, force=False)
+        assert not (session / "bridge.pid").exists()
+
+    def test_ignores_pidfile_when_command_does_not_match(self, tmp_path):
+        from gateway.platforms.whatsapp import _kill_stale_bridge_by_pidfile
+
+        session = tmp_path / "session"
+        session.mkdir()
+        bridge = tmp_path / "bridge.js"
+        bridge.write_text("// stub")
+        (session / "bridge.pid").write_text("123")
+
+        with patch("gateway.status._pid_exists", return_value=True), \
+             patch("gateway.platforms.whatsapp._pid_cmdline", return_value=["node", "/other/bridge.js"]), \
+             patch("gateway.platforms.whatsapp._terminate_pid_tree") as terminate:
+            _kill_stale_bridge_by_pidfile(session, bridge)
+
+        terminate.assert_not_called()
+        assert not (session / "bridge.pid").exists()
+
+
 # ---------------------------------------------------------------------------
 # Persistent HTTP session lifecycle
 # ---------------------------------------------------------------------------
