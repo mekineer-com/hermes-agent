@@ -574,12 +574,12 @@ class TestMessageStorage:
         db.append_message("s1", role="assistant", content="ack")
         db.append_message("s1", role="user", content="second")
 
-        db.set_latest_user_sender("s1", sender_id="140063262396533@lid", sender_name="Raquel")
+        db.set_latest_user_sender("s1", sender_id="140063262396533@lid", sender_name="Test Contact")
 
         user_rows = [msg for msg in db.get_messages("s1") if msg["role"] == "user"]
         assert user_rows[0]["sender_name"] is None
         assert user_rows[1]["sender_id"] == "140063262396533@lid"
-        assert user_rows[1]["sender_name"] == "Raquel"
+        assert user_rows[1]["sender_name"] == "Test Contact"
 
     def test_append_message_dedupes_by_source_key(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -587,14 +587,14 @@ class TestMessageStorage:
             "s1",
             role="user",
             content="first",
-            source_chat_id="15133278228@s.whatsapp.net",
+            source_chat_id="12025550199@s.whatsapp.net",
             source_message_id="wamid.1",
         )
         second_id = db.append_message(
             "s1",
             role="user",
             content="duplicate",
-            source_chat_id="15133278228@s.whatsapp.net",
+            source_chat_id="12025550199@s.whatsapp.net",
             source_message_id="wamid.1",
         )
 
@@ -614,7 +614,7 @@ class TestMessageStorage:
                     sid,
                     role="user",
                     content=f"duplicate in {sid}",
-                    source_chat_id="15133278228@s.whatsapp.net",
+                    source_chat_id="12025550199@s.whatsapp.net",
                     source_message_id="m1",
                 )
             seed.append_message("s2", role="assistant", content="answered")
@@ -624,7 +624,7 @@ class TestMessageStorage:
         reopened = SessionDB(db_path=db_path)
         try:
             assert reopened.message_source_key_has_response(
-                source_chat_id="15133278228@s.whatsapp.net",
+                source_chat_id="12025550199@s.whatsapp.net",
                 source_message_id="m1",
             )
         finally:
@@ -636,35 +636,35 @@ class TestMessageStorage:
             "s1",
             role="user",
             content="hello",
-            source_chat_id="15133278228@s.whatsapp.net",
+            source_chat_id="12025550199@s.whatsapp.net",
             source_message_id="m1",
         )
         assert not db.message_source_key_has_response(
-            source_chat_id="15133278228@s.whatsapp.net",
+            source_chat_id="12025550199@s.whatsapp.net",
             source_message_id="m1",
         )
 
         db.append_message("s1", role="assistant", content="hi")
         assert db.message_source_key_has_response(
-            source_chat_id="15133278228@s.whatsapp.net",
+            source_chat_id="12025550199@s.whatsapp.net",
             source_message_id="m1",
         )
 
         assert db.mark_message_source_key_processed(
-            source_chat_id="15133278228@s.whatsapp.net",
+            source_chat_id="12025550199@s.whatsapp.net",
             source_message_id="m1",
             processed_at=1_780_000_000_250,
         )
         assert db.message_source_key_is_processed(
-            source_chat_id="15133278228@s.whatsapp.net",
+            source_chat_id="12025550199@s.whatsapp.net",
             source_message_id="m1",
         )
         assert db.delete_message_by_source_key(
-            source_chat_id="15133278228@s.whatsapp.net",
+            source_chat_id="12025550199@s.whatsapp.net",
             source_message_id="m1",
         ) == 1
         assert not db.message_source_key_is_processed(
-            source_chat_id="15133278228@s.whatsapp.net",
+            source_chat_id="12025550199@s.whatsapp.net",
             source_message_id="m1",
         )
 

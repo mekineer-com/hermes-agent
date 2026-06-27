@@ -1144,6 +1144,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
 
+    def _resolve_event_chat_name(self, data: Dict[str, Any], *, is_group: bool) -> str:
+        chat_name = str(data.get("chatName") or "").strip()
+        if chat_name:
+            return chat_name
+        sender_name = str(data.get("senderName") or "").strip()
+        if not is_group and sender_name:
+            return sender_name
+        chat_id = str(data.get("chatId") or "").strip()
+        return chat_id.split("@", 1)[0] if chat_id else "unknown-chat"
+
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
@@ -1166,14 +1176,20 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # Determine chat type
             is_group = data.get("isGroup", False)
             chat_type = "group" if is_group else "dm"
+            chat_name = self._resolve_event_chat_name(data, is_group=is_group)
             
             # Build source
+            source_user_id = data.get("senderId")
+            source_user_name = data.get("senderName")
+            if not is_group:
+                source_user_id = data.get("chatId") or source_user_id
+                source_user_name = chat_name or source_user_name
             source = self.build_source(
                 chat_id=data.get("chatId", ""),
-                chat_name=data.get("chatName"),
+                chat_name=chat_name,
                 chat_type=chat_type,
-                user_id=data.get("senderId"),
-                user_name=data.get("senderName"),
+                user_id=source_user_id,
+                user_name=source_user_name,
             )
             
             # Download media URLs to the local cache so agent tools
@@ -1269,11 +1285,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         except Exception as e:
                             print(f"[{self.name}] Failed to read document text: {e}", flush=True)
 
+            raw_message = dict(data)
+            raw_message["chatName"] = chat_name
             return MessageEvent(
                 text=body,
                 message_type=msg_type,
                 source=source,
-                raw_message=data,
+                raw_message=raw_message,
                 message_id=data.get("messageId"),
                 media_urls=cached_urls,
                 media_types=media_types,

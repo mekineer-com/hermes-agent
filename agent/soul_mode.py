@@ -65,7 +65,7 @@ def resolve_agent_config(user_config: dict | None, session_key: str) -> dict[str
               enabled: true
               role: soul
               soul_id: Echo
-              user_id: marcos
+              user_id: test-user
               memu_base_url: http://127.0.0.1:8099
               use_memu_turn: true
               timeout_seconds: 90

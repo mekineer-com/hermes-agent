@@ -136,11 +136,11 @@ def test_should_skip_soul_mode_auto_resume_uses_session_agent_name():
 
     assert should_skip_soul_mode_auto_resume(
         _Gateway(),
-        "agent:echo:whatsapp:dm:15133278228",
+        "agent:echo:whatsapp:dm:12025550199",
     ) is True
     assert should_skip_soul_mode_auto_resume(
         _Gateway(),
-        "agent:main:whatsapp:dm:15133278228",
+        "agent:main:whatsapp:dm:12025550199",
     ) is False
 
 

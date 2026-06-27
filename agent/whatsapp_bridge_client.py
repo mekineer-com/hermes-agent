@@ -2,11 +2,11 @@
 
 Used by soul_mode when the soul's turn contract says
 ``response_target == "private"``: the bridge's connected account is also
-the human's account (Marcos sends and the soul sends from the same
+the human's account (Test User sends and the soul sends from the same
 number), so PRIVATE means routing the soul's reply to the human's
 self-DM (their own number chatting to itself) instead of the chat the
 turn came from. WhatsApp surfaces a person under either a phone JID
-(``15133278228@s.whatsapp.net``) or a privacy LID (``114628432556258@lid``);
+(``12025550199@s.whatsapp.net``) or a privacy LID (``114628432556258@lid``);
 the bridge records both in ``creds.json``'s ``me`` block and the phone
 JID is what ``/send`` expects as ``chatId`` for a self-DM.
 
@@ -64,7 +64,7 @@ def read_self_dm_jid() -> str:
     raw = str(me.get("id") or "").strip()
     if not raw:
         return ""
-    # Baileys: "15133278228:10@s.whatsapp.net" → strip the device suffix.
+    # Baileys: "12025550199:10@s.whatsapp.net" → strip the device suffix.
     head, sep, tail = raw.partition(":")
     if sep and "@" in tail:
         suffix = tail.split("@", 1)[1]

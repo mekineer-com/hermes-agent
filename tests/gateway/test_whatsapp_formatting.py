@@ -219,11 +219,11 @@ class TestSendChunking:
         resp.json = AsyncMock(return_value={"messageId": "msg1"})
         adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
 
-        result = await adapter.send("+1 (555) 123-4567", "hello")
+        result = await adapter.send("+1 (202) 555-0123", "hello")
 
         assert result.success
         payload = adapter._http_session.post.call_args.kwargs["json"]
-        assert payload["chatId"] == "15551234567@s.whatsapp.net"
+        assert payload["chatId"] == "12025550123@s.whatsapp.net"
 
     @pytest.mark.asyncio
     async def test_long_message_chunked(self):
@@ -337,14 +337,14 @@ class TestSendChunking:
         adapter.send = AsyncMock(return_value=MagicMock(success=True, message_id="self-msg"))
         monkeypatch.setattr(
             "agent.whatsapp_bridge_client.read_self_dm_jid",
-            lambda: "15133278228@s.whatsapp.net",
+            lambda: "12025550199@s.whatsapp.net",
         )
 
-        result = await adapter.send_private_notice("familia@g.us", "marcos", "notice")
+        result = await adapter.send_private_notice("group-chat@g.us", "test-user", "notice")
 
         assert result.success
         adapter.send.assert_awaited_once_with(
-            "15133278228@s.whatsapp.net",
+            "12025550199@s.whatsapp.net",
             "notice",
             reply_to=None,
             metadata=None,
@@ -356,7 +356,7 @@ class TestSendChunking:
         adapter.send = AsyncMock()
         monkeypatch.setattr("agent.whatsapp_bridge_client.read_self_dm_jid", lambda: "")
 
-        result = await adapter.send_private_notice("familia@g.us", "marcos", "notice")
+        result = await adapter.send_private_notice("group-chat@g.us", "test-user", "notice")
 
         assert not result.success
         assert "self-DM JID unavailable" in result.error
@@ -375,8 +375,8 @@ class TestBridgeEventMetadata:
         adapter = _make_adapter()
         data = {
             "messageId": "incoming-msg",
-            "chatId": "15551234567@s.whatsapp.net",
-            "senderId": "15551234567@s.whatsapp.net",
+            "chatId": "12025550123@s.whatsapp.net",
+            "senderId": "12025550123@s.whatsapp.net",
             "senderName": "Tester",
             "chatName": "Tester",
             "isGroup": False,
@@ -385,7 +385,7 @@ class TestBridgeEventMetadata:
             "mediaUrls": [],
             "quotedMessageId": "outbound-msg",
             "quotedParticipant": "99999999999@s.whatsapp.net",
-            "quotedRemoteJid": "15551234567@s.whatsapp.net",
+            "quotedRemoteJid": "12025550123@s.whatsapp.net",
             "hasQuotedMessage": True,
         }
 
@@ -394,8 +394,50 @@ class TestBridgeEventMetadata:
         assert event is not None
         assert event.raw_message["quotedMessageId"] == "outbound-msg"
         assert event.raw_message["quotedParticipant"] == "99999999999@s.whatsapp.net"
-        assert event.raw_message["quotedRemoteJid"] == "15551234567@s.whatsapp.net"
+        assert event.raw_message["quotedRemoteJid"] == "12025550123@s.whatsapp.net"
         assert event.raw_message["hasQuotedMessage"] is True
+
+    @pytest.mark.asyncio
+    async def test_missing_chat_name_dm_falls_back_to_sender_name(self):
+        adapter = _make_adapter()
+        data = {
+            "messageId": "incoming-dm",
+            "chatId": "12025550123@s.whatsapp.net",
+            "senderId": "12025550123@s.whatsapp.net",
+            "senderName": "Test Sender",
+            "chatName": "",
+            "isGroup": False,
+            "body": "hello",
+            "hasMedia": False,
+            "mediaUrls": [],
+        }
+
+        event = await adapter._build_message_event(data)
+
+        assert event is not None
+        assert event.source.chat_name == "Test Sender"
+        assert event.raw_message["chatName"] == "Test Sender"
+
+    @pytest.mark.asyncio
+    async def test_missing_chat_name_group_falls_back_to_chat_local_part(self):
+        adapter = _make_adapter()
+        data = {
+            "messageId": "incoming-group",
+            "chatId": "12025550100-1600000000@g.us",
+            "senderId": "12025550199@s.whatsapp.net",
+            "senderName": "Test Member",
+            "chatName": "",
+            "isGroup": True,
+            "body": "hola",
+            "hasMedia": False,
+            "mediaUrls": [],
+        }
+
+        event = await adapter._build_message_event(data)
+
+        assert event is not None
+        assert event.source.chat_name == "12025550100-1600000000"
+        assert event.raw_message["chatName"] == "12025550100-1600000000"
 
 
 # ---------------------------------------------------------------------------

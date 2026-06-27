@@ -99,9 +99,9 @@ test('durable queue compacts on ack threshold', () => {
     const queue = new DurableQueue({ queueDir, compactionEveryAcks: 1 });
     queue.enqueue({
       messageId: 'g1',
-      chatId: '18322935409-1579788049@g.us',
+      chatId: '12025550100-1600000000@g.us',
       senderId: 'raquel@lid',
-      senderName: 'Raquel',
+      senderName: 'Test Contact',
       isGroup: true,
       body: 'first',
       hasMedia: false,
@@ -117,9 +117,9 @@ test('durable queue compacts on ack threshold', () => {
     });
     queue.enqueue({
       messageId: 'g2',
-      chatId: '18322935409-1579788049@g.us',
-      senderId: 'marcos@lid',
-      senderName: 'Marcos',
+      chatId: '12025550100-1600000000@g.us',
+      senderId: 'test-user@lid',
+      senderName: 'Test User',
       isGroup: true,
       body: 'second',
       hasMedia: false,
@@ -149,11 +149,11 @@ test('durable queue bootstraps seen ids from queue rows when seen file is missin
   try {
     const legacyRow = {
       seq: 1,
-      event_uid: '114628432556258@lid:ACCB6730B9B318CD8D20AF8EA94082E1:15133278228@s.whatsapp.net',
+      event_uid: '114628432556258@lid:ACCB6730B9B318CD8D20AF8EA94082E1:12025550199@s.whatsapp.net',
       messageId: 'ACCB6730B9B318CD8D20AF8EA94082E1',
       chatId: '114628432556258@lid',
-      senderId: '15133278228@s.whatsapp.net',
-      senderName: 'Marcos',
+      senderId: '12025550199@s.whatsapp.net',
+      senderName: 'Test User',
       isGroup: false,
       body: 'Please respond privately.',
       hasMedia: false,
@@ -178,7 +178,7 @@ test('durable queue bootstraps seen ids from queue rows when seen file is missin
       messageId: 'ACCB6730B9B318CD8D20AF8EA94082E1',
       chatId: '114628432556258@lid',
       senderId: '114628432556258@lid',
-      senderName: 'Marcos',
+      senderName: 'Test User',
       isGroup: false,
       body: 'same message different sender alias',
       hasMedia: false,
@@ -205,20 +205,20 @@ test('durable queue gives deliveryMode revoke a distinct uid from the original m
     const original = queue.enqueue({
       deliveryMode: 'live',
       messageId: 'm1',
-      chatId: '15133278228@s.whatsapp.net',
-      senderId: '15133278228@s.whatsapp.net',
+      chatId: '12025550199@s.whatsapp.net',
+      senderId: '12025550199@s.whatsapp.net',
       body: 'hello',
       timestamp: 1,
     });
     const revoke = queue.enqueue({
       deliveryMode: 'revoke',
       messageId: 'm1',
-      chatId: '15133278228@s.whatsapp.net',
+      chatId: '12025550199@s.whatsapp.net',
       timestamp: 2,
     });
 
-    assert.equal(original.event_uid, '15133278228@s.whatsapp.net:m1');
-    assert.equal(revoke.event_uid, 'revoke:15133278228@s.whatsapp.net:m1');
+    assert.equal(original.event_uid, '12025550199@s.whatsapp.net:m1');
+    assert.equal(revoke.event_uid, 'revoke:12025550199@s.whatsapp.net:m1');
   } finally {
     rmSync(queueDir, { recursive: true, force: true });
   }
@@ -232,8 +232,8 @@ test('durable queue merges history rows into later live rows', () => {
       eventType: 'history_message',
       deliveryMode: 'persist_only',
       messageId: 'm1',
-      chatId: '15133278228@s.whatsapp.net',
-      senderId: '15133278228@s.whatsapp.net',
+      chatId: '12025550199@s.whatsapp.net',
+      senderId: '12025550199@s.whatsapp.net',
       senderName: 'Old name',
       body: 'history body',
       timestamp: 1,
@@ -242,8 +242,8 @@ test('durable queue merges history rows into later live rows', () => {
     const live = queue.enqueue({
       deliveryMode: 'live',
       messageId: 'm1',
-      chatId: '15133278228@s.whatsapp.net',
-      senderId: '15133278228@s.whatsapp.net',
+      chatId: '12025550199@s.whatsapp.net',
+      senderId: '12025550199@s.whatsapp.net',
       senderName: 'Live name',
       body: 'live body',
       timestamp: 2,
@@ -252,14 +252,14 @@ test('durable queue merges history rows into later live rows', () => {
     const duplicateLive = queue.enqueue({
       deliveryMode: 'live',
       messageId: 'm1',
-      chatId: '15133278228@s.whatsapp.net',
-      senderId: '15133278228@s.whatsapp.net',
+      chatId: '12025550199@s.whatsapp.net',
+      senderId: '12025550199@s.whatsapp.net',
       body: 'hello again',
       timestamp: 2,
     });
 
     assert.equal(history, live);
-    assert.equal(history.event_uid, '15133278228@s.whatsapp.net:m1');
+    assert.equal(history.event_uid, '12025550199@s.whatsapp.net:m1');
     assert.equal(history.deliveryMode, 'live');
     assert.equal(history.eventType, undefined);
     assert.equal(history.senderName, 'Live name');
@@ -267,7 +267,7 @@ test('durable queue merges history rows into later live rows', () => {
     assert.equal(history.timestamp, 1);
     assert.equal(queueLinesAfterHistory.length, 1);
     assert.equal(queueLinesAfterLive.length, 1);
-    assert.equal(duplicateLive.event_uid, '15133278228@s.whatsapp.net:m1');
+    assert.equal(duplicateLive.event_uid, '12025550199@s.whatsapp.net:m1');
     assert.deepEqual(queue.readUnacked(10).map((item) => item.seq), [1]);
   } finally {
     rmSync(queueDir, { recursive: true, force: true });
@@ -283,8 +283,8 @@ test('durable queue lets a live row upgrade a previously seen history row after 
       eventType: 'history_message',
       deliveryMode: 'persist_only',
       messageId: 'm1',
-      chatId: '15133278228@s.whatsapp.net',
-      senderId: '15133278228@s.whatsapp.net',
+      chatId: '12025550199@s.whatsapp.net',
+      senderId: '12025550199@s.whatsapp.net',
       body: 'history body',
       timestamp: 1,
     });
@@ -294,8 +294,8 @@ test('durable queue lets a live row upgrade a previously seen history row after 
     const live = queue.enqueue({
       deliveryMode: 'live',
       messageId: 'm1',
-      chatId: '15133278228@s.whatsapp.net',
-      senderId: '15133278228@s.whatsapp.net',
+      chatId: '12025550199@s.whatsapp.net',
+      senderId: '12025550199@s.whatsapp.net',
       body: 'history body',
       timestamp: 2,
     });
@@ -303,13 +303,13 @@ test('durable queue lets a live row upgrade a previously seen history row after 
       eventType: 'history_message',
       deliveryMode: 'persist_only',
       messageId: 'm1',
-      chatId: '15133278228@s.whatsapp.net',
-      senderId: '15133278228@s.whatsapp.net',
+      chatId: '12025550199@s.whatsapp.net',
+      senderId: '12025550199@s.whatsapp.net',
       body: 'history body',
       timestamp: 1,
     });
 
-    assert.equal(live.event_uid, '15133278228@s.whatsapp.net:m1');
+    assert.equal(live.event_uid, '12025550199@s.whatsapp.net:m1');
     assert.equal(live.deliveryMode, 'live');
     assert.equal(live.timestamp, 1);
     assert.equal(duplicateHistory, live);
@@ -327,8 +327,8 @@ test('durable queue normalizes long-shaped timestamps before live upgrade', () =
       eventType: 'history_message',
       deliveryMode: 'persist_only',
       messageId: 'm1',
-      chatId: '15133278228@s.whatsapp.net',
-      senderId: '15133278228@s.whatsapp.net',
+      chatId: '12025550199@s.whatsapp.net',
+      senderId: '12025550199@s.whatsapp.net',
       body: 'history body',
       timestamp: { low: 1000, high: 0, unsigned: true },
     });
@@ -338,8 +338,8 @@ test('durable queue normalizes long-shaped timestamps before live upgrade', () =
     const live = queue.enqueue({
       deliveryMode: 'live',
       messageId: 'm1',
-      chatId: '15133278228@s.whatsapp.net',
-      senderId: '15133278228@s.whatsapp.net',
+      chatId: '12025550199@s.whatsapp.net',
+      senderId: '12025550199@s.whatsapp.net',
       body: 'history body',
       timestamp: 2000,
     });

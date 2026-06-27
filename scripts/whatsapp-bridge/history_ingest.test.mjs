@@ -28,7 +28,7 @@ test('historyMessageSources includes top-level messaging-history messages', () =
 });
 
 test('canonicalizeMessageIds re-normalizes after alias learning', () => {
-  const lidMap = { '247789598601266': '15133278228' };
+  const lidMap = { '247789598601266': '12025550199' };
   const normalize = (value) => {
     const raw = String(value || '').trim();
     if (raw.endsWith('@lid')) {
@@ -43,8 +43,8 @@ test('canonicalizeMessageIds re-normalizes after alias learning', () => {
     fromMe: false,
   }, normalize);
 
-  assert.equal(ids.chatId, '15133278228@s.whatsapp.net');
-  assert.equal(ids.senderId, '15133278228@s.whatsapp.net');
+  assert.equal(ids.chatId, '12025550199@s.whatsapp.net');
+  assert.equal(ids.senderId, '12025550199@s.whatsapp.net');
 });
 
 test('upsertEventMode treats append as persist-only history', () => {

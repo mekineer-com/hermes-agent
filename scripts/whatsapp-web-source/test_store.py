@@ -22,8 +22,8 @@ def row(msg_key="m1", source="event:message", body="hello", msg_type="chat", **o
         "author_local_id": "",
         "from_id": "123@c.us",
         "from_local_id": "123",
-        "to_id": "15133278228@c.us",
-        "to_local_id": "15133278228",
+        "to_id": "12025550199@c.us",
+        "to_local_id": "12025550199",
         "has_media": False,
         "media_placeholder": None,
         "ack": 0,
@@ -282,14 +282,14 @@ class StoreTest(unittest.TestCase):
             {
                 "contact_id": "140063262396533@lid",
                 "contact_local_id": "140063262396533",
-                "name": "Raquel Scarone",
-                "short_name": "Raquel",
-                "push_name": "Raquel",
+                "name": "Test Contact",
+                "short_name": "Test Contact",
+                "push_name": "Test Contact",
                 "verified_name": None,
                 "is_me": False,
                 "is_user": True,
                 "is_group": False,
-                "raw": {"id": "140063262396533@lid", "name": "Raquel Scarone"},
+                "raw": {"id": "140063262396533@lid", "name": "Test Contact"},
             },
         )
         store.upsert_contact(
@@ -315,9 +315,9 @@ class StoreTest(unittest.TestCase):
             """
         ).fetchone()
         self.assertEqual(got["contact_local_id"], "140063262396533")
-        self.assertEqual(got["name"], "Raquel Scarone")
-        self.assertEqual(got["short_name"], "Raquel")
-        self.assertEqual(got["push_name"], "Raquel")
+        self.assertEqual(got["name"], "Test Contact")
+        self.assertEqual(got["short_name"], "Test Contact")
+        self.assertEqual(got["push_name"], "Test Contact")
 
     def test_in_scope_contact_ids_include_active_chat_and_senders_only(self):
         store.upsert_message(
@@ -348,13 +348,13 @@ class StoreTest(unittest.TestCase):
         got = store.in_scope_contact_ids(self.con, 100)
 
         self.assertEqual(got["contact_ids"], [
-            "15133278228@c.us",
+            "12025550199@c.us",
             "group-author@c.us",
             "new-group@g.us",
             "new-sender@c.us",
         ])
         self.assertEqual(got["contact_local_ids"], [
-            "15133278228",
+            "12025550199",
             "group-author",
             "new-group",
             "new-sender",

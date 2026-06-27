@@ -71,7 +71,7 @@ def test_memu_turn_forwards_chat_name_and_chat_type(monkeypatch):
 
     client.memu_turn(
         conversation_id="whatsapp:dm:19999999999",
-        user_id="Marcos",
+        user_id="Test User",
         soul_id="Echo",
         message="hi",
         chat_name="Alice",
@@ -95,7 +95,7 @@ def test_memu_turn_does_not_forward_timezone(monkeypatch):
 
     client.memu_turn(
         conversation_id="whatsapp:dm:19999999999",
-        user_id="Marcos",
+        user_id="Test User",
         soul_id="Siri",
         message="hi",
     )
@@ -118,7 +118,7 @@ def test_memu_turn_does_not_force_fill_user_name_from_history_user_name(monkeypa
 
     out = client.memu_turn(
         conversation_id="whatsapp:dm:247789598601266",
-        user_id="Marcos",
+        user_id="Test User",
         soul_id="Echo",
         message="hello",
         history=[{"role": "user", "content": "prior"}],
@@ -140,10 +140,10 @@ def test_normalize_history_for_memu_still_fills_assistant_name_from_soul_name():
 
 def test_normalize_history_for_memu_preserves_sender_name():
     out = normalize_history_for_memu(
-        [{"role": "user", "content": "hello", "sender_name": "Raquel"}],
+        [{"role": "user", "content": "hello", "sender_name": "Test Contact"}],
         soul_name="Siri",
     )
-    assert out == [{"role": "user", "content": "hello", "name": "Raquel"}]
+    assert out == [{"role": "user", "content": "hello", "name": "Test Contact"}]
 
 
 def test_memu_turn_passes_user_name_for_current_message_speaker(monkeypatch):
@@ -158,7 +158,7 @@ def test_memu_turn_passes_user_name_for_current_message_speaker(monkeypatch):
 
     client.memu_turn(
         conversation_id="whatsapp:dm:247789598601266",
-        user_id="Marcos",
+        user_id="Test User",
         soul_id="Echo",
         message="hi",
         user_name="Liz Kalverda",
@@ -179,13 +179,13 @@ def test_memu_turn_falls_back_to_history_user_name_when_user_name_missing(monkey
 
     client.memu_turn(
         conversation_id="whatsapp:dm:247789598601266",
-        user_id="Marcos",
+        user_id="Test User",
         soul_id="Echo",
         message="hi",
-        history_user_name="Marcos",
+        history_user_name="Test User",
     )
 
-    assert captured["payload"]["user_name"] == "Marcos"
+    assert captured["payload"]["user_name"] == "Test User"
 
 
 def test_claim_whatsapp_outbounds_builds_expected_payload(monkeypatch):

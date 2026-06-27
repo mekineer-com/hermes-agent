@@ -13,7 +13,7 @@ test('normalizeMessage preserves WhatsApp projection fields', () => {
   const row = normalizeMessage({
     id: { _serialized: 'true_123_c_us_MSG' },
     from: '123@c.us',
-    to: '15133278228@c.us',
+    to: '12025550199@c.us',
     author: '456@c.us',
     fromMe: false,
     timestamp: 100,
@@ -41,12 +41,12 @@ test('normalize helpers reject non-conversation chats and preserve contact names
 
   const contact = normalizeContactRow({
     id: { _serialized: '123@c.us' },
-    name: 'Raquel',
+    name: 'Test Contact',
     shortName: 'R',
     pushname: 'Push',
   });
   assert.equal(contact.contact_id, '123@c.us');
-  assert.equal(contact.name, 'Raquel');
+  assert.equal(contact.name, 'Test Contact');
   assert.equal(contact.short_name, 'R');
   assert.equal(contact.push_name, 'Push');
 });
