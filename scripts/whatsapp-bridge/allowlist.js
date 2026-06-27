@@ -1,5 +1,5 @@
 import path from 'path';
-import { existsSync, readFileSync } from 'fs';
+import { readJson } from './bridge_fs.js';
 
 export function normalizeWhatsAppIdentifier(value) {
   return String(value || '')
@@ -19,18 +19,9 @@ export function parseAllowedUsers(rawValue) {
 }
 
 function readMappingFile(sessionDir, identifier, suffix = '') {
-  const filePath = path.join(sessionDir, `lid-mapping-${identifier}${suffix}.json`);
-  if (!existsSync(filePath)) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(readFileSync(filePath, 'utf8'));
-    const normalized = normalizeWhatsAppIdentifier(parsed);
-    return normalized || null;
-  } catch {
-    return null;
-  }
+  const parsed = readJson(path.join(sessionDir, `lid-mapping-${identifier}${suffix}.json`));
+  const normalized = normalizeWhatsAppIdentifier(parsed);
+  return normalized || null;
 }
 
 export function expandWhatsAppIdentifiers(identifier, sessionDir) {

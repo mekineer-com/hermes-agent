@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,24 +13,10 @@ from gateway.channel_directory import (
     resolve_channel_name,
     format_directory_for_display,
     load_directory,
-    _apply_channel_aliases,
     _build_from_sessions,
     _build_slack,
+    DIRECTORY_PATH,
 )
-
-
-import pytest
-
-
-@pytest.fixture(autouse=True)
-def _isolate_channel_aliases(tmp_path_factory):
-    """Point the alias overlay at a nonexistent path by default so a real
-    ~/.hermes/channel_aliases.json never leaks into directory tests. Tests
-    that exercise aliases patch CHANNEL_ALIASES_PATH themselves inside the
-    test body, which takes precedence over this outer patch."""
-    missing = tmp_path_factory.mktemp("aliases") / "none.json"
-    with patch("gateway.channel_directory.CHANNEL_ALIASES_PATH", missing):
-        yield
 
 
 def _write_directory(tmp_path, platforms):
@@ -243,6 +230,53 @@ class TestBuildFromSessions:
             entries = _build_from_sessions("telegram")
 
         assert len(entries) == 1
+
+    def test_non_whatsapp_duplicate_keeps_first_entry(self, tmp_path):
+        self._write_sessions(tmp_path, {
+            "s1": {"origin": {"platform": "telegram", "chat_id": "123", "chat_name": "123"}},
+            "s2": {"origin": {"platform": "telegram", "chat_id": "123", "chat_name": "Alice"}},
+        })
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = _build_from_sessions("telegram")
+
+        assert entries == [{"id": "123", "name": "123", "type": "dm", "thread_id": None}]
+
+    def test_whatsapp_uses_known_contact_name_for_lid_placeholder(self, tmp_path):
+        self._write_sessions(tmp_path, {
+            "s1": {
+                "origin": {
+                    "platform": "whatsapp",
+                    "chat_id": "270699038040215@lid",
+                    "chat_name": "270699038040215",
+                },
+                "chat_type": "dm",
+            },
+        })
+        session_dir = tmp_path / "whatsapp" / "session"
+        session_dir.mkdir(parents=True)
+        (session_dir / "lid-mapping-19192593287.json").write_text(
+            json.dumps("270699038040215"),
+            encoding="utf-8",
+        )
+        (tmp_path / "whatsapp" / "known_contacts.json").write_text(
+            json.dumps({
+                "contacts": [
+                    {"id": "19192593287@s.whatsapp.net", "display_name": "Annie Gottlieb"}
+                ]
+            }),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = _build_from_sessions("whatsapp")
+
+        assert entries == [{
+            "id": "270699038040215@lid",
+            "name": "Annie Gottlieb",
+            "type": "dm",
+            "thread_id": None,
+        }]
 
     def test_keeps_distinct_topics_with_same_chat_id(self, tmp_path):
         self._write_sessions(tmp_path, {
@@ -495,84 +529,3 @@ class TestBuildSlack:
             entries = asyncio.run(_build_slack(_make_slack_adapter({"T1": client})))
 
         assert entries == []
-
-
-class TestChannelAliases:
-    """The user-maintained alias overlay (channel_aliases.json) gives durable
-    friendly names that survive the timed directory rebuild."""
-
-    def _setup_aliases(self, tmp_path, aliases):
-        alias_file = tmp_path / "channel_aliases.json"
-        alias_file.write_text(json.dumps(aliases))
-        return patch("gateway.channel_directory.CHANNEL_ALIASES_PATH", alias_file)
-
-    def test_alias_renames_existing_entry_on_load(self, tmp_path):
-        cache_file = _write_directory(tmp_path, {
-            "whatsapp": [{"id": "120363@g.us", "name": "120363", "type": "group"}]
-        })
-        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
-             self._setup_aliases(tmp_path, {"whatsapp": {"120363@g.us": "general"}}):
-            result = load_directory()
-            assert result["platforms"]["whatsapp"][0]["name"] == "general"
-            # And the friendly name resolves back to the JID
-            assert resolve_channel_name("whatsapp", "general") == "120363@g.us"
-            assert resolve_channel_name("whatsapp", "GENERAL") == "120363@g.us"
-
-    def test_alias_injects_undiscovered_group(self, tmp_path):
-        """A group named in the alias file but not yet seen in any session is
-        still addressable by name (pre-naming before first traffic)."""
-        cache_file = _write_directory(tmp_path, {"whatsapp": []})
-        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
-             self._setup_aliases(tmp_path, {"whatsapp": {"999@g.us": "marketing"}}):
-            assert resolve_channel_name("whatsapp", "marketing") == "999@g.us"
-            entries = load_directory()["platforms"]["whatsapp"]
-            injected = [e for e in entries if e["id"] == "999@g.us"]
-            assert injected and injected[0]["type"] == "group"
-
-    def test_no_alias_file_is_noop(self, tmp_path):
-        cache_file = _write_directory(tmp_path, {
-            "whatsapp": [{"id": "120363@g.us", "name": "120363", "type": "group"}]
-        })
-        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
-             patch("gateway.channel_directory.CHANNEL_ALIASES_PATH", tmp_path / "nope.json"):
-            result = load_directory()
-            assert result["platforms"]["whatsapp"][0]["name"] == "120363"
-
-    def test_corrupt_alias_file_is_ignored(self, tmp_path):
-        cache_file = _write_directory(tmp_path, {
-            "whatsapp": [{"id": "120363@g.us", "name": "120363", "type": "group"}]
-        })
-        bad = tmp_path / "channel_aliases.json"
-        bad.write_text("{not json")
-        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
-             patch("gateway.channel_directory.CHANNEL_ALIASES_PATH", bad):
-            result = load_directory()
-            assert result["platforms"]["whatsapp"][0]["name"] == "120363"
-
-    def test_alias_persists_through_rebuild(self, tmp_path, monkeypatch):
-        """build_channel_directory must bake aliases into the written file so
-        they survive the periodic regeneration, not just live reads."""
-        cache_file = tmp_path / "channel_directory.json"
-        monkeypatch.setattr("gateway.channel_directory._build_from_sessions",
-                            lambda plat: [{"id": "120363@g.us", "name": "120363",
-                                           "type": "group", "thread_id": None}]
-                            if plat == "whatsapp" else [])
-        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
-             self._setup_aliases(tmp_path, {"whatsapp": {"120363@g.us": "general"}}):
-            asyncio.run(build_channel_directory({}))
-            on_disk = json.loads(cache_file.read_text())
-        names = [e["name"] for e in on_disk["platforms"]["whatsapp"]
-                 if e["id"] == "120363@g.us"]
-        assert names == ["general"]
-
-    def test_apply_aliases_handles_malformed_map(self):
-        """Non-dict alias maps and non-string aliases must not raise."""
-        platforms = {"whatsapp": [{"id": "1@g.us", "name": "1", "type": "group"}]}
-        with patch("gateway.channel_directory._load_channel_aliases",
-                   return_value={
-                       "whatsapp": "not-a-dict",
-                       "telegram": None,
-                       "signal": {"+15551234567": 123},
-                   }):
-            _apply_channel_aliases(platforms)  # should not raise
-        assert platforms["whatsapp"][0]["name"] == "1"

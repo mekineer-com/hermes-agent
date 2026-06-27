@@ -13,61 +13,15 @@ from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
 from utils import atomic_json_write
+from gateway.whatsapp_known_contacts import (
+    is_placeholder_whatsapp_name,
+    known_whatsapp_name,
+    load_known_whatsapp_names,
+)
 
 logger = logging.getLogger(__name__)
 
 DIRECTORY_PATH = get_hermes_home() / "channel_directory.json"
-# User-maintained friendly-name overlay. The directory is fully regenerated
-# from live adapters + session data on a timer, so hand-edits to
-# channel_directory.json don't survive. Aliases declared here are re-applied
-# on every build AND every load, giving durable human-friendly names (and
-# letting you pre-name a chat before it has produced any traffic).
-# Format: {"<platform>": {"<chat_id>": "<friendly name>", ...}, ...}
-CHANNEL_ALIASES_PATH = get_hermes_home() / "channel_aliases.json"
-
-
-def _load_channel_aliases() -> Dict[str, Dict[str, str]]:
-    if not CHANNEL_ALIASES_PATH.exists():
-        return {}
-    try:
-        with open(CHANNEL_ALIASES_PATH, encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-def _apply_channel_aliases(platforms: Dict[str, Any]) -> None:
-    """Overlay friendly names onto directory entries by chat_id.
-
-    Renames matching entries in place; injects a placeholder entry for an
-    aliased id that hasn't been discovered yet (so a freshly-created group is
-    addressable by name before its first message). Mutates *platforms*.
-    """
-    aliases = _load_channel_aliases()
-    for plat_name, id_map in aliases.items():
-        if not isinstance(id_map, dict):
-            continue
-        entries = platforms.setdefault(plat_name, [])
-        if not isinstance(entries, list):
-            continue
-        for chat_id, friendly in id_map.items():
-            if not isinstance(friendly, str) or not friendly.strip():
-                continue
-            chat_id = str(chat_id)
-            friendly = friendly.strip()
-            matched = False
-            for e in entries:
-                if isinstance(e, dict) and e.get("id") == chat_id:
-                    e["name"] = friendly
-                    matched = True
-            if not matched:
-                entries.append({
-                    "id": chat_id,
-                    "name": friendly,
-                    "type": "group" if str(chat_id).endswith("@g.us") else "dm",
-                    "thread_id": None,
-                })
 
 
 def _normalize_channel_query(value: str) -> str:
@@ -146,9 +100,6 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
                 platforms[entry.name] = _build_from_sessions(entry.name)
     except Exception:
         pass
-
-    # Overlay user-maintained friendly names before persisting.
-    _apply_channel_aliases(platforms)
 
     directory = {
         "updated_at": datetime.now().isoformat(),
@@ -264,34 +215,67 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
 
 def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
     """Pull known channels/contacts from sessions.json origin data."""
-    sessions_path = get_hermes_home() / "sessions" / "sessions.json"
+    home = get_hermes_home()
+    sessions_path = home / "sessions" / "sessions.json"
     if not sessions_path.exists():
         return []
 
-    entries = []
+    known_names: dict[str, str] = {}
+    if platform_name == "whatsapp":
+        from gateway.whatsapp_seam import canonical_whatsapp_jid
+
+        known_names = load_known_whatsapp_names(home, canonicalize=canonical_whatsapp_jid)
+
+    entries_by_id: dict[str, Dict[str, str]] = {}
     try:
         with open(sessions_path, encoding="utf-8") as f:
             data = json.load(f)
 
-        seen_ids = set()
         for _key, session in data.items():
             origin = session.get("origin") or {}
             if origin.get("platform") != platform_name:
                 continue
             entry_id = _session_entry_id(origin)
-            if not entry_id or entry_id in seen_ids:
+            if not entry_id:
                 continue
-            seen_ids.add(entry_id)
-            entries.append({
+            name = _session_entry_name(origin)
+            if platform_name == "whatsapp" and is_placeholder_whatsapp_name(name):
+                name = known_whatsapp_name(known_names, origin.get("chat_id")) or name
+            entry = {
                 "id": entry_id,
-                "name": _session_entry_name(origin),
+                "name": name,
                 "type": session.get("chat_type", "dm"),
                 "thread_id": origin.get("thread_id"),
-            })
+            }
+            existing = entries_by_id.get(entry_id)
+            if existing and platform_name != "whatsapp":
+                continue
+            entries_by_id[entry_id] = _better_session_entry(existing, entry) if existing else entry
     except Exception as e:
         logger.debug("Channel directory: failed to read sessions for %s: %s", platform_name, e)
 
-    return entries
+    return list(entries_by_id.values())
+
+
+def _better_session_entry(
+    existing: Dict[str, str],
+    candidate: Dict[str, str],
+) -> Dict[str, str]:
+    merged = dict(existing)
+    existing_name = existing.get("name")
+    candidate_name = candidate.get("name")
+    if (
+        is_placeholder_whatsapp_name(existing_name)
+        and candidate_name
+        and not is_placeholder_whatsapp_name(candidate_name)
+    ):
+        merged["name"] = candidate_name
+    for key, value in candidate.items():
+        if key == "name":
+            continue
+        if merged.get(key) in (None, "") and value not in (None, ""):
+            merged[key] = value
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -301,20 +285,12 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
 def load_directory() -> Dict[str, Any]:
     """Load the cached channel directory from disk."""
     if not DIRECTORY_PATH.exists():
-        base = {"updated_at": None, "platforms": {}}
-        _apply_channel_aliases(base["platforms"])
-        return base
+        return {"updated_at": None, "platforms": {}}
     try:
         with open(DIRECTORY_PATH, encoding="utf-8") as f:
-            data = json.load(f)
-        # Re-apply aliases on read so friendly names take effect immediately,
-        # even between timed rebuilds and for brand-new alias entries.
-        _apply_channel_aliases(data.setdefault("platforms", {}))
-        return data
+            return json.load(f)
     except Exception:
-        base = {"updated_at": None, "platforms": {}}
-        _apply_channel_aliases(base["platforms"])
-        return base
+        return {"updated_at": None, "platforms": {}}
 
 
 def lookup_channel_type(platform_name: str, chat_id: str) -> Optional[str]:

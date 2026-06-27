@@ -137,3 +137,9 @@ RELEASE_v*.md
 # Desktop demo-run scratch output (hermes writes demo/*.txt during recorded
 # walkthroughs). Throwaway artifacts, never part of the app.
 apps/desktop/demo/
+
+# OpenAlma runtime files
+gateway*.log
+nohup.out
+scripts/*/nohup.out
+scripts/whatsapp-web-source/.wwebjs_cache/
