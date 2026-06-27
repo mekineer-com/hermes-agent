@@ -267,6 +267,19 @@ CREATE TABLE IF NOT EXISTS messages (
     codex_message_items TEXT
 );
 
+CREATE TABLE IF NOT EXISTS state_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
+CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+"""
+
+# OpenAlma-owned schema kept outside upstream DDL to reduce merge conflicts.
+_FORK_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS processed_source_keys (
     source_chat_id TEXT NOT NULL,
     source_message_id TEXT NOT NULL,
@@ -274,20 +287,14 @@ CREATE TABLE IF NOT EXISTS processed_source_keys (
     PRIMARY KEY (source_chat_id, source_message_id)
 );
 
-CREATE TABLE IF NOT EXISTS state_meta (
-    key TEXT PRIMARY KEY,
-    value TEXT
-);
-
 CREATE TABLE IF NOT EXISTS souls (
     soul_id TEXT PRIMARY KEY,
     active_since REAL NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
-CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_source_key
+ON messages(source_chat_id, source_message_id)
+WHERE source_chat_id IS NOT NULL AND source_message_id IS NOT NULL;
 """
 
 FTS_SQL = """
@@ -610,14 +617,7 @@ class SessionDB:
         # migration was skipped (e.g. due to version renumbering), the
         # column gets created here.
         self._reconcile_columns(cursor)
-        try:
-            cursor.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_source_key "
-                "ON messages(source_chat_id, source_message_id) "
-                "WHERE source_chat_id IS NOT NULL AND source_message_id IS NOT NULL"
-            )
-        except sqlite3.OperationalError:
-            pass
+        cursor.executescript(_FORK_SCHEMA_SQL)
 
         # ── Schema version bookkeeping ─────────────────────────────────
         # Bump to current so future data migrations (if any) can gate on
