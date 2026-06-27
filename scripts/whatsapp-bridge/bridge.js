@@ -31,8 +31,8 @@ import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
-import { atomicWriteJson, readJson } from './bridge_fs.js';
 import { DurableQueue } from './durable_queue.js';
+import { KnownState } from './known_state.js';
 import { LidIdentity } from './lid_identity.js';
 import { buildMediaRetryCachePayload } from './media_retry_cache.js';
 import { PresenceUnread } from './presence_unread.js';
@@ -265,10 +265,7 @@ const durableQueue = new DurableQueue({
   compactionEveryAcks: parseInt(process.env.WHATSAPP_QUEUE_COMPACT_EVERY_ACKS || '100', 10),
 });
 
-const pushNameCache = new Map();
 const groupNameCache = new Map();
-const knownChats = new Map();
-const unresolvedDmNameLogged = new Set();
 
 const identity = new LidIdentity({
   sessionDir: SESSION_DIR,
@@ -284,6 +281,14 @@ const presence = new PresenceUnread({
   sendUnavailableAfterActivity: SEND_UNAVAILABLE_AFTER_ACTIVITY,
   debug: WHATSAPP_DEBUG,
 });
+const knownState = new KnownState({
+  knownChatsPath: KNOWN_CHATS_PATH,
+  knownContactsPath: KNOWN_CONTACTS_PATH,
+  normalizeId: normalizeWhatsAppId,
+  identity,
+  debug: WHATSAPP_DEBUG,
+  logger,
+});
 const sentStore = new SentMessageStore({
   recentlySentIdsPath: RECENTLY_SENT_IDS_PATH,
   sentMessageStorePath: SENT_MESSAGE_STORE_PATH,
@@ -292,215 +297,12 @@ const sentStore = new SentMessageStore({
   logger,
 });
 
-function persistKnownChats() {
-  const chats = [];
-  for (const row of knownChats.values()) {
-    if (!row?.chatId) continue;
-    chats.push({
-      id: String(row.chatId),
-      is_group: !!row.isGroup,
-      name: String(row.name || ''),
-      last_sender_name: String(row.lastSenderName || ''),
-      updated_at_ms: Number(row.updatedAtMs || 0) || Date.now(),
-    });
-  }
-  chats.sort((a, b) => String(a.id).localeCompare(String(b.id)));
-  try {
-    atomicWriteJson(KNOWN_CHATS_PATH, {
-      updated_at: new Date().toISOString(),
-      chats,
-    });
-  } catch (err) {
-    logger.warn({ err }, 'failed to persist known chats');
-  }
-}
-
-function persistKnownContacts() {
-  const contacts = [];
-  for (const [id, displayName] of pushNameCache.entries()) {
-    if (!id || !displayName) continue;
-    contacts.push({ id: String(id), display_name: String(displayName) });
-  }
-  contacts.sort((a, b) => String(a.id).localeCompare(String(b.id)));
-  try {
-    atomicWriteJson(KNOWN_CONTACTS_PATH, {
-      updated_at: new Date().toISOString(),
-      contacts,
-    });
-  } catch (err) {
-    logger.warn({ err }, 'failed to persist known contacts');
-  }
-}
-
-function loadKnownState() {
-  const chatsData = readJson(KNOWN_CHATS_PATH);
-  const chats = Array.isArray(chatsData?.chats) ? chatsData.chats : [];
-  for (const row of chats) {
-    const chatId = normalizeWhatsAppId(row?.id || '');
-    if (!chatId) continue;
-    knownChats.set(chatId, {
-      chatId,
-      isGroup: !!row.is_group,
-      name: String(row?.name || '').trim(),
-      lastSenderName: String(row?.last_sender_name || '').trim(),
-      updatedAtMs: Number(row?.updated_at_ms || 0) || Date.now(),
-    });
-  }
-
-  const contactsData = readJson(KNOWN_CONTACTS_PATH);
-  const contacts = Array.isArray(contactsData?.contacts) ? contactsData.contacts : [];
-  for (const row of contacts) {
-    const contactId = normalizeWhatsAppId(row?.id || '');
-    const displayName = String(row?.display_name || '').trim();
-    if (!contactId || !displayName) continue;
-    pushNameCache.set(contactId, displayName);
-  }
-
-}
-
-function canonicalizeKnownStateWithLidMap() {
-  let chatsChanged = false;
-  let contactsChanged = false;
-
-  identity.forEachPair((lid, phone) => {
-    const lidJid = `${String(lid || '').trim()}@lid`;
-    const phoneJid = `${String(phone || '').trim()}@s.whatsapp.net`;
-    if (!lid || !phone) return;
-
-    const lidChat = knownChats.get(lidJid);
-    if (lidChat) {
-      const phoneChat = knownChats.get(phoneJid) || {};
-      knownChats.set(phoneJid, {
-        chatId: phoneJid,
-        isGroup: !!(phoneChat.isGroup || lidChat.isGroup),
-        name: String(phoneChat.name || lidChat.name || '').trim(),
-        lastSenderName: String(phoneChat.lastSenderName || lidChat.lastSenderName || '').trim(),
-        updatedAtMs: Math.max(
-          Number(phoneChat.updatedAtMs || 0) || 0,
-          Number(lidChat.updatedAtMs || 0) || 0,
-          Date.now(),
-        ),
-      });
-      knownChats.delete(lidJid);
-      chatsChanged = true;
-    }
-
-    const lidName = String(pushNameCache.get(lidJid) || '').trim();
-    const phoneName = String(pushNameCache.get(phoneJid) || '').trim();
-    if (lidName && !phoneName) {
-      pushNameCache.set(phoneJid, lidName);
-      contactsChanged = true;
-    }
-    if (lidName) {
-      pushNameCache.delete(lidJid);
-      contactsChanged = true;
-    }
-  });
-
-  if (chatsChanged) {
-    persistKnownChats();
-  }
-  if (contactsChanged) {
-    persistKnownContacts();
-  }
-}
-
-function rememberKnownChat(chatId, { isGroup = false, name = '', lastSenderName = '' } = {}) {
-  const normalizedChatId = normalizeWhatsAppId(chatId);
-  if (!normalizedChatId) return;
-  const existing = knownChats.get(normalizedChatId) || {};
-  const merged = {
-    chatId: normalizedChatId,
-    isGroup: !!(isGroup || existing.isGroup),
-    name: String(name || existing.name || '').trim(),
-    lastSenderName: String(lastSenderName || existing.lastSenderName || '').trim(),
-    updatedAtMs: Date.now(),
-  };
-  knownChats.set(normalizedChatId, merged);
-  persistKnownChats();
-}
-
 let sock = null;
 const socketLifecycle = new SocketLifecycle({
   baileysVersionFetchTimeoutMs: BAILEYS_VERSION_FETCH_TIMEOUT_MS,
   baileysVersionFallback: BAILEYS_VERSION_FALLBACK,
   onStart: startSocket,
 });
-
-function rememberPushName(senderId, pushName) {
-  const sid = normalizeWhatsAppId(senderId);
-  const name = String(pushName || '').trim();
-  if (!sid || !name) return;
-  if (String(pushNameCache.get(sid) || '') === name) return;
-  pushNameCache.set(sid, name);
-  persistKnownContacts();
-}
-
-function rememberKnownChatsFromSnapshot(chats) {
-  if (!Array.isArray(chats)) return;
-  for (const chat of chats) {
-    const chatId = normalizeWhatsAppId(chat?.id || chat?.jid || '');
-    if (!chatId || chatId.toLowerCase().includes('status@broadcast')) continue;
-    const isGroup = chatId.endsWith('@g.us') || chat?.isGroup === true || String(chat?.type || '').toLowerCase() === 'group';
-    const name = String(chat?.name || chat?.subject || '').trim();
-    rememberKnownChat(chatId, { isGroup, name });
-  }
-}
-
-function rememberKnownContactsFromSnapshot(contacts) {
-  if (!Array.isArray(contacts)) return;
-  const persistBatch = {};
-  for (const contact of contacts) {
-    if (contact?.lid && contact?.jid) {
-      identity.learnPair(contact.lid, contact.jid, { persistBatch });
-    }
-    const contactId = normalizeWhatsAppId(contact?.id || '');
-    const displayName = String(
-      contact?.notify || contact?.name || contact?.verifiedName || ''
-    ).trim();
-    if (contactId && displayName) {
-      rememberPushName(contactId, displayName);
-    }
-  }
-  identity.persistBatch(persistBatch);
-}
-
-function resolveDmDisplayName(chatId, row) {
-  const fromCache = String(pushNameCache.get(chatId) || '').trim();
-  if (fromCache) return fromCache;
-  const fromRow = String(row?.name || row?.lastSenderName || '').trim();
-  if (fromRow) return fromRow;
-  if (WHATSAPP_DEBUG && !unresolvedDmNameLogged.has(chatId)) {
-    unresolvedDmNameLogged.add(chatId);
-    console.log(JSON.stringify({
-      event: 'dm_name_unresolved',
-      chatId,
-      hadRowName: !!String(row?.name || '').trim(),
-      hadLastSenderName: !!String(row?.lastSenderName || '').trim(),
-    }));
-  }
-  return chatId.split('@')[0];
-}
-
-function extractPossibleSenderName(msg) {
-  const candidates = [
-    msg?.pushName,
-    msg?.verifiedBizName,
-    msg?.notifyName,
-    msg?.name,
-    msg?.participantName,
-    msg?.chatName,
-  ];
-  for (const raw of candidates) {
-    const name = String(raw || '').trim();
-    if (!name) continue;
-    // Ignore obvious non-name placeholders/noise.
-    if (/^\[.*\]$/.test(name)) continue;
-    if (/^(image|video|audio|document)\s+received$/i.test(name)) continue;
-    return name;
-  }
-  return '';
-}
 
 async function resolveGroupChatName(chatId) {
   const normalizedChatId = normalizeWhatsAppId(chatId);
@@ -612,17 +414,17 @@ async function enqueueHistoryMessage(rawMsg, { chatFallback = '', surface = 'syn
   if (!body && !hasMedia) return false;
 
   const senderNumber = senderId.replace(/@.*/, '');
-  const senderDisplayName = extractPossibleSenderName(msg);
+  const senderDisplayName = knownState.extractPossibleSenderName(msg);
   if (!msg.key.fromMe) {
-    rememberPushName(senderId, senderDisplayName);
+    knownState.rememberPushName(senderId, senderDisplayName);
   }
   const resolvedSenderName = msg.key.fromMe
-    ? (String(pushNameCache.get(senderId) || sock?.user?.name || '').trim() || senderNumber)
-    : (String(msg.pushName || pushNameCache.get(senderId) || senderDisplayName || senderNumber).trim() || senderNumber);
+    ? (String(knownState.getPushName(senderId) || sock?.user?.name || '').trim() || senderNumber)
+    : (String(msg.pushName || knownState.getPushName(senderId) || senderDisplayName || senderNumber).trim() || senderNumber);
   const resolvedChatName = chatId.endsWith('@g.us')
     ? (await resolveGroupChatName(chatId)) || chatId.split('@')[0]
-    : resolveDmDisplayName(chatId, knownChats.get(chatId));
-  rememberKnownChat(chatId, {
+    : knownState.resolveDmDisplayName(chatId, knownState.getChat(chatId));
+  knownState.rememberChat(chatId, {
     isGroup: chatId.endsWith('@g.us'),
     name: resolvedChatName,
     lastSenderName: (!chatId.endsWith('@g.us') && !msg.key.fromMe) ? resolvedSenderName : '',
@@ -664,12 +466,12 @@ async function enqueueHistoryMessages(payload, surface) {
   }
 }
 
-identity.setOnPairLearned(canonicalizeKnownStateWithLidMap);
-loadKnownState();
+identity.setOnPairLearned(() => knownState.canonicalize());
+knownState.load();
 sentStore.load();
-canonicalizeKnownStateWithLidMap();
-persistKnownChats();
-persistKnownContacts();
+knownState.canonicalize();
+knownState.persistKnownChats();
+knownState.persistKnownContacts();
 
 async function startSocket() {
   const socketId = socketLifecycle.beginStart();
@@ -715,22 +517,22 @@ async function startSocket() {
   });
   sock.ev.on('chats.upsert', (chats) => {
     presence.updateUnreadCountSnapshot(chats);
-    rememberKnownChatsFromSnapshot(chats);
+    knownState.rememberChatsFromSnapshot(chats);
   });
   sock.ev.on('chats.update', async (chats) => {
     presence.updateUnreadCountSnapshot(chats);
-    rememberKnownChatsFromSnapshot(chats);
+    knownState.rememberChatsFromSnapshot(chats);
     await enqueueHistoryMessagesFromChats(chats, 'chats.update');
   });
   sock.ev.on('contacts.upsert', (contacts) => {
-    rememberKnownContactsFromSnapshot(contacts);
+    knownState.rememberContactsFromSnapshot(contacts);
   });
   sock.ev.on('contacts.update', (contacts) => {
-    rememberKnownContactsFromSnapshot(contacts);
+    knownState.rememberContactsFromSnapshot(contacts);
   });
   sock.ev.on('messaging-history.set', async ({ chats, contacts, messages }) => {
-    rememberKnownChatsFromSnapshot(chats);
-    rememberKnownContactsFromSnapshot(contacts);
+    knownState.rememberChatsFromSnapshot(chats);
+    knownState.rememberContactsFromSnapshot(contacts);
     await enqueueHistoryMessages({ chats, messages }, 'messaging-history.set');
   });
 
@@ -836,12 +638,12 @@ async function startSocket() {
       participantId = ids.participantId;
       const senderId = ids.senderId;
       const isGroup = ids.isGroup;
-      const senderDisplayName = extractPossibleSenderName(msg);
+      const senderDisplayName = knownState.extractPossibleSenderName(msg);
       if (!msg.key.fromMe) {
-        rememberPushName(senderId, senderDisplayName);
+        knownState.rememberPushName(senderId, senderDisplayName);
       }
       if (!msg.message) {
-        rememberKnownChat(chatId, {
+        knownState.rememberChat(chatId, {
           isGroup,
           lastSenderName: (!isGroup && !msg.key.fromMe) ? senderDisplayName : '',
         });
@@ -1016,17 +818,17 @@ async function startSocket() {
 
       const resolvedSenderName = msg.key.fromMe
         ? (
-          String(pushNameCache.get(senderId) || sock.user?.name || '').trim()
+          String(knownState.getPushName(senderId) || sock.user?.name || '').trim()
           || senderNumber
         )
         : (
-          String(msg.pushName || pushNameCache.get(senderId) || senderNumber).trim()
+          String(msg.pushName || knownState.getPushName(senderId) || senderNumber).trim()
           || senderNumber
         );
       const resolvedChatName = isGroup
         ? (await resolveGroupChatName(chatId)) || chatId.split('@')[0]
-        : resolveDmDisplayName(chatId, knownChats.get(chatId));
-      rememberKnownChat(chatId, {
+        : knownState.resolveDmDisplayName(chatId, knownState.getChat(chatId));
+      knownState.rememberChat(chatId, {
         isGroup,
         name: resolvedChatName,
         lastSenderName: msg.key.fromMe ? '' : resolvedSenderName,
@@ -1382,9 +1184,9 @@ app.get('/chat/:id', async (req, res) => {
     }
   }
 
-  const chatRow = knownChats.get(chatId) || null;
+  const chatRow = knownState.getChat(chatId) || null;
   res.json({
-    name: resolveDmDisplayName(chatId, chatRow),
+    name: knownState.resolveDmDisplayName(chatId, chatRow),
     isGroup,
     participants: [],
   });
@@ -1395,11 +1197,11 @@ app.get('/chat/:id', async (req, res) => {
 // out before enqueueing to the Python gateway.
 app.get('/chats-known', (req, res) => {
   const out = [];
-  for (const [chatId, row] of knownChats.entries()) {
+  for (const [chatId, row] of knownState.allChats()) {
     const isGroup = !!row.isGroup || chatId.endsWith('@g.us');
     const displayName = isGroup
       ? String(row.name || '').trim() || chatId.split('@')[0]
-      : resolveDmDisplayName(chatId, row);
+      : knownState.resolveDmDisplayName(chatId, row);
     out.push({
       id: chatId,
       name: displayName,
