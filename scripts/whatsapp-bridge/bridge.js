@@ -25,7 +25,7 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, unlinkSync } from 'fs';
 import { randomBytes } from 'crypto';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
@@ -33,6 +33,7 @@ import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { atomicWriteJson, readJson } from './bridge_fs.js';
 import { DurableQueue } from './durable_queue.js';
+import { LidIdentity } from './lid_identity.js';
 import { buildMediaRetryCachePayload } from './media_retry_cache.js';
 import { SentMessageStore } from './sent_message_store.js';
 import { SocketLifecycle } from './socket_lifecycle.js';
@@ -160,43 +161,7 @@ function splitLongMessage(message, maxLength = MAX_MESSAGE_LENGTH) {
 }
 
 function normalizeWhatsAppId(value) {
-  const raw = String(value || '').trim();
-  if (!raw) return '';
-
-  const collapsed = raw.replace(/:.*@/, '@');
-  const atIndex = collapsed.indexOf('@');
-  if (atIndex < 0) {
-    return collapsed;
-  }
-
-  const local = collapsed.slice(0, atIndex);
-  const domain = collapsed.slice(atIndex + 1).toLowerCase();
-  if (!local) {
-    return '';
-  }
-
-  if (domain === 'lid') {
-    const mappedPhone = String(lidToPhone[local] || '').trim();
-    if (mappedPhone) {
-      return `${mappedPhone}@s.whatsapp.net`;
-    }
-    return `${local}@lid`;
-  }
-  if (domain === 's.whatsapp.net') {
-    return `${local}@s.whatsapp.net`;
-  }
-  return collapsed;
-}
-
-function extractJidLocal(id) {
-  return String(id || '').trim().replace(/:.*@/, '@').split('@', 1)[0];
-}
-
-function extractJidDomain(id) {
-  const normalized = normalizeWhatsAppId(id);
-  const atIndex = normalized.indexOf('@');
-  if (atIndex < 0) return '';
-  return normalized.slice(atIndex + 1).toLowerCase();
+  return identity.normalizeId(value);
 }
 
 function getMessageContent(msg) {
@@ -290,34 +255,6 @@ function parseDecoratedAssistantBody(body) {
 mkdirSync(SESSION_DIR, { recursive: true });
 mkdirSync(BRIDGE_STATE_DIR, { recursive: true });
 
-// Build LID → phone reverse map from session files (lid-mapping-{phone}.json)
-// and creds.json self-identity (me.id / me.lid).
-function buildLidMap() {
-  const map = {};
-  try {
-    for (const f of readdirSync(SESSION_DIR)) {
-      const m = f.match(/^lid-mapping-(\d+)\.json$/);
-      if (!m) continue;
-      const phone = m[1];
-      const lid = JSON.parse(readFileSync(path.join(SESSION_DIR, f), 'utf8'));
-      if (lid) map[String(lid)] = phone;
-    }
-  } catch {}
-  // Self-identity fallback: creds.json stores our own phone/LID pair even
-  // when no lid-mapping-*.json file exists for it.
-  try {
-    const creds = JSON.parse(readFileSync(path.join(SESSION_DIR, 'creds.json'), 'utf8'));
-    const meId = String(creds?.me?.id || '').replace(/:.*@/, '@').split('@')[0];
-    const meLid = String(creds?.me?.lid || '').replace(/:.*@/, '@').split('@')[0];
-    if (meId && meLid && meId !== meLid) {
-      map[meLid] = meId;
-    }
-  } catch {}
-  return map;
-}
-let lidToPhone = buildLidMap();
-let lidKeyStore = null;
-
 const logger = pino({ level: 'warn' });
 
 // Durable queue for inbound events.
@@ -333,8 +270,13 @@ const pushNameCache = new Map();
 const groupNameCache = new Map();
 const knownChats = new Map();
 const unresolvedDmNameLogged = new Set();
-const recentDmMessageById = new Map();
 
+const identity = new LidIdentity({
+  sessionDir: SESSION_DIR,
+  aliasTtlMs: DM_ALIAS_EVENT_TTL_MS,
+  debug: WHATSAPP_DEBUG,
+  logger,
+});
 const sentStore = new SentMessageStore({
   recentlySentIdsPath: RECENTLY_SENT_IDS_PATH,
   sentMessageStorePath: SENT_MESSAGE_STORE_PATH,
@@ -413,10 +355,10 @@ function canonicalizeKnownStateWithLidMap() {
   let chatsChanged = false;
   let contactsChanged = false;
 
-  for (const [lid, phone] of Object.entries(lidToPhone)) {
+  identity.forEachPair((lid, phone) => {
     const lidJid = `${String(lid || '').trim()}@lid`;
     const phoneJid = `${String(phone || '').trim()}@s.whatsapp.net`;
-    if (!lid || !phone) continue;
+    if (!lid || !phone) return;
 
     const lidChat = knownChats.get(lidJid);
     if (lidChat) {
@@ -446,7 +388,7 @@ function canonicalizeKnownStateWithLidMap() {
       pushNameCache.delete(lidJid);
       contactsChanged = true;
     }
-  }
+  });
 
   if (chatsChanged) {
     persistKnownChats();
@@ -503,7 +445,7 @@ function rememberKnownContactsFromSnapshot(contacts) {
   const persistBatch = {};
   for (const contact of contacts) {
     if (contact?.lid && contact?.jid) {
-      learnLidPhoneShare(contact.lid, contact.jid, { persistBatch });
+      identity.learnPair(contact.lid, contact.jid, { persistBatch });
     }
     const contactId = normalizeWhatsAppId(contact?.id || '');
     const displayName = String(
@@ -513,101 +455,7 @@ function rememberKnownContactsFromSnapshot(contacts) {
       rememberPushName(contactId, displayName);
     }
   }
-  persistLidMappingsBatch(persistBatch);
-}
-
-function addLidPairToPersistBatch(persistBatch, phoneLocal, lidLocal) {
-  persistBatch[phoneLocal] = lidLocal;
-  persistBatch[`${lidLocal}_reverse`] = phoneLocal;
-}
-
-function persistLidMappingsBatch(persistBatch) {
-  if (!lidKeyStore) return;
-  const keys = Object.keys(persistBatch);
-  if (keys.length === 0) return;
-  void lidKeyStore
-    .set({ 'lid-mapping': persistBatch })
-    .catch((err) => logger.warn({ err }, 'failed to persist lid-mapping batch'));
-}
-
-function learnLidPhoneShare(lidValue, jidValue, { persistBatch = null } = {}) {
-  const lidLocal = String(lidValue || '').trim().replace(/:.*@/, '@').split('@', 1)[0];
-  const phoneLocal = String(jidValue || '').trim().replace(/:.*@/, '@').split('@', 1)[0];
-  if (!lidLocal || !phoneLocal || lidLocal === phoneLocal) return;
-  if (String(lidToPhone[lidLocal] || '') === phoneLocal) return;
-  lidToPhone[lidLocal] = phoneLocal;
-  if (persistBatch) {
-    addLidPairToPersistBatch(persistBatch, phoneLocal, lidLocal);
-  } else {
-    const immediateBatch = {};
-    addLidPairToPersistBatch(immediateBatch, phoneLocal, lidLocal);
-    persistLidMappingsBatch(immediateBatch);
-  }
-  canonicalizeKnownStateWithLidMap();
-}
-
-function rememberPhoneNumberShares(payload) {
-  if (Array.isArray(payload)) {
-    const persistBatch = {};
-    for (const row of payload) {
-      if (!row || typeof row !== 'object') continue;
-      learnLidPhoneShare(row.lid, row.jid, { persistBatch });
-    }
-    persistLidMappingsBatch(persistBatch);
-    return;
-  }
-  if (payload && typeof payload === 'object') {
-    learnLidPhoneShare(payload.lid, payload.jid);
-  }
-}
-
-function pruneRecentDmMessageCache(nowMs) {
-  for (const [key, row] of recentDmMessageById.entries()) {
-    if ((nowMs - Number(row?.ts || 0)) > DM_ALIAS_EVENT_TTL_MS) {
-      recentDmMessageById.delete(key);
-    }
-  }
-}
-
-function learnAliasFromMirroredDmMessage({ chatId, messageId, fromMe, isGroup }) {
-  if (isGroup) return { duplicate: false };
-  const normalizedChatId = normalizeWhatsAppId(chatId);
-  const id = String(messageId || '').trim();
-  if (!normalizedChatId || !id) return { duplicate: false };
-  const domain = extractJidDomain(normalizedChatId);
-  if (domain !== 'lid' && domain !== 's.whatsapp.net') return { duplicate: false };
-
-  const nowMs = Date.now();
-  pruneRecentDmMessageCache(nowMs);
-  const key = `${fromMe ? '1' : '0'}:${id}`;
-  const previous = recentDmMessageById.get(key);
-  recentDmMessageById.set(key, { chatId: normalizedChatId, ts: nowMs });
-  if (!previous || previous.chatId === normalizedChatId) return { duplicate: false };
-
-  const previousDomain = extractJidDomain(previous.chatId);
-  if (previousDomain === domain) return { duplicate: false };
-
-  const lidLocal = domain === 'lid'
-    ? extractJidLocal(normalizedChatId)
-    : extractJidLocal(previous.chatId);
-  const phoneLocal = domain === 's.whatsapp.net'
-    ? extractJidLocal(normalizedChatId)
-    : extractJidLocal(previous.chatId);
-  if (!lidLocal || !phoneLocal || lidLocal === phoneLocal) return { duplicate: false };
-
-  if (String(lidToPhone[lidLocal] || '') !== phoneLocal) {
-    learnLidPhoneShare(`${lidLocal}@lid`, `${phoneLocal}@s.whatsapp.net`);
-  }
-  if (WHATSAPP_DEBUG) {
-    console.log(JSON.stringify({
-      event: 'discovery_alias_learned',
-      source: 'mirrored_dm_message_id',
-      messageId: id,
-      lid: lidLocal,
-      phone: phoneLocal,
-    }));
-  }
-  return { duplicate: true, previousChatId: previous.chatId };
+  identity.persistBatch(persistBatch);
 }
 
 function resolveDmDisplayName(chatId, row) {
@@ -795,7 +643,7 @@ async function enqueueHistoryMessage(rawMsg, { chatFallback = '', surface = 'syn
   ) {
     chatId = participantId;
   }
-  const mirrorInfo = learnAliasFromMirroredDmMessage({
+  const mirrorInfo = identity.learnAliasFromDm({
     chatId,
     messageId,
     fromMe: !!msg.key.fromMe,
@@ -891,6 +739,7 @@ async function enqueueHistoryMessages(payload, surface) {
   }
 }
 
+identity.setOnPairLearned(canonicalizeKnownStateWithLidMap);
 loadKnownState();
 sentStore.load();
 canonicalizeKnownStateWithLidMap();
@@ -901,7 +750,7 @@ async function startSocket() {
   const socketId = socketLifecycle.beginStart();
 
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
-  lidKeyStore = state.keys;
+  identity.setKeyStore(state.keys);
   const version = await socketLifecycle.fetchVersion();
 
   sock = makeWASocket({
@@ -934,11 +783,10 @@ async function startSocket() {
 
   sock.ev.on('creds.update', () => {
     saveCreds();
-    lidToPhone = buildLidMap();
-    canonicalizeKnownStateWithLidMap();
+    identity.rebuildFromDisk();
   });
   sock.ev.on('chats.phoneNumberShare', (payload) => {
-    rememberPhoneNumberShares(payload);
+    identity.rememberPhoneShares(payload);
   });
   sock.ev.on('chats.upsert', (chats) => {
     updateUnreadCountSnapshot(chats);
@@ -1047,7 +895,7 @@ async function startSocket() {
       ) {
         chatId = participantId;
       }
-      learnAliasFromMirroredDmMessage({
+      identity.learnAliasFromDm({
         chatId,
         messageId: msg.key.id,
         fromMe: !!msg.key.fromMe,
