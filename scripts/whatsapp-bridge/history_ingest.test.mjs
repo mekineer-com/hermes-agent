@@ -6,7 +6,6 @@ import {
   classifyUpsertEvent,
   historyMessageSources,
   isStartupReplay,
-  isRecentlySentEcho,
   upsertEventMode,
 } from './history_ingest.js';
 
@@ -46,14 +45,6 @@ test('canonicalizeMessageIds re-normalizes after alias learning', () => {
 
   assert.equal(ids.chatId, '15133278228@s.whatsapp.net');
   assert.equal(ids.senderId, '15133278228@s.whatsapp.net');
-});
-
-test('isRecentlySentEcho only suppresses bridge-sent fromMe echoes', () => {
-  const recentlySentIds = new Set(['sent-1']);
-
-  assert.equal(isRecentlySentEcho({ fromMe: true, messageId: 'sent-1' }, recentlySentIds), true);
-  assert.equal(isRecentlySentEcho({ fromMe: false, messageId: 'sent-1' }, recentlySentIds), false);
-  assert.equal(isRecentlySentEcho({ fromMe: true, messageId: 'other' }, recentlySentIds), false);
 });
 
 test('upsertEventMode treats append as persist-only history', () => {

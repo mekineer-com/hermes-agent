@@ -38,10 +38,6 @@ export function canonicalizeMessageIds({
   };
 }
 
-export function isRecentlySentEcho({ fromMe = false, messageId = '' } = {}, recentlySentIds = new Set()) {
-  return !!fromMe && !!String(messageId || '').trim() && recentlySentIds.has(messageId);
-}
-
 function timestampSeconds(value) {
   if (typeof value === 'object' && value !== null) {
     if (Number.isFinite(Number(value.low))) return Number(value.low);
