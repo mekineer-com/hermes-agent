@@ -20,7 +20,7 @@
  *   node bridge.js --port 3000 --session ~/.hermes/whatsapp/session
  */
 
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage } from '@whiskeysockets/baileys';
 import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
@@ -35,6 +35,7 @@ import { atomicWriteJson, readJson } from './bridge_fs.js';
 import { DurableQueue } from './durable_queue.js';
 import { buildMediaRetryCachePayload } from './media_retry_cache.js';
 import { SentMessageStore } from './sent_message_store.js';
+import { SocketLifecycle } from './socket_lifecycle.js';
 import {
   canonicalizeMessageIds,
   classifyUpsertEvent,
@@ -87,7 +88,6 @@ const REPLY_PREFIX = HAS_CUSTOM_REPLY_PREFIX
   : DEFAULT_REPLY_PREFIX;
 const MAX_MESSAGE_LENGTH = parseInt(process.env.WHATSAPP_MAX_MESSAGE_LENGTH || '4096', 10);
 const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10);
-const CONNECT_READY_TIMEOUT_MS = parseInt(process.env.WHATSAPP_CONNECT_READY_TIMEOUT_MS || '60000', 10);
 const BAILEYS_VERSION_FETCH_TIMEOUT_MS = parseInt(process.env.WHATSAPP_BAILEYS_VERSION_FETCH_TIMEOUT_MS || '5000', 10);
 const BAILEYS_VERSION_FALLBACK = [2, 3000, 1023223821];
 const SYNC_HISTORY_WINDOW_DAYS = parseFloat(process.env.WHATSAPP_SYNC_HISTORY_WINDOW_DAYS || '14');
@@ -472,82 +472,11 @@ function rememberKnownChat(chatId, { isGroup = false, name = '', lastSenderName 
 }
 
 let sock = null;
-let connectionState = 'disconnected';
-let socketGeneration = 0;
-let openSocketGeneration = 0;
-let readySocketGeneration = 0;
-let connectReadyTimer = null;
-let reconnectTimer = null;
-
-function clearConnectReadyTimer(socketId = null) {
-  if (socketId !== null && socketId !== socketGeneration) return;
-  if (connectReadyTimer) {
-    clearTimeout(connectReadyTimer);
-    connectReadyTimer = null;
-  }
-}
-
-function scheduleStartSocket(delayMs) {
-  if (reconnectTimer) return;
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    startSocket().catch((err) => {
-      connectionState = 'disconnected';
-      console.error(`❌ WhatsApp socket start failed: ${err?.message || err}`);
-      scheduleStartSocket(3000);
-    });
-  }, delayMs);
-}
-
-function markSocketReady(socketId) {
-  if (socketId !== socketGeneration) return;
-  if (openSocketGeneration !== socketId) return;
-  readySocketGeneration = socketId;
-  clearConnectReadyTimer(socketId);
-  if (connectionState !== 'connected') {
-    connectionState = 'connected';
-    console.log('✅ WhatsApp connected!');
-  }
-}
-
-function recycleStuckSocket(socketId, reason) {
-  if (socketId !== socketGeneration) return;
-  connectionState = 'disconnected';
-  clearConnectReadyTimer(socketId);
-  console.warn(`⚠️  WhatsApp socket not ready: ${reason}. Reconnecting...`);
-  try {
-    sock?.end?.(new Error(reason));
-  } catch (err) {
-    console.warn(`⚠️  Failed to close stuck WhatsApp socket: ${err?.message || err}`);
-  }
-  scheduleStartSocket(1000);
-}
-
-function startConnectReadyTimer(socketId) {
-  clearConnectReadyTimer(socketId);
-  const timeoutMs = Number.isFinite(CONNECT_READY_TIMEOUT_MS) && CONNECT_READY_TIMEOUT_MS > 0
-    ? CONNECT_READY_TIMEOUT_MS
-    : 60000;
-  connectReadyTimer = setTimeout(
-    () => recycleStuckSocket(socketId, `ready timeout after ${timeoutMs / 1000}s`),
-    timeoutMs,
-  );
-}
-
-async function fetchBaileysVersionForBridge() {
-  const timeoutMs = Number.isFinite(BAILEYS_VERSION_FETCH_TIMEOUT_MS) && BAILEYS_VERSION_FETCH_TIMEOUT_MS > 0
-    ? BAILEYS_VERSION_FETCH_TIMEOUT_MS
-    : 5000;
-  const result = await fetchLatestBaileysVersion({ timeout: timeoutMs });
-  if (Array.isArray(result?.version) && result.version.length === 3) {
-    if (result.error) {
-      console.warn(`⚠️  Using packaged Baileys version fallback after fetch failed: ${result.error?.message || result.error}`);
-    }
-    return result.version;
-  }
-  console.warn('⚠️  Baileys version fetch returned invalid data; using bridge fallback version.');
-  return BAILEYS_VERSION_FALLBACK;
-}
+const socketLifecycle = new SocketLifecycle({
+  baileysVersionFetchTimeoutMs: BAILEYS_VERSION_FETCH_TIMEOUT_MS,
+  baileysVersionFallback: BAILEYS_VERSION_FALLBACK,
+  onStart: startSocket,
+});
 
 function rememberPushName(senderId, pushName) {
   const sid = normalizeWhatsAppId(senderId);
@@ -778,7 +707,7 @@ function chatHasUnreadMessages(chatId) {
 }
 
 async function postSendPresenceAndUnreadRestore(chatId, hadUnreadBeforeSend) {
-  if (!sock || connectionState !== 'connected') return;
+  if (!sock || !socketLifecycle.isConnected()) return;
 
   if (SEND_UNAVAILABLE_AFTER_ACTIVITY) {
     try {
@@ -969,19 +898,11 @@ persistKnownChats();
 persistKnownContacts();
 
 async function startSocket() {
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
-  const socketId = ++socketGeneration;
-  openSocketGeneration = 0;
-  readySocketGeneration = 0;
-  clearConnectReadyTimer();
-  connectionState = 'connecting';
+  const socketId = socketLifecycle.beginStart();
 
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
   lidKeyStore = state.keys;
-  const version = await fetchBaileysVersionForBridge();
+  const version = await socketLifecycle.fetchVersion();
 
   sock = makeWASocket({
     version,
@@ -1041,7 +962,7 @@ async function startSocket() {
   });
 
   sock.ev.on('connection.update', (update) => {
-    if (socketId !== socketGeneration) return;
+    if (!socketLifecycle.isCurrent(socketId)) return;
     const { connection, lastDisconnect, qr, receivedPendingNotifications } = update;
 
     if (qr) {
@@ -1060,8 +981,7 @@ async function startSocket() {
 
     if (connection === 'close') {
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
-      connectionState = 'disconnected';
-      clearConnectReadyTimer(socketId);
+      socketLifecycle.markDisconnected(socketId);
 
       if (reason === DisconnectReason.loggedOut) {
         console.log('❌ Logged out. Delete session and restart to re-authenticate.');
@@ -1073,11 +993,10 @@ async function startSocket() {
         } else {
           console.log(`⚠️  Connection closed (reason: ${reason}). Reconnecting in 3s...`);
         }
-        scheduleStartSocket(reason === 515 ? 1000 : 3000);
+        socketLifecycle.scheduleStart(reason === 515 ? 1000 : 3000);
       }
     } else if (connection === 'open') {
-      openSocketGeneration = socketId;
-      markSocketReady(socketId);
+      socketLifecycle.markOpen(socketId);
       if (PAIR_ONLY) {
         console.log('✅ Pairing complete. Credentials saved.');
         // Give Baileys a moment to flush creds, then exit cleanly
@@ -1085,7 +1004,7 @@ async function startSocket() {
       }
     }
     if (receivedPendingNotifications && connection !== 'close') {
-      markSocketReady(socketId);
+      socketLifecycle.markReady(socketId);
     }
   });
 
@@ -1473,7 +1392,7 @@ app.post('/ack', (req, res) => {
 
 // Send a message
 app.post('/send', async (req, res) => {
-  if (!sock || connectionState !== 'connected') {
+  if (!sock || !socketLifecycle.isConnected()) {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
 
@@ -1510,7 +1429,7 @@ app.post('/send', async (req, res) => {
 
 // Edit a previously sent message
 app.post('/edit', async (req, res) => {
-  if (!sock || connectionState !== 'connected') {
+  if (!sock || !socketLifecycle.isConnected()) {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
 
@@ -1567,7 +1486,7 @@ function inferMediaType(ext) {
 
 // Send media (image, video, document) natively
 app.post('/send-media', async (req, res) => {
-  if (!sock || connectionState !== 'connected') {
+  if (!sock || !socketLifecycle.isConnected()) {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
 
@@ -1654,7 +1573,7 @@ app.post('/send-media', async (req, res) => {
 
 // Typing indicator
 app.post('/typing', async (req, res) => {
-  if (!sock || connectionState !== 'connected') {
+  if (!sock || !socketLifecycle.isConnected()) {
     return res.status(503).json({ error: 'Not connected' });
   }
 
@@ -1722,7 +1641,7 @@ app.get('/chats-known', (req, res) => {
 app.get('/health', (req, res) => {
   const stats = durableQueue.getStats();
   res.json({
-    status: connectionState,
+    status: socketLifecycle.getState(),
     mode: WHATSAPP_MODE,
     replyPrefix: REPLY_PREFIX,
     queueLength: stats.queueLength,
@@ -1738,11 +1657,7 @@ if (PAIR_ONLY) {
   console.log('📱 WhatsApp pairing mode');
   console.log(`📁 Session: ${SESSION_DIR}`);
   console.log();
-  startSocket().catch((err) => {
-    connectionState = 'disconnected';
-    console.error(`❌ WhatsApp socket start failed: ${err?.message || err}`);
-    scheduleStartSocket(3000);
-  });
+  socketLifecycle.startNow();
 } else {
   app.listen(PORT, '127.0.0.1', () => {
     console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
@@ -1757,10 +1672,6 @@ if (PAIR_ONLY) {
       console.log(`   or WHATSAPP_ALLOWED_USERS=* for an explicit open bot.`);
     }
     console.log();
-    startSocket().catch((err) => {
-      connectionState = 'disconnected';
-      console.error(`❌ WhatsApp socket start failed: ${err?.message || err}`);
-      scheduleStartSocket(3000);
-    });
+    socketLifecycle.startNow();
   });
 }
