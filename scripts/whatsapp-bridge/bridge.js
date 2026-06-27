@@ -25,19 +25,20 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync, unlinkSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { randomBytes } from 'crypto';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { atomicWriteJson, readJson } from './bridge_fs.js';
 import { DurableQueue } from './durable_queue.js';
 import { buildMediaRetryCachePayload } from './media_retry_cache.js';
+import { SentMessageStore } from './sent_message_store.js';
 import {
   canonicalizeMessageIds,
   classifyUpsertEvent,
   historyMessageSources,
-  isRecentlySentEcho,
   isStartupReplay,
   upsertEventMode,
 } from './history_ingest.js';
@@ -156,20 +157,6 @@ function splitLongMessage(message, maxLength = MAX_MESSAGE_LENGTH) {
   }
   if (remaining) chunks.push(remaining);
   return chunks;
-}
-
-function trackSentMessageId(sent) {
-  if (sent?.key?.id) {
-    const messageId = String(sent.key.id).trim();
-    recentlySentIds.add(messageId);
-    recentlySentAt.set(messageId, Date.now());
-    if (recentlySentIds.size > MAX_RECENT_IDS) {
-      const oldest = recentlySentAt.keys().next().value;
-      recentlySentIds.delete(oldest);
-      recentlySentAt.delete(oldest);
-    }
-    persistRecentlySentIds();
-  }
 }
 
 function normalizeWhatsAppId(value) {
@@ -340,75 +327,21 @@ const durableQueue = new DurableQueue({
   compactionEveryAcks: parseInt(process.env.WHATSAPP_QUEUE_COMPACT_EVERY_ACKS || '100', 10),
 });
 
-// Track recently sent message IDs to prevent echo-back loops with media
-const recentlySentIds = new Set();
-const recentlySentAt = new Map();
 const chatUnreadCounts = new Map();
 const lastInboundMessageByChat = new Map();
 const pushNameCache = new Map();
 const groupNameCache = new Map();
-const sentMessageStore = new Map();
-const MAX_SENT_STORE = 200;
-const SENT_MESSAGE_RETENTION_MS = 24 * 60 * 60 * 1000;
 const knownChats = new Map();
 const unresolvedDmNameLogged = new Set();
 const recentDmMessageById = new Map();
 
-function _atomicWriteJson(filePath, payload) {
-  const tmpPath = `${filePath}.tmp`;
-  writeFileSync(tmpPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
-  renameSync(tmpPath, filePath);
-}
-
-
-function _readJson(filePath) {
-  if (!existsSync(filePath)) return null;
-  try {
-    return JSON.parse(readFileSync(filePath, 'utf8'));
-  } catch {
-    return null;
-  }
-}
-
-function persistRecentlySentIds() {
-  const nowMs = Date.now();
-  const cutoff = nowMs - RECENTLY_SENT_RETENTION_MS;
-  for (const [messageId, ts] of recentlySentAt) {
-    if (!recentlySentIds.has(messageId) || ts < cutoff) {
-      recentlySentIds.delete(messageId);
-      recentlySentAt.delete(messageId);
-    }
-  }
-  while (recentlySentAt.size > MAX_RECENT_IDS) {
-    const oldest = recentlySentAt.keys().next().value;
-    recentlySentIds.delete(oldest);
-    recentlySentAt.delete(oldest);
-  }
-  const ids = [...recentlySentAt.entries()]
-    .sort((a, b) => a[1] - b[1])
-    .map(([id, ts]) => ({ id, ts }));
-  try {
-    _atomicWriteJson(RECENTLY_SENT_IDS_PATH, {
-      updated_at: new Date().toISOString(),
-      ids,
-    });
-  } catch (err) {
-    logger.warn({ err }, 'failed to persist recently sent ids');
-  }
-}
-
-function loadRecentlySentIds() {
-  const data = _readJson(RECENTLY_SENT_IDS_PATH);
-  const rows = Array.isArray(data?.ids) ? data.ids : [];
-  const cutoff = Date.now() - RECENTLY_SENT_RETENTION_MS;
-  for (const row of rows) {
-    const id = String(row?.id || '').trim();
-    const ts = Number(row?.ts || 0);
-    if (!id || !Number.isFinite(ts) || ts < cutoff) continue;
-    recentlySentIds.add(id);
-    recentlySentAt.set(id, ts);
-  }
-}
+const sentStore = new SentMessageStore({
+  recentlySentIdsPath: RECENTLY_SENT_IDS_PATH,
+  sentMessageStorePath: SENT_MESSAGE_STORE_PATH,
+  recentlySentRetentionMs: RECENTLY_SENT_RETENTION_MS,
+  maxRecentIds: MAX_RECENT_IDS,
+  logger,
+});
 
 function persistKnownChats() {
   const chats = [];
@@ -424,7 +357,7 @@ function persistKnownChats() {
   }
   chats.sort((a, b) => String(a.id).localeCompare(String(b.id)));
   try {
-    _atomicWriteJson(KNOWN_CHATS_PATH, {
+    atomicWriteJson(KNOWN_CHATS_PATH, {
       updated_at: new Date().toISOString(),
       chats,
     });
@@ -441,7 +374,7 @@ function persistKnownContacts() {
   }
   contacts.sort((a, b) => String(a.id).localeCompare(String(b.id)));
   try {
-    _atomicWriteJson(KNOWN_CONTACTS_PATH, {
+    atomicWriteJson(KNOWN_CONTACTS_PATH, {
       updated_at: new Date().toISOString(),
       contacts,
     });
@@ -451,7 +384,7 @@ function persistKnownContacts() {
 }
 
 function loadKnownState() {
-  const chatsData = _readJson(KNOWN_CHATS_PATH);
+  const chatsData = readJson(KNOWN_CHATS_PATH);
   const chats = Array.isArray(chatsData?.chats) ? chatsData.chats : [];
   for (const row of chats) {
     const chatId = normalizeWhatsAppId(row?.id || '');
@@ -465,7 +398,7 @@ function loadKnownState() {
     });
   }
 
-  const contactsData = _readJson(KNOWN_CONTACTS_PATH);
+  const contactsData = readJson(KNOWN_CONTACTS_PATH);
   const contacts = Array.isArray(contactsData?.contacts) ? contactsData.contacts : [];
   for (const row of contacts) {
     const contactId = normalizeWhatsAppId(row?.id || '');
@@ -536,52 +469,6 @@ function rememberKnownChat(chatId, { isGroup = false, name = '', lastSenderName 
   };
   knownChats.set(normalizedChatId, merged);
   persistKnownChats();
-}
-
-function persistSentMessageStore() {
-  const cutoff = Date.now() - SENT_MESSAGE_RETENTION_MS;
-  const entries = [];
-  for (const [k, v] of sentMessageStore) {
-    if (v.ts >= cutoff) entries.push({ k, content: v.content, ts: v.ts });
-  }
-  try {
-    _atomicWriteJson(SENT_MESSAGE_STORE_PATH, {
-      updated_at: new Date().toISOString(),
-      entries,
-    });
-  } catch (err) {
-    logger.warn({ err }, 'failed to persist sent message store');
-  }
-}
-
-function loadSentMessageStore() {
-  const data = _readJson(SENT_MESSAGE_STORE_PATH);
-  const rows = Array.isArray(data?.entries) ? data.entries : [];
-  const cutoff = Date.now() - SENT_MESSAGE_RETENTION_MS;
-  for (const row of rows) {
-    const k = String(row?.k || '').trim();
-    const ts = Number(row?.ts || 0);
-    if (!k || !Number.isFinite(ts) || ts < cutoff || !row.content) continue;
-    sentMessageStore.set(k, { content: row.content, ts });
-  }
-  while (sentMessageStore.size > MAX_SENT_STORE) {
-    sentMessageStore.delete(sentMessageStore.keys().next().value);
-  }
-}
-
-function storeSentMessage(sent, content) {
-  if (!sent?.key?.id || !sent?.key?.remoteJid) return;
-  const k = `${sent.key.remoteJid}:${sent.key.id}:${sent.key.fromMe ? '1' : '0'}`;
-  const nowMs = Date.now();
-  sentMessageStore.set(k, { content, ts: nowMs });
-  if (sentMessageStore.size > MAX_SENT_STORE) {
-    sentMessageStore.delete(sentMessageStore.keys().next().value);
-  }
-  const cutoff = nowMs - SENT_MESSAGE_RETENTION_MS;
-  for (const [key, val] of sentMessageStore) {
-    if (val.ts < cutoff) sentMessageStore.delete(key);
-  }
-  persistSentMessageStore();
 }
 
 let sock = null;
@@ -1012,7 +899,7 @@ async function enqueueHistoryMessage(rawMsg, { chatFallback = '', surface = 'syn
   let speakerRoleHint = 'user';
   let speakerNameHint = '';
   if (msg.key.fromMe) {
-    if (isRecentlySentEcho({ fromMe: true, messageId }, recentlySentIds)) return false;
+    if (sentStore.isEcho(messageId)) return false;
     const parsed = parseDecoratedAssistantBody(body);
     if (parsed) {
       speakerRoleHint = 'assistant';
@@ -1076,8 +963,7 @@ async function enqueueHistoryMessages(payload, surface) {
 }
 
 loadKnownState();
-loadRecentlySentIds();
-loadSentMessageStore();
+sentStore.load();
 canonicalizeKnownStateWithLidMap();
 persistKnownChats();
 persistKnownContacts();
@@ -1109,18 +995,16 @@ async function startSocket() {
     // Required for Baileys 7.x: without this, incoming messages that need
     // E2EE session re-establishment are silently dropped (msg.message === null)
     getMessage: async (key) => {
-      const k = `${key.remoteJid}:${key.id}:${key.fromMe ? '1' : '0'}`;
-      const entry = sentMessageStore.get(k);
+      const entry = sentStore.getForBaileysKey(key);
       if (entry) {
         logger.debug({ event: 'getMessage_hit', key }, 'retry served from cache');
-        return entry.content;
+        return entry;
       }
       // LID/phone duality: retry remoteJid may differ from send JID. Fall back to id-only scan.
-      for (const [ck, cv] of sentMessageStore) {
-        if (ck.includes(`:${key.id}:`)) {
-          logger.debug({ event: 'getMessage_hit_id_fallback', key }, 'retry served from cache via id-only match');
-          return cv.content;
-        }
+      const fallbackEntry = sentStore.getByMessageId(key.id);
+      if (fallbackEntry) {
+        logger.debug({ event: 'getMessage_hit_id_fallback', key }, 'retry served from cache via id-only match');
+        return fallbackEntry;
       }
       logger.error({ event: 'getMessage_miss', remoteJid: key.remoteJid, id: key.id, fromMe: key.fromMe }, 'retry key not in cache — Baileys will skip re-delivery');
       return undefined;
@@ -1401,7 +1285,7 @@ async function startSocket() {
       let speakerRoleHint = 'user';
       let speakerNameHint = '';
       const decoratedAssistant = msg.key.fromMe ? parseDecoratedAssistantBody(body) : null;
-      if (isRecentlySentEcho({ fromMe: !!msg.key.fromMe, messageId: msg.key.id }, recentlySentIds)) {
+      if (msg.key.fromMe && sentStore.isEcho(msg.key.id)) {
         if (WHATSAPP_DEBUG) {
           console.log(JSON.stringify({
             event: 'ignored',
@@ -1604,8 +1488,8 @@ app.post('/send', async (req, res) => {
     const messageIds = [];
     for (let i = 0; i < chunks.length; i += 1) {
       const sent = await sendWithTimeout(chatId, { text: chunks[i] });
-      trackSentMessageId(sent);
-      storeSentMessage(sent, { conversation: chunks[i] });
+      sentStore.trackSent(sent?.key?.id);
+      sentStore.storeSent(sent, { conversation: chunks[i] });
       if (sent?.key?.id) messageIds.push(sent.key.id);
       if (chunks.length > 1 && i < chunks.length - 1) {
         await sleep(CHUNK_DELAY_MS);
@@ -1642,12 +1526,12 @@ app.post('/edit', async (req, res) => {
     const messageIds = [];
 
     await sendWithTimeout(chatId, { text: chunks[0], edit: key });
-    storeSentMessage({ key }, { conversation: chunks[0] });
+    sentStore.storeSent({ key }, { conversation: chunks[0] });
     if (chunks.length > 1) {
       for (let i = 1; i < chunks.length; i += 1) {
         const sent = await sendWithTimeout(chatId, { text: chunks[i] });
-        trackSentMessageId(sent);
-        storeSentMessage(sent, { conversation: chunks[i] });
+        sentStore.trackSent(sent?.key?.id);
+        sentStore.storeSent(sent, { conversation: chunks[i] });
         if (sent?.key?.id) messageIds.push(sent.key.id);
         if (i < chunks.length - 1) {
           await sleep(CHUNK_DELAY_MS);
@@ -1751,8 +1635,8 @@ app.post('/send-media', async (req, res) => {
 
     const sent = await sendWithTimeout(chatId, msgPayload);
 
-    trackSentMessageId(sent);
-    storeSentMessage(
+    sentStore.trackSent(sent?.key?.id);
+    sentStore.storeSent(
       sent,
       buildMediaRetryCachePayload(type, {
         caption,
