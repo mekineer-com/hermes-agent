@@ -35,6 +35,7 @@ import { atomicWriteJson, readJson } from './bridge_fs.js';
 import { DurableQueue } from './durable_queue.js';
 import { LidIdentity } from './lid_identity.js';
 import { buildMediaRetryCachePayload } from './media_retry_cache.js';
+import { PresenceUnread } from './presence_unread.js';
 import { SentMessageStore } from './sent_message_store.js';
 import { SocketLifecycle } from './socket_lifecycle.js';
 import {
@@ -264,8 +265,6 @@ const durableQueue = new DurableQueue({
   compactionEveryAcks: parseInt(process.env.WHATSAPP_QUEUE_COMPACT_EVERY_ACKS || '100', 10),
 });
 
-const chatUnreadCounts = new Map();
-const lastInboundMessageByChat = new Map();
 const pushNameCache = new Map();
 const groupNameCache = new Map();
 const knownChats = new Map();
@@ -276,6 +275,14 @@ const identity = new LidIdentity({
   aliasTtlMs: DM_ALIAS_EVENT_TTL_MS,
   debug: WHATSAPP_DEBUG,
   logger,
+});
+const presence = new PresenceUnread({
+  normalizeId: normalizeWhatsAppId,
+  getSock: () => sock,
+  isConnected: () => socketLifecycle.isConnected(),
+  preserveUnreadOnSend: PRESERVE_UNREAD_ON_SEND,
+  sendUnavailableAfterActivity: SEND_UNAVAILABLE_AFTER_ACTIVITY,
+  debug: WHATSAPP_DEBUG,
 });
 const sentStore = new SentMessageStore({
   recentlySentIdsPath: RECENTLY_SENT_IDS_PATH,
@@ -512,88 +519,6 @@ async function resolveGroupChatName(chatId) {
   return '';
 }
 
-function updateUnreadCountSnapshot(chats) {
-  if (!Array.isArray(chats)) return;
-  for (const chat of chats) {
-    const chatId = normalizeWhatsAppId(chat?.id || chat?.jid || '');
-    if (!chatId) continue;
-    if (chat?.unreadCount === undefined || chat?.unreadCount === null) continue;
-    const unreadCount = Number(chat.unreadCount);
-    if (Number.isFinite(unreadCount) && unreadCount >= 0) {
-      chatUnreadCounts.set(chatId, unreadCount);
-    }
-  }
-}
-
-function rememberInboundLastMessage(msg) {
-  const chatId = normalizeWhatsAppId(msg?.key?.remoteJid || '');
-  if (!chatId) return;
-  if (msg?.key?.fromMe) return;
-  const messageId = String(msg?.key?.id || '');
-  if (!messageId) return;
-  const ts = Number(msg?.messageTimestamp);
-  if (!Number.isFinite(ts) || ts <= 0) return;
-
-  const key = {
-    remoteJid: chatId,
-    id: messageId,
-    fromMe: false,
-  };
-  if (msg.key.participant) {
-    key.participant = normalizeWhatsAppId(msg.key.participant);
-  }
-
-  lastInboundMessageByChat.set(chatId, {
-    key,
-    messageTimestamp: ts,
-  });
-}
-
-function chatHasUnreadMessages(chatId) {
-  const unread = Number(chatUnreadCounts.get(normalizeWhatsAppId(chatId)));
-  return Number.isFinite(unread) && unread > 0;
-}
-
-async function postSendPresenceAndUnreadRestore(chatId, hadUnreadBeforeSend) {
-  if (!sock || !socketLifecycle.isConnected()) return;
-
-  if (SEND_UNAVAILABLE_AFTER_ACTIVITY) {
-    try {
-      await sock.sendPresenceUpdate('unavailable');
-    } catch (err) {
-      if (WHATSAPP_DEBUG) {
-        console.log(JSON.stringify({
-          event: 'warn',
-          reason: 'set_unavailable_failed',
-          chatId,
-          error: err?.message || String(err),
-        }));
-      }
-    }
-  }
-
-  if (!PRESERVE_UNREAD_ON_SEND || !hadUnreadBeforeSend) return;
-  const normalizedChatId = normalizeWhatsAppId(chatId);
-  const lastInbound = lastInboundMessageByChat.get(normalizedChatId);
-  if (!lastInbound?.key?.id || !lastInbound?.messageTimestamp) return;
-
-  try {
-    await sock.chatModify(
-      { markRead: false, lastMessages: [lastInbound] },
-      normalizedChatId,
-    );
-  } catch (err) {
-    if (WHATSAPP_DEBUG) {
-      console.log(JSON.stringify({
-        event: 'warn',
-        reason: 'preserve_unread_failed',
-        chatId: normalizedChatId,
-        error: err?.message || String(err),
-      }));
-    }
-  }
-}
-
 async function enqueueHistoryMessage(rawMsg, { chatFallback = '', surface = 'sync' } = {}) {
   const msg = rawMsg?.message && rawMsg?.key === undefined ? rawMsg.message : rawMsg;
   if (!msg?.key) return false;
@@ -789,11 +714,11 @@ async function startSocket() {
     identity.rememberPhoneShares(payload);
   });
   sock.ev.on('chats.upsert', (chats) => {
-    updateUnreadCountSnapshot(chats);
+    presence.updateUnreadCountSnapshot(chats);
     rememberKnownChatsFromSnapshot(chats);
   });
   sock.ev.on('chats.update', async (chats) => {
-    updateUnreadCountSnapshot(chats);
+    presence.updateUnreadCountSnapshot(chats);
     rememberKnownChatsFromSnapshot(chats);
     await enqueueHistoryMessagesFromChats(chats, 'chats.update');
   });
@@ -922,7 +847,7 @@ async function startSocket() {
         });
         continue;
       }
-      rememberInboundLastMessage(msg);
+      presence.rememberInboundLastMessage(msg);
       if (WHATSAPP_DEBUG) {
         console.log(JSON.stringify({
           event: 'upsert', type,
@@ -1250,7 +1175,7 @@ app.post('/send', async (req, res) => {
   }
 
   try {
-    const hadUnreadBeforeSend = chatHasUnreadMessages(chatId);
+    const hadUnreadBeforeSend = presence.hasUnreadMessages(chatId);
     const chunks = splitLongMessage(formatOutgoingMessage(message));
     const messageIds = [];
     for (let i = 0; i < chunks.length; i += 1) {
@@ -1263,7 +1188,7 @@ app.post('/send', async (req, res) => {
       }
     }
 
-    await postSendPresenceAndUnreadRestore(chatId, hadUnreadBeforeSend);
+    await presence.postSendPresenceAndUnreadRestore(chatId, hadUnreadBeforeSend);
 
     res.json({
       success: true,
@@ -1287,7 +1212,7 @@ app.post('/edit', async (req, res) => {
   }
 
   try {
-    const hadUnreadBeforeSend = chatHasUnreadMessages(chatId);
+    const hadUnreadBeforeSend = presence.hasUnreadMessages(chatId);
     const key = { id: messageId, fromMe: true, remoteJid: chatId };
     const chunks = splitLongMessage(formatOutgoingMessage(message));
     const messageIds = [];
@@ -1306,7 +1231,7 @@ app.post('/edit', async (req, res) => {
       }
     }
 
-    await postSendPresenceAndUnreadRestore(chatId, hadUnreadBeforeSend);
+    await presence.postSendPresenceAndUnreadRestore(chatId, hadUnreadBeforeSend);
     res.json({ success: true, messageIds });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1344,7 +1269,7 @@ app.post('/send-media', async (req, res) => {
   }
 
   try {
-    const hadUnreadBeforeSend = chatHasUnreadMessages(chatId);
+    const hadUnreadBeforeSend = presence.hasUnreadMessages(chatId);
     if (!existsSync(filePath)) {
       return res.status(404).json({ error: `File not found: ${filePath}` });
     }
@@ -1411,7 +1336,7 @@ app.post('/send-media', async (req, res) => {
       }),
     );
 
-    await postSendPresenceAndUnreadRestore(chatId, hadUnreadBeforeSend);
+    await presence.postSendPresenceAndUnreadRestore(chatId, hadUnreadBeforeSend);
 
     res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {
