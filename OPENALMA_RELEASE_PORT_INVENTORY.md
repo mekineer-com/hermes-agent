@@ -135,3 +135,8 @@ Shared files stay `pending` until their slice ports the narrow OpenAlma seam.
 - `tests/scripts/test_backfill_whatsapp_identity_jids.py`: copy
 - `tests/test_hermes_state.py`: hunk-port
 - `tools/xai_http.py`: pending
+
+## Additional Release Fixes During Port
+
+- `gateway/platforms/whatsapp_common.py`: hunk-port — fixed release JID suffix normalization and DM allowlist matching used by OpenAlma WhatsApp.
+- `tests/gateway/test_whatsapp_common_openalma.py`: copy — focused regression tests for the shared WhatsApp mixin change.
