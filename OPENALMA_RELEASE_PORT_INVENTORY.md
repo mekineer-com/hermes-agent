@@ -52,7 +52,7 @@ Shared files stay `pending` until their slice ports the narrow OpenAlma seam.
 - `gateway/whatsapp_seam.py`: copy
 - `hermes_cli/gateway.py`: pending
 - `hermes_cli/main.py`: pending
-- `hermes_state.py`: pending
+- `hermes_state.py`: hunk-port
 - `run_agent.py`: pending
 - `scripts/backfill_whatsapp_identity_jids.py`: copy
 - `scripts/whatsapp-bridge/allowlist.js`: copy
@@ -133,5 +133,5 @@ Shared files stay `pending` until their slice ports the narrow OpenAlma seam.
 - `tests/hermes_cli/test_gateway_service.py`: pending
 - `tests/run_agent/test_soul_mode.py`: pending
 - `tests/scripts/test_backfill_whatsapp_identity_jids.py`: copy
-- `tests/test_hermes_state.py`: pending
+- `tests/test_hermes_state.py`: hunk-port
 - `tools/xai_http.py`: pending

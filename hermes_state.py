@@ -21,6 +21,7 @@ import re
 import sqlite3
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
@@ -102,6 +103,30 @@ def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
         )
         conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", ids)
     return ids
+
+
+def _coerce_message_timestamp(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, datetime):
+        return value.timestamp()
+    if isinstance(value, (int, float)):
+        timestamp = float(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            timestamp = float(text)
+        except ValueError:
+            try:
+                return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                return None
+    else:
+        return None
+    return timestamp / 1000.0 if timestamp > 10_000_000_000 else timestamp
+
 
 T = TypeVar("T")
 
@@ -553,6 +578,10 @@ CREATE TABLE IF NOT EXISTS messages (
     session_id TEXT NOT NULL REFERENCES sessions(id),
     role TEXT NOT NULL,
     content TEXT,
+    sender_id TEXT,
+    sender_name TEXT,
+    source_chat_id TEXT,
+    source_message_id TEXT,
     tool_call_id TEXT,
     tool_calls TEXT,
     tool_name TEXT,
@@ -596,6 +625,20 @@ CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(ex
 DEFERRED_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
+"""
+
+_FORK_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS processed_source_keys (
+    source_chat_id TEXT NOT NULL,
+    source_message_id TEXT NOT NULL,
+    processed_at REAL NOT NULL,
+    PRIMARY KEY (source_chat_id, source_message_id)
+);
+
+CREATE TABLE IF NOT EXISTS souls (
+    soul_id TEXT PRIMARY KEY,
+    active_since REAL NOT NULL
+);
 """
 
 FTS_SQL = """
@@ -1123,6 +1166,15 @@ class SessionDB:
         # migration was skipped (e.g. due to version renumbering), the
         # column gets created here.
         self._reconcile_columns(cursor)
+        cursor.executescript(_FORK_SCHEMA_SQL)
+        try:
+            cursor.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_source_key "
+                "ON messages(source_chat_id, source_message_id) "
+                "WHERE source_chat_id IS NOT NULL AND source_message_id IS NOT NULL"
+            )
+        except (sqlite3.IntegrityError, sqlite3.OperationalError) as exc:
+            logger.warning("idx_messages_source_key create skipped: %s", exc)
 
         # Indexes that reference reconciler-added columns must be created
         # AFTER _reconcile_columns runs — declaring them in SCHEMA_SQL
@@ -2482,6 +2534,10 @@ class SessionDB:
         session_id: str,
         role: str,
         content: str = None,
+        sender_id: str = None,
+        sender_name: str = None,
+        source_chat_id: str = None,
+        source_message_id: str = None,
         tool_name: str = None,
         tool_calls: Any = None,
         tool_call_id: str = None,
@@ -2526,15 +2582,9 @@ class SessionDB:
         # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
 
-        message_timestamp = time.time()
-        if timestamp is not None:
-            try:
-                if hasattr(timestamp, "timestamp"):
-                    message_timestamp = float(timestamp.timestamp())
-                else:
-                    message_timestamp = float(timestamp)
-            except (TypeError, ValueError):
-                logger.debug("Ignoring invalid explicit message timestamp: %r", timestamp)
+        message_timestamp = _coerce_message_timestamp(timestamp)
+        if message_timestamp is None:
+            message_timestamp = time.time()
 
         # Pre-compute tool call count
         num_tool_calls = 0
@@ -2543,15 +2593,20 @@ class SessionDB:
 
         def _do(conn):
             cursor = conn.execute(
-                """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, timestamp, token_count, finish_reason,
+                """INSERT OR IGNORE INTO messages (session_id, role, content, sender_id, sender_name,
+                   source_chat_id, source_message_id, tool_call_id, tool_calls, tool_name,
+                   timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
                     stored_content,
+                    sender_id,
+                    sender_name,
+                    source_chat_id,
+                    source_message_id,
                     tool_call_id,
                     tool_calls_json,
                     tool_name,
@@ -2567,20 +2622,31 @@ class SessionDB:
                     1 if observed else 0,
                 ),
             )
-            msg_id = cursor.lastrowid
+            inserted = bool(cursor.rowcount)
+            if inserted:
+                msg_id = cursor.lastrowid
+            elif source_chat_id and source_message_id:
+                row = conn.execute(
+                    "SELECT id FROM messages WHERE source_chat_id = ? AND source_message_id = ? LIMIT 1",
+                    (source_chat_id, source_message_id),
+                ).fetchone()
+                msg_id = int(row[0]) if row else 0
+            else:
+                msg_id = 0
 
             # Update counters
-            if num_tool_calls > 0:
-                conn.execute(
-                    """UPDATE sessions SET message_count = message_count + 1,
-                       tool_call_count = tool_call_count + ? WHERE id = ?""",
-                    (num_tool_calls, session_id),
-                )
-            else:
-                conn.execute(
-                    "UPDATE sessions SET message_count = message_count + 1 WHERE id = ?",
-                    (session_id,),
-                )
+            if inserted:
+                if num_tool_calls > 0:
+                    conn.execute(
+                        """UPDATE sessions SET message_count = message_count + 1,
+                           tool_call_count = tool_call_count + ? WHERE id = ?""",
+                        (num_tool_calls, session_id),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE sessions SET message_count = message_count + 1 WHERE id = ?",
+                        (session_id,),
+                    )
             return msg_id
 
         return self._execute_write(_do)
@@ -2608,16 +2674,9 @@ class SessionDB:
             for msg in messages:
                 role = msg.get("role", "unknown")
                 tool_calls = msg.get("tool_calls")
-                message_timestamp = now_ts
-                if msg.get("timestamp") is not None:
-                    try:
-                        ts_value = msg.get("timestamp")
-                        if hasattr(ts_value, "timestamp"):
-                            message_timestamp = float(ts_value.timestamp())
-                        else:
-                            message_timestamp = float(ts_value)
-                    except (TypeError, ValueError):
-                        logger.debug("Ignoring invalid explicit message timestamp: %r", msg.get("timestamp"))
+                message_timestamp = _coerce_message_timestamp(msg.get("timestamp"))
+                if message_timestamp is None:
+                    message_timestamp = now_ts
                 reasoning_details = msg.get("reasoning_details") if role == "assistant" else None
                 codex_reasoning_items = (
                     msg.get("codex_reasoning_items") if role == "assistant" else None
@@ -2643,15 +2702,20 @@ class SessionDB:
                 )
 
                 conn.execute(
-                    """INSERT INTO messages (session_id, role, content, tool_call_id,
+                    """INSERT INTO messages (session_id, role, content, sender_id, sender_name,
+                       source_chat_id, source_message_id, tool_call_id,
                        tool_calls, tool_name, timestamp, token_count, finish_reason,
                        reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                        codex_message_items, platform_message_id, observed)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         session_id,
                         role,
                         self._encode_content(msg.get("content")),
+                        msg.get("sender_id"),
+                        msg.get("sender_name"),
+                        msg.get("source_chat_id"),
+                        msg.get("source_message_id"),
                         msg.get("tool_call_id"),
                         tool_calls_json,
                         msg.get("tool_name"),
@@ -2680,6 +2744,211 @@ class SessionDB:
             )
 
         self._execute_write(_do)
+
+    def set_latest_user_sender(
+        self,
+        session_id: str,
+        *,
+        sender_id: str | None = None,
+        sender_name: str | None = None,
+    ) -> None:
+        """Stamp sender identity on the latest user row for a session."""
+        if sender_id is None and sender_name is None:
+            return
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT id FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            if not row:
+                return
+            conn.execute(
+                "UPDATE messages SET sender_id = ?, sender_name = ? WHERE id = ?",
+                (sender_id, sender_name, row[0]),
+            )
+
+        self._execute_write(_do)
+
+    def delete_message_by_source_key(
+        self,
+        *,
+        source_chat_id: str,
+        source_message_id: str,
+    ) -> int:
+        chat_key = str(source_chat_id or "").strip()
+        message_key = str(source_message_id or "").strip()
+        if not chat_key or not message_key:
+            return 0
+
+        def _do(conn):
+            rows = conn.execute(
+                "SELECT session_id FROM messages WHERE source_chat_id = ? AND source_message_id = ?",
+                (chat_key, message_key),
+            ).fetchall()
+            if not rows:
+                return 0
+            session_counts: dict[str, int] = {}
+            for row in rows:
+                sid = str(row[0] or "").strip()
+                if sid:
+                    session_counts[sid] = session_counts.get(sid, 0) + 1
+
+            cursor = conn.execute(
+                "DELETE FROM messages WHERE source_chat_id = ? AND source_message_id = ?",
+                (chat_key, message_key),
+            )
+            deleted = int(cursor.rowcount or 0)
+            conn.execute(
+                "DELETE FROM processed_source_keys WHERE source_chat_id = ? AND source_message_id = ?",
+                (chat_key, message_key),
+            )
+            for sid, count in session_counts.items():
+                conn.execute(
+                    "UPDATE sessions SET message_count = MAX(message_count - ?, 0) WHERE id = ?",
+                    (count, sid),
+                )
+            return deleted
+
+        return int(self._execute_write(_do))
+
+    def message_source_key_is_processed(
+        self,
+        *,
+        source_chat_id: str,
+        source_message_id: str,
+    ) -> bool:
+        chat_key = str(source_chat_id or "").strip()
+        message_key = str(source_message_id or "").strip()
+        if not chat_key or not message_key:
+            return False
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT 1
+                  FROM processed_source_keys
+                 WHERE source_chat_id = ?
+                   AND source_message_id = ?
+                 LIMIT 1
+                """,
+                (chat_key, message_key),
+            ).fetchone()
+        return row is not None
+
+    def mark_message_source_key_processed(
+        self,
+        *,
+        source_chat_id: str,
+        source_message_id: str,
+        processed_at: Any = None,
+    ) -> bool:
+        chat_key = str(source_chat_id or "").strip()
+        message_key = str(source_message_id or "").strip()
+        if not chat_key or not message_key:
+            return False
+
+        processed_ts = _coerce_message_timestamp(processed_at)
+        if processed_ts is None:
+            processed_ts = time.time()
+
+        def _do(conn):
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO processed_source_keys(
+                    source_chat_id,
+                    source_message_id,
+                    processed_at
+                ) VALUES (?, ?, ?)
+                """,
+                (chat_key, message_key, processed_ts),
+            )
+            return bool(cursor.rowcount)
+
+        return bool(self._execute_write(_do))
+
+    def message_source_key_has_response(
+        self,
+        *,
+        source_chat_id: str,
+        source_message_id: str,
+    ) -> bool:
+        chat_key = str(source_chat_id or "").strip()
+        message_key = str(source_message_id or "").strip()
+        if not chat_key or not message_key:
+            return False
+        with self._lock:
+            response = self._conn.execute(
+                """
+                SELECT 1
+                  FROM messages source
+                 WHERE source.source_chat_id = ?
+                   AND source.source_message_id = ?
+                   AND EXISTS (
+                       SELECT 1
+                         FROM messages assistant
+                        WHERE assistant.session_id = source.session_id
+                          AND assistant.id > source.id
+                          AND assistant.role = 'assistant'
+                        LIMIT 1
+                   )
+                 LIMIT 1
+                """,
+                (chat_key, message_key),
+            ).fetchone()
+        return response is not None
+
+    def stamp_latest_assistant_source_key(
+        self,
+        *,
+        session_id: str,
+        source_chat_id: str,
+        source_message_id: str,
+        content: str,
+    ) -> int:
+        session_key = str(session_id or "").strip()
+        chat_key = str(source_chat_id or "").strip()
+        message_key = str(source_message_id or "").strip()
+        delivered_content = str(content or "").strip()
+        if not session_key or not chat_key or not message_key or not delivered_content:
+            return 0
+
+        def _do(conn):
+            existing = conn.execute(
+                "SELECT id FROM messages WHERE source_chat_id = ? AND source_message_id = ? LIMIT 1",
+                (chat_key, message_key),
+            ).fetchone()
+            if existing:
+                return int(existing[0])
+
+            row = conn.execute(
+                """
+                SELECT id FROM messages
+                 WHERE session_id = ?
+                   AND role = 'assistant'
+                   AND (source_chat_id IS NULL OR source_chat_id = '')
+                   AND (source_message_id IS NULL OR source_message_id = '')
+                   AND content IS NOT NULL
+                   AND TRIM(content) != ''
+                   AND TRIM(content) = ?
+                 ORDER BY id DESC
+                 LIMIT 1
+                """,
+                (session_key, delivered_content),
+            ).fetchone()
+            if not row:
+                return 0
+            msg_id = int(row[0])
+            conn.execute(
+                """
+                UPDATE messages
+                   SET source_chat_id = ?, source_message_id = ?
+                 WHERE id = ?
+                """,
+                (chat_key, message_key, msg_id),
+            )
+            return msg_id
+
+        return int(self._execute_write(_do) or 0)
 
     def get_messages(
         self, session_id: str, include_inactive: bool = False
@@ -3021,7 +3290,8 @@ class SessionDB:
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
-                "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp "
+                "codex_reasoning_items, codex_message_items, platform_message_id, observed, "
+                "sender_id, sender_name, source_chat_id, source_message_id, timestamp "
                 f"FROM messages WHERE session_id IN ({placeholders})"
                 f"{active_clause} ORDER BY timestamp, id",
                 tuple(session_ids),
@@ -3054,6 +3324,9 @@ class SessionDB:
                 msg["message_id"] = row["platform_message_id"]
             if row["observed"]:
                 msg["observed"] = True
+            for key in ("sender_id", "sender_name", "source_chat_id", "source_message_id"):
+                if row[key]:
+                    msg[key] = row[key]
             # Restore reasoning fields on assistant messages so providers
             # that replay reasoning (OpenRouter, OpenAI, Nous) receive
             # coherent multi-turn reasoning context.
@@ -3745,6 +4018,23 @@ class SessionDB:
             key=lambda item: (score(item[1]), item[0]),
         )
         return [row for _, row in ranked[:limit]]
+
+    def get_soul_active_since(self, soul_id: str) -> Optional[float]:
+        """Return the configured active_since timestamp for a soul, if present."""
+        selected = str(soul_id or "").strip()
+        if not selected:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT active_since FROM souls WHERE soul_id = ?",
+                (selected,),
+            ).fetchone()
+        if not row:
+            return None
+        timestamp = _coerce_message_timestamp(row[0])
+        if timestamp is None:
+            raise ValueError(f"invalid active_since for soul {selected!r}: {row[0]!r}")
+        return timestamp
 
     def search_sessions(
         self,

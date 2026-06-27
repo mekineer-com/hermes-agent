@@ -2,9 +2,10 @@
 
 import sqlite3
 import time
+from datetime import datetime, timezone
 import pytest
 
-from hermes_state import SCHEMA_SQL, SCHEMA_VERSION, SessionDB
+from hermes_state import SCHEMA_SQL, SCHEMA_VERSION, SessionDB, _coerce_message_timestamp
 
 
 class _NoFtsCursor(sqlite3.Cursor):
@@ -530,6 +531,152 @@ class TestMessageStorage:
 
         messages = db.get_messages_as_conversation("s1")
         assert messages[0]["timestamp"] == event_ts
+
+    def test_append_message_persists_whatsapp_metadata(self, db):
+        db.create_session(session_id="s1", source="whatsapp")
+        db.append_message(
+            "s1",
+            role="user",
+            content="Hello",
+            sender_id="140063262396533@lid",
+            sender_name="Annie",
+            source_chat_id="140063262396533@lid",
+            source_message_id="wamid.1",
+        )
+
+        stored = db.get_messages("s1")[0]
+        assert stored["sender_name"] == "Annie"
+        assert stored["source_message_id"] == "wamid.1"
+
+        replay = db.get_messages_as_conversation("s1")[0]
+        assert replay["sender_id"] == "140063262396533@lid"
+        assert replay["sender_name"] == "Annie"
+        assert replay["source_chat_id"] == "140063262396533@lid"
+        assert replay["source_message_id"] == "wamid.1"
+
+    def test_append_message_coerces_millisecond_timestamp(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Hello", timestamp=1_780_000_000_250)
+
+        messages = db.get_messages("s1")
+        assert messages[0]["timestamp"] == 1_780_000_000.25
+
+    def test_coerce_message_timestamp_handles_datetime(self):
+        dt_utc = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        assert _coerce_message_timestamp(dt_utc) == dt_utc.timestamp()
+
+        dt_naive = datetime(2026, 1, 15, 12, 0, 0)
+        assert _coerce_message_timestamp(dt_naive) == dt_naive.timestamp()
+
+    def test_set_latest_user_sender_updates_only_latest_user_row(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="first")
+        db.append_message("s1", role="assistant", content="ack")
+        db.append_message("s1", role="user", content="second")
+
+        db.set_latest_user_sender("s1", sender_id="140063262396533@lid", sender_name="Raquel")
+
+        user_rows = [msg for msg in db.get_messages("s1") if msg["role"] == "user"]
+        assert user_rows[0]["sender_name"] is None
+        assert user_rows[1]["sender_id"] == "140063262396533@lid"
+        assert user_rows[1]["sender_name"] == "Raquel"
+
+    def test_append_message_dedupes_by_source_key(self, db):
+        db.create_session(session_id="s1", source="cli")
+        first_id = db.append_message(
+            "s1",
+            role="user",
+            content="first",
+            source_chat_id="15133278228@s.whatsapp.net",
+            source_message_id="wamid.1",
+        )
+        second_id = db.append_message(
+            "s1",
+            role="user",
+            content="duplicate",
+            source_chat_id="15133278228@s.whatsapp.net",
+            source_message_id="wamid.1",
+        )
+
+        assert second_id == first_id
+        assert len(db.get_messages("s1")) == 1
+        assert db.get_session("s1")["message_count"] == 1
+
+    def test_reopen_skips_source_key_index_when_legacy_duplicates_exist(self, tmp_path):
+        db_path = tmp_path / "legacy_duplicates.db"
+        seed = SessionDB(db_path=db_path)
+        try:
+            seed.create_session(session_id="s1", source="whatsapp")
+            seed.create_session(session_id="s2", source="whatsapp")
+            seed._conn.execute("DROP INDEX IF EXISTS idx_messages_source_key")
+            for sid in ("s1", "s2"):
+                seed.append_message(
+                    sid,
+                    role="user",
+                    content=f"duplicate in {sid}",
+                    source_chat_id="15133278228@s.whatsapp.net",
+                    source_message_id="m1",
+                )
+            seed.append_message("s2", role="assistant", content="answered")
+        finally:
+            seed.close()
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert reopened.message_source_key_has_response(
+                source_chat_id="15133278228@s.whatsapp.net",
+                source_message_id="m1",
+            )
+        finally:
+            reopened.close()
+
+    def test_source_key_helpers(self, db):
+        db.create_session(session_id="s1", source="whatsapp")
+        db.append_message(
+            "s1",
+            role="user",
+            content="hello",
+            source_chat_id="15133278228@s.whatsapp.net",
+            source_message_id="m1",
+        )
+        assert not db.message_source_key_has_response(
+            source_chat_id="15133278228@s.whatsapp.net",
+            source_message_id="m1",
+        )
+
+        db.append_message("s1", role="assistant", content="hi")
+        assert db.message_source_key_has_response(
+            source_chat_id="15133278228@s.whatsapp.net",
+            source_message_id="m1",
+        )
+
+        assert db.mark_message_source_key_processed(
+            source_chat_id="15133278228@s.whatsapp.net",
+            source_message_id="m1",
+            processed_at=1_780_000_000_250,
+        )
+        assert db.message_source_key_is_processed(
+            source_chat_id="15133278228@s.whatsapp.net",
+            source_message_id="m1",
+        )
+        assert db.delete_message_by_source_key(
+            source_chat_id="15133278228@s.whatsapp.net",
+            source_message_id="m1",
+        ) == 1
+        assert not db.message_source_key_is_processed(
+            source_chat_id="15133278228@s.whatsapp.net",
+            source_message_id="m1",
+        )
+
+    def test_get_soul_active_since(self, db):
+        db._conn.execute(
+            "INSERT INTO souls(soul_id, active_since) VALUES (?, ?)",
+            ("siri", 1_780_000_000_250),
+        )
+        db._conn.commit()
+
+        assert db.get_soul_active_since("siri") == 1_780_000_000.25
+        assert db.get_soul_active_since("missing") is None
 
     def test_message_increments_session_count(self, db):
         db.create_session(session_id="s1", source="cli")
