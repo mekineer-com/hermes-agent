@@ -28,7 +28,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
 from typing import Dict, Optional, Any
 
-from hermes_constants import get_hermes_dir
+from hermes_constants import get_hermes_dir, get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -232,12 +232,15 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
     cache_image_from_url,
     cache_audio_from_url,
 )
+from gateway.contact_store import WhatsAppContactStore
 from gateway.whatsapp_seam import to_whatsapp_jid
+from gateway.platforms.whatsapp_wal import WhatsAppGatewayWal
 
 
 def _file_content_hash(path: Path) -> str:
@@ -254,6 +257,24 @@ def _file_content_hash(path: Path) -> str:
         return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
     except OSError:
         return ""
+
+
+def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        return numeric / 1000.0 if numeric > 10_000_000_000 else numeric
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            numeric = float(text)
+            return numeric / 1000.0 if numeric > 10_000_000_000 else numeric
+        except ValueError:
+            return None
+    return None
 
 
 def check_whatsapp_requirements() -> bool:
@@ -325,6 +346,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         ))
         self._reply_prefix: Optional[str] = config.extra.get("reply_prefix")
         self._dm_policy = str(config.extra.get("dm_policy") or os.getenv("WHATSAPP_DM_POLICY", "open")).strip().lower()
+        max_age_raw = config.extra.get("max_message_age_seconds")
+        if max_age_raw is None:
+            max_age_raw = os.getenv("WHATSAPP_MAX_MESSAGE_AGE_SECONDS") or 300
+        self._max_message_age_seconds = max(0, int(max_age_raw))
         self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "open")).strip().lower()
         self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
@@ -334,6 +359,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._bridge_log: Optional[Path] = None
         self._poll_task: Optional[asyncio.Task] = None
         self._http_session: Optional["aiohttp.ClientSession"] = None
+        whatsapp_home = get_hermes_home() / "whatsapp"
+        compact_every = int(os.getenv("WHATSAPP_GATEWAY_WAL_COMPACT_EVERY", "100"))
+        self._gateway_wal = WhatsAppGatewayWal(
+            wal_path=whatsapp_home / "gateway_wal.jsonl",
+            offset_path=whatsapp_home / "gateway_wal.offset",
+            compact_every=compact_every,
+        )
+        self._contact_store = WhatsAppContactStore(
+            store_path=whatsapp_home / "contact_store.json",
+            session_dir=whatsapp_home / "session",
+        )
         # Set to True by disconnect() before we SIGTERM our child bridge so
         # _check_managed_bridge_exit() can distinguish an intentional
         # shutdown-time exit (returncode -15 / -2 / 0) from a real crash.
@@ -657,6 +693,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             
             # Create a persistent HTTP session for all bridge communication
             self._http_session = aiohttp.ClientSession()
+            self._running = True
+
+            await self._replay_gateway_wal()
 
             # Start message polling task
             self._poll_task = asyncio.create_task(self._poll_messages())
@@ -666,6 +705,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return True
             
         except Exception as e:
+            self._running = False
+            if self._http_session and not self._http_session.closed:
+                await self._http_session.close()
+            self._http_session = None
             logger.error("[%s] Failed to start bridge: %s", self.name, e, exc_info=True)
             return False
         finally:
@@ -1050,6 +1093,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def _poll_messages(self) -> None:
         """Poll the bridge for incoming messages."""
         import aiohttp
+        wal = self._gateway_wal
 
         while self._running:
             if not self._http_session:
@@ -1059,19 +1103,33 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 print(f"[{self.name}] {bridge_exit}")
                 break
             try:
-                async with self._http_session.get(
-                    f"http://127.0.0.1:{self._bridge_port}/messages",
-                    timeout=aiohttp.ClientTimeout(total=30)
-                ) as resp:
-                    if resp.status == 200:
+                drained = False
+                while self._running and not drained:
+                    async with self._http_session.get(
+                        f"http://127.0.0.1:{self._bridge_port}/messages",
+                        params={"limit": 100},
+                        timeout=aiohttp.ClientTimeout(total=30)
+                    ) as resp:
+                        if resp.status != 200:
+                            break
                         messages = await resp.json()
+                        if not messages:
+                            drained = True
+                            break
                         for msg_data in messages:
+                            wal_row = wal.append(msg_data)
+                            self._update_contact_store_from_event(msg_data)
+                            if wal_row is None:
+                                await self._ack_bridge_message(msg_data.get("seq"))
+                                continue
+                            await self._ack_bridge_message(msg_data.get("seq"))
                             event = await self._build_message_event(msg_data)
                             if event:
-                                if event.message_type == MessageType.TEXT:
-                                    self._enqueue_text_event(event)
-                                else:
-                                    await self.handle_message(event)
+                                event.raw_message = dict(event.raw_message)
+                                event.raw_message["wal_seq"] = wal_row["wal_seq"]
+                                await self._dispatch_built_message_event(event)
+                            else:
+                                wal.mark_processed(wal_row["wal_seq"])
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -1083,6 +1141,66 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 await asyncio.sleep(5)
             
             await asyncio.sleep(1)  # Poll interval
+
+    async def _ack_bridge_message(self, seq: Any) -> None:
+        if not self._http_session:
+            return
+        try:
+            seq_int = int(seq)
+        except (TypeError, ValueError):
+            raise ValueError(f"Invalid bridge seq for ack: {seq!r}") from None
+        if seq_int < 0:
+            raise ValueError(f"Invalid bridge seq for ack: {seq!r}")
+        import aiohttp
+        try:
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/ack",
+                json={"up_to_seq": seq_int},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status >= 400:
+                    logger.warning("[whatsapp] Bridge ack failed for seq=%s status=%s", seq_int, resp.status)
+        except Exception as e:
+            logger.warning("[whatsapp] Bridge ack request failed for seq=%s: %s", seq_int, e)
+
+    async def _dispatch_built_message_event(self, event: MessageEvent) -> None:
+        raw = event.raw_message if isinstance(event.raw_message, dict) else {}
+        delivery_mode = self._bridge_delivery_mode(raw)
+        if str(raw.get("deliveryMode") or "").strip().lower() not in {"live", "persist_only", "revoke"}:
+            logger.warning(
+                "[whatsapp] Bridge event missing/invalid deliveryMode; treating as non-live chat_id=%r message_id=%r mode=%r",
+                raw.get("chatId"),
+                raw.get("messageId"),
+                raw.get("deliveryMode"),
+            )
+        if delivery_mode == "live" and self._max_message_age_seconds > 0:
+            timestamp = _coerce_gateway_timestamp(raw.get("timestamp"))
+            if timestamp is not None:
+                age_seconds = time.time() - timestamp
+                if age_seconds > self._max_message_age_seconds:
+                    logger.info(
+                        "[whatsapp] Dropping stale WhatsApp live message age=%ss chat=%r message=%r",
+                        int(age_seconds),
+                        raw.get("chatId"),
+                        raw.get("messageId"),
+                    )
+                    wal_seq = raw.get("wal_seq")
+                    if wal_seq is not None:
+                        self._gateway_wal.mark_processed(wal_seq)
+                    return
+        if delivery_mode == "live":
+            if event.message_type == MessageType.TEXT:
+                self._enqueue_text_event(event)
+            else:
+                await self.handle_message(event)
+            return
+        wal_seq = raw.get("wal_seq")
+        if wal_seq is None:
+            raise ValueError("WhatsApp WAL invariant break: missing wal_seq on persist-only event")
+        if not self._message_handler:
+            raise RuntimeError("WhatsApp persist-only event has no message handler")
+        await self._message_handler(event)
+        self._gateway_wal.mark_processed(wal_seq)
 
     # ── Text debounce batching ──────────────────────────────────────
 
@@ -1157,7 +1275,40 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
-            if not self._should_process_message(data):
+            delivery_mode = self._bridge_delivery_mode(data)
+            if delivery_mode == "revoke":
+                chat_id = str(data.get("chatId") or "").strip()
+                if not chat_id:
+                    return None
+                is_group = bool(data.get("isGroup")) or chat_id.endswith("@g.us")
+                chat_type = "group" if is_group else "dm"
+                chat_name = self._resolve_event_chat_name(data, is_group=is_group)
+                source_user_id = str(data.get("senderId") or "").strip()
+                source_user_name = str(data.get("senderName") or "").strip()
+                if not is_group:
+                    source_user_id = chat_id or source_user_id
+                    source_user_name = chat_name or source_user_name
+                raw_message = dict(data)
+                raw_message["chatName"] = chat_name
+                return MessageEvent(
+                    text="",
+                    message_type=MessageType.TEXT,
+                    source=self.build_source(
+                        chat_id=chat_id,
+                        chat_name=chat_name,
+                        chat_type=chat_type,
+                        user_id=source_user_id,
+                        user_name=source_user_name,
+                    ),
+                    raw_message=raw_message,
+                    message_id=str(data.get("messageId") or "").strip() or None,
+                    internal=True,
+                )
+
+            persist_only = delivery_mode != "live"
+            if persist_only and not self._should_persist_bridge_event(data):
+                return None
+            if not persist_only and not self._should_process_message(data):
                 return None
 
             # Determine message type
@@ -1295,7 +1446,54 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 message_id=data.get("messageId"),
                 media_urls=cached_urls,
                 media_types=media_types,
+                internal=persist_only,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")
             return None
+
+    @staticmethod
+    def _bridge_delivery_mode(data: Dict[str, Any]) -> str:
+        delivery_mode = str(data.get("deliveryMode") or "").strip().lower()
+        if delivery_mode in {"live", "persist_only", "revoke"}:
+            return delivery_mode
+        if str(data.get("eventType") or "").strip().lower() == "revoke":
+            return "revoke"
+        return "persist_only"
+
+    @staticmethod
+    def _should_persist_bridge_event(data: Dict[str, Any]) -> bool:
+        chat_id = str(data.get("chatId") or "").strip().lower()
+        if not chat_id or chat_id == "status@broadcast" or chat_id.endswith("@newsletter"):
+            return False
+        body = str(data.get("body") or "").strip()
+        return bool(body or data.get("hasMedia"))
+
+    async def _replay_gateway_wal(self) -> None:
+        wal = self._gateway_wal
+        for row in wal.pending():
+            wal_seq = row.get("wal_seq")
+            event_data = row.get("event")
+            if not isinstance(event_data, dict):
+                raise ValueError(f"Invalid WhatsApp WAL row payload at wal_seq={wal_seq!r}")
+            self._update_contact_store_from_event(event_data, source="gateway_wal_replay")
+            event = await self._build_message_event(event_data)
+            if event:
+                event.raw_message = dict(event.raw_message)
+                event.raw_message["wal_seq"] = wal_seq
+                await self._dispatch_built_message_event(event)
+            else:
+                wal.mark_processed(wal_seq)
+
+    def _update_contact_store_from_event(self, event_data: Dict[str, Any], *, source: str = "gateway_wal") -> None:
+        try:
+            self._contact_store.update_from_event(event_data, source=source)
+        except Exception:
+            logger.warning("Failed to update WhatsApp contact store", exc_info=True)
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        raw = event.raw_message if isinstance(event.raw_message, dict) else {}
+        wal_seq = raw.get("wal_seq")
+        if wal_seq is None:
+            raise ValueError("WhatsApp WAL invariant break: missing wal_seq on processing completion")
+        self._gateway_wal.mark_processed(wal_seq)
