@@ -840,6 +840,8 @@ class TestNoCredsPreflight:
                 },
             )
         )
+        adapter._acquire_platform_lock = MagicMock(return_value=True)
+        adapter._release_platform_lock = MagicMock()
 
         with patch(
             "gateway.platforms.whatsapp.check_whatsapp_requirements",
@@ -851,7 +853,26 @@ class TestNoCredsPreflight:
         assert adapter._fatal_error_code == "whatsapp_not_paired"
         assert adapter._fatal_error_retryable is False
         assert adapter._bridge_health["status"] == "not_paired"
+        adapter._acquire_platform_lock.assert_called_once_with(
+            "whatsapp-session", str(session_path), "WhatsApp session"
+        )
         await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_setup_monitor_reconnects_when_creds_appear(self, tmp_path):
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._http_session = None
+        adapter._session_path = tmp_path / "session"
+        adapter._session_path.mkdir()
+        (adapter._session_path / "creds.json").write_text("{}", encoding="utf-8")
+        adapter._release_platform_lock = MagicMock()
+        adapter.connect = AsyncMock(return_value=True)
+
+        await adapter._monitor_web_source_setup()
+
+        adapter._release_platform_lock.assert_called_once()
+        adapter.connect.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_connect_proceeds_when_creds_present(self, tmp_path):

@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import subprocess
 import sqlite3
@@ -27,45 +27,6 @@ def test_whatsapp_process_termination_uses_posix_process_group(monkeypatch):
         (4321, whatsapp_module.signal.SIGTERM),
         (4321, whatsapp_module.signal.SIGKILL),
     ]
-
-
-def test_whatsapp_stale_bridge_pidfile_requires_identity_match(tmp_path, monkeypatch):
-    session_path = tmp_path / "session"
-    session_path.mkdir()
-    pidfile = session_path / "bridge.pid"
-    pidfile.write_text("1234", encoding="utf-8")
-    killed = []
-    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
-    monkeypatch.setattr(whatsapp_module, "_pid_cmdline", lambda pid: ["python", "unrelated.py"])
-    monkeypatch.setattr(whatsapp_module, "_terminate_pid_tree", lambda pid, force=False: killed.append((pid, force)))
-
-    whatsapp_module._kill_stale_bridge_by_pidfile(session_path, tmp_path / "bridge.js")
-
-    assert killed == []
-    assert not pidfile.exists()
-
-
-def test_whatsapp_stale_bridge_pidfile_kills_matching_tree(tmp_path, monkeypatch):
-    session_path = tmp_path / "session"
-    session_path.mkdir()
-    bridge_script = tmp_path / "bridge.js"
-    pidfile = session_path / "bridge.pid"
-    pidfile.write_text("1234", encoding="utf-8")
-    killed = []
-    pid_exists = iter([True, False])
-    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: next(pid_exists))
-    monkeypatch.setattr(whatsapp_module.time, "sleep", lambda seconds: None)
-    monkeypatch.setattr(
-        whatsapp_module,
-        "_pid_cmdline",
-        lambda pid: ["node", str(bridge_script), "--session", str(session_path)],
-    )
-    monkeypatch.setattr(whatsapp_module, "_terminate_pid_tree", lambda pid, force=False: killed.append((pid, force)))
-
-    whatsapp_module._kill_stale_bridge_by_pidfile(session_path, bridge_script)
-
-    assert killed == [(1234, False)]
-    assert not pidfile.exists()
 
 
 def test_whatsapp_web_source_defaults_enabled_headless():
@@ -97,6 +58,16 @@ def test_whatsapp_runtime_status_marks_unmanaged_bridge_degraded(tmp_path, monke
     assert whatsapp["state"] == "degraded"
     assert whatsapp["bridge"]["state"] == "degraded"
     assert whatsapp["bridge"]["managed"] is False
+
+
+def test_gateway_refresh_hook_restamps_adapter_runtime_status():
+    from gateway.run import GatewayRunner
+
+    adapter = SimpleNamespace(_write_whatsapp_runtime_status=MagicMock())
+
+    GatewayRunner.__new__(GatewayRunner)._refresh_adapter_runtime_status(adapter)
+
+    adapter._write_whatsapp_runtime_status.assert_called_once_with(force=True)
 
 
 def test_whatsapp_web_source_config_bridged_from_yaml(tmp_path, monkeypatch):

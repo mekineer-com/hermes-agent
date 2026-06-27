@@ -143,7 +143,8 @@ Shared files stay `pending` until their slice ports the narrow OpenAlma seam.
 
 ## Partial WhatsApp Adapter Port
 
-- `gateway/platforms/whatsapp.py`: pending — bridge pidfile cleanup, config-backed mode, outbound JID normalization, self-DM private notice, chunked-send result IDs, chat-name fallback, gateway WAL, deliveryMode dispatch, contact-store updates, web-source supervisor/runtime-status, and not-paired setup path hunk-ported.
+- `gateway/platforms/whatsapp.py`: pending — bridge pidfile cleanup, config-backed mode, outbound JID normalization, self-DM private notice, chunked-send result IDs, chat-name fallback, gateway WAL, deliveryMode dispatch, contact-store updates, web-source supervisor/runtime-status, and not-paired setup path hunk-ported; setup mode now owns the session lock and reconnects when pairing creates `creds.json`.
+- `gateway/run.py`: pending — narrow WhatsApp runtime-status restamp hunk added so generic connected writes do not hide degraded/setup child status.
 - `gateway/status.py`: pending — WhatsApp runtime-status details parameter hunk-ported for web-source status.
 - `tests/gateway/test_whatsapp_connect.py`: pending — bridge pidfile cleanup, gateway WAL crash-window tests, and not-paired setup-mode test ported; remaining WhatsApp adapter coverage still pending.
 - `tests/gateway/test_whatsapp_web_source_runtime.py`: copy — focused web-source supervisor/runtime-status coverage ported.

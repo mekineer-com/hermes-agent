@@ -3584,6 +3584,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
+    def _refresh_adapter_runtime_status(self, adapter) -> None:
+        writer = getattr(adapter, "_write_whatsapp_runtime_status", None)
+        if callable(writer):
+            try:
+                writer(force=True)
+            except Exception:
+                pass
+
     # ------------------------------------------------------------------
     # Per-platform circuit breaker (pause/resume) — used by the reconnect
     # watcher when a retryable failure recurs past a threshold, and by the
@@ -5439,6 +5447,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         error_code=None,
                         error_message=None,
                     )
+                    self._refresh_adapter_runtime_status(adapter)
                     logger.info("✓ %s connected", platform.value)
                 else:
                     logger.warning("✗ %s failed to connect", platform.value)
@@ -6198,6 +6207,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             error_code=None,
                             error_message=None,
                         )
+                        self._refresh_adapter_runtime_status(adapter)
                         logger.info("✓ %s reconnected successfully", platform.value)
 
                         # Rebuild channel directory with the new adapter

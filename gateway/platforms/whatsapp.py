@@ -620,6 +620,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             )
             return False
 
+        logger.info("[%s] Bridge found at %s", self.name, bridge_path)
+
+        # Acquire scoped lock to prevent duplicate sessions
+        lock_acquired = False
+        try:
+            if not self._acquire_platform_lock('whatsapp-session', str(self._session_path), 'WhatsApp session'):
+                return False
+            lock_acquired = True
+        except Exception as e:
+            logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
+
         # If the live reply bridge was never paired, keep the adapter alive as
         # setup/status owner so the web-source can open its pairing browser.
         creds_path = self._session_path / "creds.json"
@@ -645,17 +656,6 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._write_whatsapp_runtime_status(force=True)
             self._poll_task = asyncio.create_task(self._monitor_web_source_setup())
             return True
-
-        logger.info("[%s] Bridge found at %s", self.name, bridge_path)
-        
-        # Acquire scoped lock to prevent duplicate sessions
-        lock_acquired = False
-        try:
-            if not self._acquire_platform_lock('whatsapp-session', str(self._session_path), 'WhatsApp session'):
-                return False
-            lock_acquired = True
-        except Exception as e:
-            logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
 
         try:
             # Auto-install npm dependencies when node_modules is missing OR
@@ -1149,7 +1149,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return stopped
 
     async def _monitor_web_source_setup(self) -> None:
-        while self._running and self._web_source_enabled and not self._http_session:
+        while self._running and not self._http_session:
+            if (self._session_path / "creds.json").exists():
+                logger.info("[%s] WhatsApp pairing detected; starting reply bridge", self.name)
+                self._running = False
+                self._release_platform_lock()
+                if await self.connect():
+                    return
+                self._running = True
             self._check_web_source_exit()
             self._write_whatsapp_runtime_status()
             await asyncio.sleep(2)
