@@ -13,6 +13,7 @@ Adapters without ``delete_message`` silently no-op.
 import asyncio
 import importlib
 import sys
+import threading
 import time
 import types
 from types import SimpleNamespace
@@ -129,6 +130,35 @@ class FailingAgent:
             "failed": True,
             "error": "simulated provider failure",
         }
+
+
+class MetadataAgent:
+    seen = {}
+    created = 0
+
+    def __init__(self, **kwargs):
+        type(self).created += 1
+        self.tools = []
+        self._user_id = kwargs.get("user_id")
+        self._user_id_alt = kwargs.get("user_id_alt")
+        self._user_name = kwargs.get("user_name")
+        self._chat_id = kwargs.get("chat_id")
+        self._chat_name = kwargs.get("chat_name")
+        self._chat_type = kwargs.get("chat_type")
+        self._thread_id = kwargs.get("thread_id")
+        self._gateway_session_key = kwargs.get("gateway_session_key")
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        MetadataAgent.seen = {
+            "user_id": getattr(self, "_user_id", None),
+            "user_name": getattr(self, "_user_name", None),
+            "sender_id": getattr(self, "_gateway_message_sender_id", None),
+            "sender_name": getattr(self, "_gateway_message_sender_name", None),
+            "source_message_id": getattr(self, "_gateway_source_message_id", None),
+            "source_chat_id": getattr(self, "_gateway_source_chat_id", None),
+            "message_timestamp": getattr(self, "_gateway_message_timestamp", None),
+        }
+        return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
 def _make_runner(adapter):
@@ -320,6 +350,83 @@ async def test_cleanup_noop_on_adapter_without_delete_support(monkeypatch, tmp_p
     # (The NoDeleteAdapter.delete_message would raise AssertionError if
     # the cleanup closure had somehow captured a reference to it.)
     assert adapter.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_raw_metadata_reaches_agent_without_nameerror(monkeypatch, tmp_path):
+    adapter = CleanupCaptureAdapter(platform=Platform.WHATSAPP)
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, MetadataAgent, cleanup_on=False)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    MetadataAgent.seen = {}
+    MetadataAgent.created = 0
+    runner._agent_cache = {}
+    runner._agent_cache_lock = threading.Lock()
+
+    source = SessionSource(
+        platform=Platform.WHATSAPP,
+        chat_id="15551234567@g.us",
+        chat_type="group",
+        user_id="15550000001@s.whatsapp.net",
+        user_name="First Sender",
+    )
+    session_key = "agent:main:whatsapp:group:15551234567@g.us"
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-1",
+        session_key=session_key,
+        event_raw_message={
+            "senderId": "15550000001@s.whatsapp.net",
+            "senderName": "First Sender",
+            "messageId": "3EB0TEST",
+            "chatId": "15551234567@g.us",
+            "timestamp": 1_700_000_000,
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert MetadataAgent.seen == {
+        "user_id": "15550000001@s.whatsapp.net",
+        "user_name": "First Sender",
+        "sender_id": "15550000001@s.whatsapp.net",
+        "sender_name": "First Sender",
+        "source_message_id": "3EB0TEST",
+        "source_chat_id": "15551234567@g.us",
+        "message_timestamp": 1_700_000_000.0,
+    }
+
+    source.user_name = "Renamed Sender"
+    result = await runner._run_agent(
+        message="hello again",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-1",
+        session_key=session_key,
+        event_raw_message={
+            "senderId": "15550000001@s.whatsapp.net",
+            "senderName": "Renamed Sender",
+            "messageId": "3EB0TEST2",
+            "chatId": "15551234567@g.us",
+            "timestamp": 1_700_000_001,
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert MetadataAgent.created == 1
+    assert MetadataAgent.seen == {
+        "user_id": "15550000001@s.whatsapp.net",
+        "user_name": "Renamed Sender",
+        "sender_id": "15550000001@s.whatsapp.net",
+        "sender_name": "Renamed Sender",
+        "source_message_id": "3EB0TEST2",
+        "source_chat_id": "15551234567@g.us",
+        "message_timestamp": 1_700_000_001.0,
+    }
 
 
 @pytest.mark.asyncio

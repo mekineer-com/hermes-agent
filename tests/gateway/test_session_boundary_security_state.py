@@ -196,6 +196,7 @@ async def test_branch_preserves_persisted_assistant_metadata():
         {
             "role": "assistant",
             "content": "world",
+            "timestamp": 1_700_000_000,
             "finish_reason": "stop",
             "reasoning": "thinking",
             "reasoning_content": "provider scratchpad",
@@ -212,6 +213,7 @@ async def test_branch_preserves_persisted_assistant_metadata():
     assert len(append_calls) == 2
     assistant_kwargs = append_calls[1].kwargs
     assert assistant_kwargs["role"] == "assistant"
+    assert assistant_kwargs["timestamp"] == 1_700_000_000
     assert assistant_kwargs["finish_reason"] == "stop"
     assert assistant_kwargs["reasoning"] == "thinking"
     assert assistant_kwargs["reasoning_content"] == "provider scratchpad"

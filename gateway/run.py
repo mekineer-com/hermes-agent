@@ -4404,6 +4404,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         notified: set[tuple[str, str, Optional[str]]] = set()
         for session_key in active:
             source = None
+            parsed_chat_type = "dm"
             try:
                 if getattr(self, "session_store", None) is not None:
                     self.session_store._ensure_loaded()
@@ -4430,6 +4431,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if not _parsed:
                     continue
                 platform_str = _parsed["platform"]
+                parsed_chat_type = _parsed.get("chat_type", "dm")
                 chat_id = _parsed["chat_id"]
                 thread_id = _parsed.get("thread_id")
 
@@ -4465,23 +4467,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     except Exception:
                         pass
 
-                metadata = self._thread_metadata_for_target(
-                    platform,
-                    chat_id,
-                    thread_id,
-                    chat_type=getattr(source, "chat_type", None) if source is not None else None,
-                    reply_to_message_id=reply_to_message_id,
-                    adapter=adapter,
-                )
-
-                result = await adapter.send(chat_id, msg, metadata=metadata)
-                if result is not None and getattr(result, "success", True) is False:
-                    logger.debug(
-                        "Failed to send shutdown notification to %s:%s: %s",
-                        platform_str,
-                        chat_id,
-                        getattr(result, "error", "send returned success=False"),
+                if source is None:
+                    source = SessionSource(
+                        platform=platform,
+                        chat_id=chat_id,
+                        chat_type=parsed_chat_type,
+                        user_id=None,
+                        thread_id=thread_id,
+                        message_id=reply_to_message_id,
                     )
+                elif reply_to_message_id and getattr(source, "message_id", None) is None:
+                    from dataclasses import replace as _replace_dataclass
+                    source = _replace_dataclass(source, message_id=reply_to_message_id)
+
+                if not await self._deliver_platform_notice(source, msg):
                     continue
 
                 notified.add(dedup_key)
@@ -9670,6 +9669,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if message_text is None:
             return
 
+        if bool(getattr(event, "internal", False)) and str(message_text or "").strip():
+            soul_mode_cfg = self._resolve_soul_mode_agent_config(
+                _load_gateway_config(),
+                session_key or "",
+            )
+            if self._soul_mode_config_is_active(soul_mode_cfg):
+                logger.info(
+                    "Dropping internal gateway event for soul-mode session %s",
+                    session_key,
+                )
+                return None
+
         # Capture the platform event time as message metadata and keep the
         # persisted transcript clean (strip any leading timestamp prefix).
         # This runs regardless of the toggle so storage stays clean and the
@@ -9738,6 +9749,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key=session_key,
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
+                event_raw_message=(
+                    event.raw_message
+                    if isinstance(getattr(event, "raw_message", None), dict)
+                    else None
+                ),
                 channel_prompt=event.channel_prompt,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
@@ -14352,6 +14368,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 agent._last_flushed_db_idx = 0
         agent._api_call_count = 0
 
+    @staticmethod
+    def _refresh_cached_agent_source(
+        agent: Any,
+        source: SessionSource,
+        session_key: str,
+    ) -> None:
+        """Refresh per-turn source identity for a reused cached agent."""
+        agent._user_id = source.user_id
+        agent._user_id_alt = source.user_id_alt
+        agent._user_name = source.user_name
+        agent._chat_id = source.chat_id
+        agent._chat_name = source.chat_name
+        agent._chat_type = source.chat_type
+        agent._thread_id = source.thread_id
+        agent._gateway_session_key = session_key
+        agent._external_message_id = source.message_id
+        agent._gateway_message_sender_id = None
+        agent._gateway_message_sender_name = None
+        agent._gateway_source_message_id = None
+        agent._gateway_source_chat_id = None
+        agent._gateway_message_timestamp = None
+
     def _release_evicted_agent_soft(self, agent: Any) -> None:
         """Soft cleanup for cache-evicted agents — preserves session tool state.
 
@@ -14822,6 +14860,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         run_generation: Optional[int] = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
+        event_raw_message: Optional[Dict[str, Any]] = None,
         channel_prompt: Optional[str] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
@@ -14840,6 +14879,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message, context_prompt, history, source, session_id,
                 session_key=session_key, run_generation=run_generation,
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
+                event_raw_message=event_raw_message,
                 channel_prompt=channel_prompt, persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
             )
@@ -14850,6 +14890,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message, context_prompt, history, source, session_id,
                 session_key=session_key, run_generation=run_generation,
                 _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
+                event_raw_message=event_raw_message,
                 channel_prompt=channel_prompt, persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
             )
@@ -14880,6 +14921,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         run_generation: Optional[int] = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
+        event_raw_message: Optional[Dict[str, Any]] = None,
         channel_prompt: Optional[str] = None,
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
@@ -15871,6 +15913,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            soul_mode_cfg = self._resolve_soul_mode_agent_config(user_config, session_key or "")
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -15937,6 +15980,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 except KeyError:
                                     pass
                             self._init_cached_agent_for_turn(agent, _interrupt_depth)
+                            self._refresh_cached_agent_source(agent, source, session_key)
                             # Refresh agent max_iterations from current config
                             # (cached agent may have been created with old config)
                             agent.max_iterations = max_iterations
@@ -15973,6 +16017,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
+                    soul_mode_cfg=soul_mode_cfg,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
@@ -16029,6 +16074,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
+            if hasattr(agent, "configure_soul_mode"):
+                agent.configure_soul_mode(**soul_mode_cfg)
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []
@@ -16402,6 +16449,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _srn:
                     message = _srn + "\n\n" + message
 
+            _event_raw = event_raw_message if isinstance(event_raw_message, dict) else {}
+            _sender_id = ""
+            if source.platform == Platform.WHATSAPP:
+                _sender_id = str(_event_raw.get("senderId") or "").strip()
+            _sender_name = str(_event_raw.get("senderName") or "").strip()
+            _source_message_id = str(_event_raw.get("messageId") or "").strip()
+            _source_chat_id = str(_event_raw.get("chatId") or "").strip()
+            _message_timestamp = _coerce_gateway_timestamp(_event_raw.get("timestamp"))
+            agent._gateway_message_sender_id = _sender_id or None
+            agent._gateway_message_sender_name = _sender_name or None
+            agent._gateway_source_message_id = _source_message_id or None
+            agent._gateway_source_chat_id = _source_chat_id or None
+            agent._gateway_message_timestamp = _message_timestamp
+
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
@@ -16602,7 +16663,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     final_response = final_response + "\n" + "\n".join(unique_tags)
             
             # Auto-generate session title after first exchange (non-blocking)
-            if final_response and self._session_db:
+            if (
+                final_response
+                and self._session_db
+                and not self._soul_mode_config_is_active(soul_mode_cfg)
+            ):
                 try:
                     from agent.title_generator import maybe_auto_title
                     all_msgs = result_holder[0].get("messages", []) if result_holder[0] else []
@@ -17304,7 +17369,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 next_source = source
                 next_message = pending
                 next_message_id = None
+                next_raw_message = None
                 next_channel_prompt = None
+                next_persist_user_message = None
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
                     if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
@@ -17320,7 +17387,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                     if next_message is None:
                         return result
+                    if next_source.platform == Platform.WHATSAPP:
+                        raw_next_text = str(getattr(pending_event, "text", "") or "").strip()
+                        if raw_next_text:
+                            next_persist_user_message = raw_next_text
                     next_message_id = self._reply_anchor_for_event(pending_event)
+                    next_raw_message = (
+                        pending_event.raw_message
+                        if isinstance(getattr(pending_event, "raw_message", None), dict)
+                        else None
+                    )
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
 
                 # Restart typing indicator so the user sees activity while
@@ -17346,7 +17422,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     run_generation=run_generation,
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
+                    event_raw_message=next_raw_message,
                     channel_prompt=next_channel_prompt,
+                    persist_user_message=next_persist_user_message,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:

@@ -200,6 +200,49 @@ async def test_internal_event_does_not_trigger_pairing(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_internal_event_skips_soul_mode_memu_turn(monkeypatch, tmp_path):
+    """Hermes-internal notices must not become soul/memU user turns."""
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        """
+soul_mode:
+  agents:
+    main:
+      enabled: true
+      role: soul
+      soul_id: Siri
+      user_id: Test User
+      memu_base_url: http://127.0.0.1:8099
+      use_memu_turn: true
+""",
+        encoding="utf-8",
+    )
+
+    runner = GatewayRunner(GatewayConfig())
+    runner._run_agent = AsyncMock(return_value={"final_response": "should not run"})
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="123",
+        chat_type="dm",
+        user_id="system:watcher",
+        user_name="Watcher",
+    )
+    event = MessageEvent(
+        text="[IMPORTANT: Background process completed]",
+        source=source,
+        internal=True,
+    )
+
+    result = await runner._handle_message(event)
+
+    assert result is None
+    runner._run_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_notify_on_complete_preserves_user_identity(monkeypatch, tmp_path):
     """Synthetic completion event should carry user_id and user_name from the watcher."""
     import tools.process_registry as pr_module
