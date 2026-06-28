@@ -14,7 +14,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType, merge_pending_message_event
+from gateway.platforms.base import (
+    MessageEvent,
+    MessageType,
+    _is_duplicate_whatsapp_followup,
+    merge_pending_message_event,
+)
 from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
 from gateway.session import SessionSource, build_session_key
 
@@ -257,6 +262,62 @@ def test_merge_pending_message_event_promotes_document_followups_over_text():
     assert merged.text == "please review this"
     assert merged.media_urls == ["/tmp/report.pdf"]
     assert merged.media_types == ["application/pdf"]
+
+
+def test_merge_pending_message_event_replaces_whatsapp_followups():
+    pending = {}
+    source = SessionSource(
+        platform=Platform.WHATSAPP,
+        chat_id="12025550100@s.whatsapp.net",
+        chat_type="dm",
+        user_id="12025550100@s.whatsapp.net",
+    )
+    session_key = build_session_key(source)
+
+    first = MessageEvent(
+        text="first",
+        message_type=MessageType.PHOTO,
+        source=source,
+        media_urls=["/tmp/first.png"],
+        media_types=["image/png"],
+    )
+    second = MessageEvent(
+        text="second",
+        message_type=MessageType.PHOTO,
+        source=source,
+        media_urls=["/tmp/second.png"],
+        media_types=["image/png"],
+    )
+
+    merge_pending_message_event(pending, session_key, first, merge_text=True)
+    merge_pending_message_event(pending, session_key, second, merge_text=True)
+
+    assert pending[session_key] is second
+    assert second.media_urls == ["/tmp/second.png"]
+
+
+def test_duplicate_whatsapp_followup_matches_message_id_only_for_whatsapp():
+    whatsapp_source = SessionSource(
+        platform=Platform.WHATSAPP,
+        chat_id="12025550100@s.whatsapp.net",
+        chat_type="dm",
+        user_id="12025550100@s.whatsapp.net",
+    )
+    telegram_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        user_id="u1",
+    )
+
+    current = MessageEvent(text="one", source=whatsapp_source, message_id="wamid.1")
+    duplicate = MessageEvent(text="one", source=whatsapp_source, message_id="wamid.1")
+    distinct = MessageEvent(text="two", source=whatsapp_source, message_id="wamid.2")
+    telegram = MessageEvent(text="one", source=telegram_source, message_id="wamid.1")
+
+    assert _is_duplicate_whatsapp_followup(current, duplicate) is True
+    assert _is_duplicate_whatsapp_followup(current, distinct) is False
+    assert _is_duplicate_whatsapp_followup(current, telegram) is False
 
 
 @pytest.mark.asyncio
