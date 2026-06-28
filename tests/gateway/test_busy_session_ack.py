@@ -62,6 +62,7 @@ def _make_runner():
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._pending_messages = {}
+    runner._queued_events = {}
     runner._busy_ack_ts = {}
     runner._draining = False
     runner._busy_text_mode = "interrupt"
@@ -266,6 +267,47 @@ class TestBusySessionAck:
         adapter._send_with_retry.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_whatsapp_busy_text_queue_preserves_each_raw_message(self):
+        """WhatsApp follow-ups keep one event per message; no text debounce merge."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        runner._busy_text_mode = "queue"
+        adapter = _make_adapter("whatsapp")
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="chat@lid",
+            chat_type="private",
+            user_id="user@lid",
+        )
+        first = MessageEvent(
+            text="first",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="m1",
+            raw_message={"wal_seq": 1, "messageId": "m1"},
+        )
+        second = MessageEvent(
+            text="second",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="m2",
+            raw_message={"wal_seq": 2, "messageId": "m2"},
+        )
+        sk = build_session_key(source)
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner.adapters[Platform.WHATSAPP] = adapter
+
+        assert await runner._handle_active_session_busy_message(first, sk) is True
+        assert await runner._handle_active_session_busy_message(second, sk) is True
+
+        assert adapter._pending_messages[sk] is first
+        assert runner._queued_events[sk] == [second]
+        assert adapter._pending_messages[sk].raw_message["wal_seq"] == 1
+        assert runner._queued_events[sk][0].raw_message["wal_seq"] == 2
+
+    @pytest.mark.asyncio
     async def test_steer_mode_calls_agent_steer_no_interrupt_no_queue(self):
         """busy_input_mode='steer' injects via agent.steer() and skips queueing."""
         runner, sentinel = _make_runner()
@@ -312,13 +354,11 @@ class TestBusySessionAck:
         agent.steer = MagicMock(return_value=False)  # rejected
         runner._running_agents[sk] = agent
 
-        with patch("gateway.run.merge_pending_message_event") as mock_merge:
-            await runner._handle_active_session_busy_message(event, sk)
+        await runner._handle_active_session_busy_message(event, sk)
 
         agent.steer.assert_called_once()
         agent.interrupt.assert_not_called()
-        # Fell back to queue semantics: event was merged into pending messages
-        mock_merge.assert_called_once()
+        assert adapter._pending_messages[sk] is event
 
         # Ack uses queue-mode wording (not steer, not interrupt)
         call_kwargs = adapter._send_with_retry.call_args
@@ -340,11 +380,10 @@ class TestBusySessionAck:
         # Agent is still being set up — sentinel in place
         runner._running_agents[sk] = sentinel
 
-        with patch("gateway.run.merge_pending_message_event") as mock_merge:
-            await runner._handle_active_session_busy_message(event, sk)
+        await runner._handle_active_session_busy_message(event, sk)
 
         # Event was queued instead of steered
-        mock_merge.assert_called_once()
+        assert adapter._pending_messages[sk] is event
 
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")

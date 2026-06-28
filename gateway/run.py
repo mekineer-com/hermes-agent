@@ -4147,9 +4147,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         effective_mode = self._busy_input_mode
         busy_text_mode = getattr(self, "_busy_text_mode", "interrupt")
+        platform_value = str(getattr(event.source.platform, "value", event.source.platform) or "").lower()
         if (
             event.message_type == MessageType.TEXT
             and busy_text_mode == "queue"
+            and platform_value == "telegram"
             and effective_mode != "steer"
         ):
             return False
@@ -4201,12 +4203,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # successful steer — the text already landed inside the run and
         # must NOT also be replayed as a next-turn user message.
         if not steered:
-            merge_pending_message_event(
-                adapter._pending_messages,
-                session_key,
-                event,
-                merge_text=event.message_type == MessageType.TEXT,
-            )
+            if effective_mode == "queue" or platform_value == "whatsapp":
+                self._queue_or_replace_pending_event(session_key, event)
+            else:
+                merge_pending_message_event(
+                    adapter._pending_messages,
+                    session_key,
+                    event,
+                    merge_text=platform_value == "telegram",
+                )
 
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"

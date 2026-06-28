@@ -3572,6 +3572,7 @@ class BasePlatformAdapter(ABC):
         """Return True for normal text eligible for queue-mode debounce."""
         result = (
             getattr(self, "_busy_text_mode", "interrupt") == "queue"
+            and _platform_name(getattr(event.source, "platform", None)) == "telegram"
             and event.message_type == MessageType.TEXT
             and not getattr(event, "internal", False)
             and not event.is_command()
