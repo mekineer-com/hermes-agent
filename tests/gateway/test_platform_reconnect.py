@@ -58,6 +58,7 @@ def _make_runner():
     runner._exit_with_failure = False
     runner._exit_cleanly = False
     runner._failed_platforms = {}
+    runner._background_tasks = set()
     runner.adapters = {}
     runner.delivery_router = MagicMock()
     runner._running_agents = {}
@@ -177,6 +178,73 @@ class TestStartupFailureQueuing:
 
 class TestPlatformReconnectWatcher:
     """Test the _platform_reconnect_watcher background task."""
+
+    def test_whatsapp_outbound_watcher_starter_is_idempotent(self):
+        runner = _make_runner()
+        runner.adapters = {Platform.WHATSAPP: object()}
+        runner._resolve_active_whatsapp_soul_config = MagicMock(return_value={"enabled": True})
+
+        class _Task:
+            def __init__(self):
+                self.callbacks = []
+
+            def done(self):
+                return False
+
+            def add_done_callback(self, callback):
+                self.callbacks.append(callback)
+
+        created = []
+
+        def fake_create_task(coro):
+            coro.close()
+            task = _Task()
+            created.append(task)
+            return task
+
+        with patch("gateway.run.asyncio.create_task", side_effect=fake_create_task):
+            runner._ensure_whatsapp_memu_outbound_watcher()
+            runner._ensure_whatsapp_memu_outbound_watcher()
+
+        assert len(created) == 1
+        assert created[0] in runner._background_tasks
+
+    @pytest.mark.asyncio
+    async def test_whatsapp_reconnect_starts_outbound_watcher(self):
+        runner = _make_runner()
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
+        runner._ensure_whatsapp_memu_outbound_watcher = MagicMock()
+
+        platform_config = PlatformConfig(enabled=True, token="test")
+        runner._failed_platforms[Platform.WHATSAPP] = {
+            "config": platform_config,
+            "attempts": 1,
+            "next_retry": time.monotonic() - 1,
+        }
+
+        succeed_adapter = StubAdapter(platform=Platform.WHATSAPP, succeed=True)
+        real_sleep = asyncio.sleep
+
+        with patch.object(runner, "_create_adapter", return_value=succeed_adapter):
+            with patch("gateway.run.build_channel_directory", create=True):
+                async def run_one_iteration():
+                    runner._running = True
+                    call_count = 0
+
+                    async def fake_sleep(n):
+                        nonlocal call_count
+                        call_count += 1
+                        if call_count > 1:
+                            runner._running = False
+                        await real_sleep(0)
+
+                    with patch("asyncio.sleep", side_effect=fake_sleep):
+                        await runner._platform_reconnect_watcher()
+
+                await run_one_iteration()
+
+        assert Platform.WHATSAPP in runner.adapters
+        runner._ensure_whatsapp_memu_outbound_watcher.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_reconnect_succeeds_on_retry(self):
@@ -765,4 +833,3 @@ class TestPlatformSlashCommand:
         runner = _make_runner()
         out = await runner._handle_platform_command(self._make_event("/platform"))
         assert "Gateway platforms" in out
-

@@ -5735,10 +5735,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # idle case where the subagent finishes with no agent turn running.
         asyncio.create_task(self._async_delegation_watcher())
 
-        if Platform.WHATSAPP in self.adapters and self._resolve_active_whatsapp_soul_config() is not None:
-            task = asyncio.create_task(self._whatsapp_memu_outbound_watcher())
-            self._background_tasks.add(task)
-            task.add_done_callback(self._background_tasks.discard)
+        self._ensure_whatsapp_memu_outbound_watcher()
 
         logger.info("Press Ctrl+C to stop")
         
@@ -5760,6 +5757,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not cfg.get("use_memu_turn", True):
             return None
         return cfg
+
+    def _ensure_whatsapp_memu_outbound_watcher(self) -> None:
+        if Platform.WHATSAPP not in self.adapters:
+            return
+        if self._resolve_active_whatsapp_soul_config() is None:
+            return
+        task = getattr(self, "_whatsapp_memu_outbound_task", None)
+        if task is not None and not task.done():
+            return
+        task = asyncio.create_task(self._whatsapp_memu_outbound_watcher())
+        self._whatsapp_memu_outbound_task = task
+        self._background_tasks.add(task)
+
+        def _clear(done: asyncio.Task) -> None:
+            self._background_tasks.discard(done)
+            if getattr(self, "_whatsapp_memu_outbound_task", None) is done:
+                self._whatsapp_memu_outbound_task = None
+
+        task.add_done_callback(_clear)
 
     @staticmethod
     def _whatsapp_adapter_ready_for_outbounds(adapter: Any) -> bool:
@@ -6469,6 +6485,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             error_message=None,
                         )
                         self._refresh_adapter_runtime_status(adapter)
+                        self._ensure_whatsapp_memu_outbound_watcher()
                         logger.info("✓ %s reconnected successfully", platform.value)
 
                         # Rebuild channel directory with the new adapter
