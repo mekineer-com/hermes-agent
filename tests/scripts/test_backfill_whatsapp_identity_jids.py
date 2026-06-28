@@ -12,12 +12,12 @@ spec.loader.exec_module(backfill)
 
 def test_merge_policy_entries_preserves_metadata_from_all_aliases():
     merged = backfill.merge_policy_entries([
-        {"policy": "full", "memorize": True, "display_name": "Annie Gottlieb", "source": "phone"},
+        {"policy": "full", "memorize": True, "display_name": "Test Contact", "source": "phone"},
         {"policy": "listen_only", "memorize": False, "lid_jid": "270699038040215@lid", "source": "lid"},
     ])
 
     assert merged == {
-        "display_name": "Annie Gottlieb",
+        "display_name": "Test Contact",
         "source": ["phone", "lid"],
         "lid_jid": "270699038040215@lid",
         "policy": "listen_only",
@@ -28,7 +28,7 @@ def test_merge_policy_entries_preserves_metadata_from_all_aliases():
 def test_channel_directory_rekey_keeps_name_when_lid_entry_exists_first(tmp_path):
     session_dir = tmp_path / "whatsapp" / "session"
     session_dir.mkdir(parents=True)
-    (session_dir / "lid-mapping-19192593287.json").write_text(
+    (session_dir / "lid-mapping-12025550188.json").write_text(
         json.dumps("270699038040215"),
         encoding="utf-8",
     )
@@ -44,8 +44,8 @@ def test_channel_directory_rekey_keeps_name_when_lid_entry_exists_first(tmp_path
                         "thread_id": None,
                     },
                     {
-                        "id": "19192593287@s.whatsapp.net",
-                        "name": "Annie Gottlieb",
+                        "id": "12025550188@s.whatsapp.net",
+                        "name": "Test Contact",
                         "type": "dm",
                         "thread_id": None,
                     },
@@ -65,7 +65,7 @@ def test_channel_directory_rekey_keeps_name_when_lid_entry_exists_first(tmp_path
     assert data["platforms"]["whatsapp"] == [
         {
             "id": "270699038040215@lid",
-            "name": "Annie Gottlieb",
+            "name": "Test Contact",
             "type": "dm",
             "thread_id": None,
         }
@@ -75,14 +75,14 @@ def test_channel_directory_rekey_keeps_name_when_lid_entry_exists_first(tmp_path
 def test_channel_directory_rekey_uses_known_contact_name_for_lid_placeholder(tmp_path):
     session_dir = tmp_path / "whatsapp" / "session"
     session_dir.mkdir(parents=True)
-    (session_dir / "lid-mapping-19192593287.json").write_text(
+    (session_dir / "lid-mapping-12025550188.json").write_text(
         json.dumps("270699038040215"),
         encoding="utf-8",
     )
     (tmp_path / "whatsapp" / "known_contacts.json").write_text(
         json.dumps({
             "contacts": [
-                {"id": "19192593287@s.whatsapp.net", "display_name": "Annie Gottlieb"}
+                {"id": "12025550188@s.whatsapp.net", "display_name": "Test Contact"}
             ]
         }),
         encoding="utf-8",
@@ -114,7 +114,7 @@ def test_channel_directory_rekey_uses_known_contact_name_for_lid_placeholder(tmp
     assert data["platforms"]["whatsapp"] == [
         {
             "id": "270699038040215@lid",
-            "name": "Annie Gottlieb",
+            "name": "Test Contact",
             "type": "dm",
             "thread_id": None,
         }

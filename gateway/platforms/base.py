@@ -1718,6 +1718,7 @@ _RETRYABLE_ERROR_PATTERNS = (
 # reply), an ``EphemeralReply`` to opt the reply into auto-deletion, or
 # ``None`` when the response was already delivered (e.g. via streaming).
 MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply"]]]]
+ResponseDeliveryHandler = Callable[[MessageEvent, SendResult, str], Awaitable[None] | None]
 
 
 def resolve_channel_prompt(
@@ -1858,6 +1859,7 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+        self._response_delivery_handler: Optional[ResponseDeliveryHandler] = None
         # Optional hook (e.g. Telegram DM topic recovery) that rewrites
         # ``event.source.thread_id`` before session keying. Returns the
         # corrected thread_id or None to leave the source untouched.
@@ -2267,6 +2269,26 @@ class BasePlatformAdapter(ABC):
         an optional response string.
         """
         self._message_handler = handler
+
+    def set_response_delivery_handler(self, handler: Optional[ResponseDeliveryHandler]) -> None:
+        """Set a callback invoked after the main text response is delivered."""
+        self._response_delivery_handler = handler
+
+    async def _notify_response_delivery(
+        self,
+        event: MessageEvent,
+        result: SendResult,
+        content: str,
+    ) -> None:
+        handler = self._response_delivery_handler
+        if handler is None or result is None or not getattr(result, "success", False):
+            return
+        try:
+            maybe = handler(event, result, content)
+            if inspect.isawaitable(maybe):
+                await maybe
+        except Exception:
+            logger.debug("[%s] response delivery handler failed", self.name, exc_info=True)
 
     def set_topic_recovery_fn(
         self,
@@ -4363,6 +4385,7 @@ class BasePlatformAdapter(ABC):
                         metadata=_final_thread_metadata,
                     )
                     _record_delivery(result)
+                    await self._notify_response_delivery(event, result, text_content)
 
                     # Schedule auto-deletion of system-notice replies.
                     # Detached so the handler returns immediately; errors

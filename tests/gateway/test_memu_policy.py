@@ -128,7 +128,7 @@ def test_should_skip_soul_mode_auto_resume_uses_session_agent_name():
                             "enabled": True,
                             "role": "soul",
                             "soul_id": "Echo",
-                            "user_id": "marcos",
+                            "user_id": "test-user",
                         },
                     }
                 }

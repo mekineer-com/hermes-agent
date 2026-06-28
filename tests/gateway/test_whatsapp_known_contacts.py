@@ -13,13 +13,13 @@ def test_known_chats_does_not_use_group_last_sender_as_group_name(tmp_path):
                     "id": "120363424209497293@g.us",
                     "is_group": True,
                     "name": "",
-                    "last_sender_name": "Annie Gottlieb",
+                    "last_sender_name": "Test Contact",
                 },
                 {
-                    "id": "19192593287@s.whatsapp.net",
+                    "id": "12025550188@s.whatsapp.net",
                     "is_group": False,
                     "name": "",
-                    "last_sender_name": "Annie Gottlieb",
+                    "last_sender_name": "Test Contact",
                 },
             ]
         }),
@@ -29,4 +29,4 @@ def test_known_chats_does_not_use_group_last_sender_as_group_name(tmp_path):
     names = load_known_whatsapp_names(tmp_path)
 
     assert "120363424209497293@g.us" not in names
-    assert names["19192593287@s.whatsapp.net"] == "Annie Gottlieb"
+    assert names["12025550188@s.whatsapp.net"] == "Test Contact"

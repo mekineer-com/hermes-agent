@@ -255,14 +255,14 @@ class TestBuildFromSessions:
         })
         session_dir = tmp_path / "whatsapp" / "session"
         session_dir.mkdir(parents=True)
-        (session_dir / "lid-mapping-19192593287.json").write_text(
+        (session_dir / "lid-mapping-12025550188.json").write_text(
             json.dumps("270699038040215"),
             encoding="utf-8",
         )
         (tmp_path / "whatsapp" / "known_contacts.json").write_text(
             json.dumps({
                 "contacts": [
-                    {"id": "19192593287@s.whatsapp.net", "display_name": "Annie Gottlieb"}
+                    {"id": "12025550188@s.whatsapp.net", "display_name": "Test Contact"}
                 ]
             }),
             encoding="utf-8",
@@ -273,7 +273,7 @@ class TestBuildFromSessions:
 
         assert entries == [{
             "id": "270699038040215@lid",
-            "name": "Annie Gottlieb",
+            "name": "Test Contact",
             "type": "dm",
             "thread_id": None,
         }]

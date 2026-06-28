@@ -35,7 +35,7 @@ def test_memu_turn_builds_expected_payload(monkeypatch):
 
     out = client.memu_turn(
         conversation_id="telegram:123",
-        user_id="marcos",
+        user_id="test-user",
         soul_id="Echo",
         message="hello",
         history=[{"role": "user", "content": "prior", "timestamp": 1700000000}],
@@ -45,7 +45,7 @@ def test_memu_turn_builds_expected_payload(monkeypatch):
     assert captured["path"] == "/integration/memu/turn"
     payload = captured["payload"]
     assert payload["conversation_id"] == "telegram:123"
-    assert payload["user_id"] == "marcos"
+    assert payload["user_id"] == "test-user"
     assert payload["soul_id"] == "Echo"
     assert payload["message"] == "hello"
     assert payload["history"][0]["content"] == "prior"
@@ -96,7 +96,7 @@ def test_memu_turn_does_not_forward_timezone(monkeypatch):
     client.memu_turn(
         conversation_id="whatsapp:dm:19999999999",
         user_id="Test User",
-        soul_id="Siri",
+        soul_id="Echo",
         message="hi",
     )
 
@@ -122,7 +122,7 @@ def test_memu_turn_does_not_force_fill_user_name_from_history_user_name(monkeypa
         soul_id="Echo",
         message="hello",
         history=[{"role": "user", "content": "prior"}],
-        history_user_name="Liz Kalverda",
+        history_user_name="Test Contact",
     )
 
     assert out["ok"] is True
@@ -141,7 +141,7 @@ def test_normalize_history_for_memu_still_fills_assistant_name_from_soul_name():
 def test_normalize_history_for_memu_preserves_sender_name():
     out = normalize_history_for_memu(
         [{"role": "user", "content": "hello", "sender_name": "Test Contact"}],
-        soul_name="Siri",
+        soul_name="Echo",
     )
     assert out == [{"role": "user", "content": "hello", "name": "Test Contact"}]
 
@@ -161,10 +161,10 @@ def test_memu_turn_passes_user_name_for_current_message_speaker(monkeypatch):
         user_id="Test User",
         soul_id="Echo",
         message="hi",
-        user_name="Liz Kalverda",
+        user_name="Test Contact",
     )
 
-    assert captured["payload"]["user_name"] == "Liz Kalverda"
+    assert captured["payload"]["user_name"] == "Test Contact"
 
 
 def test_memu_turn_falls_back_to_history_user_name_when_user_name_missing(monkeypatch):
@@ -200,16 +200,16 @@ def test_claim_whatsapp_outbounds_builds_expected_payload(monkeypatch):
     monkeypatch.setattr(client, "_post", _fake_post)
 
     out = client.claim_whatsapp_outbounds(
-        user_id="marcos",
-        soul_id="Siri",
+        user_id="test-user",
+        soul_id="Echo",
         claimed_by="hermes-test",
         limit=3,
     )
 
     assert out == [{"id": "waout_1"}]
     assert captured["path"] == "/integration/whatsapp/outbounds/claim"
-    assert captured["payload"]["user_id"] == "marcos"
-    assert captured["payload"]["soul_id"] == "Siri"
+    assert captured["payload"]["user_id"] == "test-user"
+    assert captured["payload"]["soul_id"] == "Echo"
     assert captured["payload"]["claimed_by"] == "hermes-test"
     assert captured["payload"]["limit"] == 3
 
@@ -226,8 +226,8 @@ def test_mark_whatsapp_outbound_builds_expected_payload(monkeypatch):
     monkeypatch.setattr(client, "_post", _fake_post)
 
     out = client.mark_whatsapp_outbound(
-        user_id="marcos",
-        soul_id="Siri",
+        user_id="test-user",
+        soul_id="Echo",
         outbound_id="waout_1",
         status="sent",
         provider_message_id="wamid.1",

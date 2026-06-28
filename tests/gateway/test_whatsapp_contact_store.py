@@ -96,13 +96,13 @@ def test_contact_store_display_name_ignores_numeric_placeholder(tmp_path, monkey
     store = WhatsAppContactStore(store_path=store_path, session_dir=session_dir)
 
     store.update_from_event({"chatId": "999999999999999@lid", "chatName": "999999999999999"})
-    store.update_from_event({"chatId": "999999999999999@lid", "chatName": "Annie Gottlieb"})
+    store.update_from_event({"chatId": "999999999999999@lid", "chatName": "Test Contact"})
 
     data = json.loads(store_path.read_text(encoding="utf-8"))
     record = data["contacts"]["999999999999999@lid"]
     assert record["lid_jid"] == "999999999999999@lid"
-    assert record["display_name"] == "Annie Gottlieb"
-    assert record["observed_names"] == ["Annie Gottlieb"]
+    assert record["display_name"] == "Test Contact"
+    assert record["observed_names"] == ["Test Contact"]
 
 
 def test_contact_store_refreshes_old_records_on_load(tmp_path, monkeypatch):
@@ -121,7 +121,7 @@ def test_contact_store_refreshes_old_records_on_load(tmp_path, monkeypatch):
                         "15551234567@s.whatsapp.net",
                         "999999999999999@lid",
                     ],
-                    "display": {"chat_name": "Annie Gottlieb"},
+                    "display": {"chat_name": "Test Contact"},
                     "evidence": [],
                 }
             },
@@ -130,7 +130,7 @@ def test_contact_store_refreshes_old_records_on_load(tmp_path, monkeypatch):
     )
     store = WhatsAppContactStore(store_path=store_path, session_dir=session_dir)
 
-    store.update_from_event({"chatId": "999999999999999@lid", "chatName": "Annie Gottlieb"})
+    store.update_from_event({"chatId": "999999999999999@lid", "chatName": "Test Contact"})
 
     data = json.loads(store_path.read_text(encoding="utf-8"))
     record = data["contacts"]["999999999999999@lid"]
@@ -138,8 +138,8 @@ def test_contact_store_refreshes_old_records_on_load(tmp_path, monkeypatch):
     assert record["lid_jid"] == "999999999999999@lid"
     assert record["phone_jid"] == "15551234567@s.whatsapp.net"
     assert record["bare_phone"] == "15551234567"
-    assert record["display_name"] == "Annie Gottlieb"
-    assert record["observed_names"] == ["Annie Gottlieb"]
+    assert record["display_name"] == "Test Contact"
+    assert record["observed_names"] == ["Test Contact"]
 
 
 def test_contact_store_phone_event_does_not_downgrade_lid_preferred_record(tmp_path, monkeypatch):
@@ -158,7 +158,7 @@ def test_contact_store_phone_event_does_not_downgrade_lid_preferred_record(tmp_p
                         "15551234567@s.whatsapp.net",
                         "999999999999999@lid",
                     ],
-                    "display": {"chat_name": "Annie Gottlieb"},
+                    "display": {"chat_name": "Test Contact"},
                     "evidence": [],
                 }
             },
@@ -167,7 +167,7 @@ def test_contact_store_phone_event_does_not_downgrade_lid_preferred_record(tmp_p
     )
     store = WhatsAppContactStore(store_path=store_path, session_dir=session_dir)
 
-    store.update_from_event({"chatId": "15551234567@s.whatsapp.net", "chatName": "Annie Gottlieb"})
+    store.update_from_event({"chatId": "15551234567@s.whatsapp.net", "chatName": "Test Contact"})
 
     data = json.loads(store_path.read_text(encoding="utf-8"))
     assert list(data["contacts"]) == ["999999999999999@lid"]
@@ -190,7 +190,7 @@ def test_contact_store_saves_refreshed_columns_on_load(tmp_path, monkeypatch):
                 "999999999999999@lid": {
                     "preferred_jid": "999999999999999@lid",
                     "aliases": ["999999999999999@lid"],
-                    "display": {"chat_name": "Annie Gottlieb"},
+                    "display": {"chat_name": "Test Contact"},
                     "evidence": [],
                 }
             },
@@ -204,4 +204,4 @@ def test_contact_store_saves_refreshed_columns_on_load(tmp_path, monkeypatch):
     record = data["contacts"]["999999999999999@lid"]
     assert record["id"] == "999999999999999@lid"
     assert record["lid_jid"] == "999999999999999@lid"
-    assert record["display_name"] == "Annie Gottlieb"
+    assert record["display_name"] == "Test Contact"
