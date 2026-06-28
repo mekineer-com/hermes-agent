@@ -1772,6 +1772,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         chat_type=chat_type,
                         user_id=source_user_id,
                         user_name=source_user_name,
+                        message_id=str(data.get("messageId") or "").strip() or None,
                     ),
                     raw_message=raw_message,
                     message_id=str(data.get("messageId") or "").strip() or None,
@@ -1814,6 +1815,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 chat_type=chat_type,
                 user_id=source_user_id,
                 user_name=source_user_name,
+                message_id=str(data.get("messageId") or "").strip() or None,
             )
             
             # Download media URLs to the local cache so agent tools

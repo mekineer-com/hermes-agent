@@ -92,6 +92,28 @@ def _live_event():
     return SimpleNamespace(raw_message={"deliveryMode": "live"}, message_type=None)
 
 
+@pytest.mark.asyncio
+async def test_build_message_event_carries_bridge_message_id_to_source():
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={"session_name": "test"}))
+
+    event = await adapter._build_message_event(
+        {
+            "deliveryMode": "live",
+            "chatId": "chat123",
+            "messageId": "wamid.123",
+            "senderId": "chat123",
+            "senderName": "Test Contact",
+            "body": "hi",
+        }
+    )
+
+    assert event is not None
+    assert event.message_id == "wamid.123"
+    assert event.source.message_id == "wamid.123"
+
+
 def _mock_aiohttp(status=200, json_data=None, json_side_effect=None):
     """Build a mock ``aiohttp.ClientSession`` returning a fixed response."""
     mock_resp = MagicMock()
