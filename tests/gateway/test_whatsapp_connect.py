@@ -785,6 +785,15 @@ class TestDurableBridgeAck:
         adapter._gateway_wal.mark_processed.assert_called_once_with(12)
 
     @pytest.mark.asyncio
+    async def test_failed_processing_does_not_advance_wal_offset(self):
+        adapter = _make_adapter()
+        event = SimpleNamespace(raw_message={"wal_seq": 12})
+
+        await adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
+
+        adapter._gateway_wal.mark_processed.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_replay_gateway_wal_raises_on_invalid_row_payload(self):
         adapter = _make_adapter()
         wal = MagicMock()

@@ -7166,6 +7166,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         7. Return response
         """
         source = event.source
+        _raw_message = (
+            event.raw_message
+            if isinstance(getattr(event, "raw_message", None), dict)
+            else {}
+        )
+        if source.platform == Platform.WHATSAPP and self._is_whatsapp_revoke_event(_raw_message):
+            self._apply_whatsapp_revoke(source, _raw_message)
+            return None
+        if source.platform == Platform.WHATSAPP and self._is_whatsapp_persist_only_event(_raw_message):
+            self._persist_whatsapp_history_event(event)
+            return None
+        if source.platform == Platform.WHATSAPP and self._is_duplicate_whatsapp_source_message(_raw_message):
+            return None
 
         if (
             getattr(self, "_startup_restore_in_progress", False)
@@ -9717,6 +9730,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
             ts = time.time()  # Unix epoch float — consistent with DB storage
+            _raw_message = (
+                event.raw_message
+                if isinstance(getattr(event, "raw_message", None), dict)
+                else {}
+            )
+            _sender_id = str(_raw_message.get("senderId") or "").strip() or None
+            _sender_name = str(_raw_message.get("senderName") or "").strip() or None
+            _source_chat_id = str(_raw_message.get("chatId") or "").strip() or None
+            _source_message_id = str(_raw_message.get("messageId") or "").strip() or None
+            _message_timestamp = _coerce_gateway_timestamp(_raw_message.get("timestamp"))
+            _user_sender_fields = (
+                {"sender_id": _sender_id, "sender_name": _sender_name}
+                if source.platform == Platform.WHATSAPP and (_sender_id or _sender_name)
+                else {}
+            )
+            _user_source_fields = (
+                {"source_chat_id": _source_chat_id, "source_message_id": _source_message_id}
+                if source.platform == Platform.WHATSAPP and _source_chat_id and _source_message_id
+                else {}
+            )
+            _user_timestamp = (
+                _message_timestamp
+                if source.platform == Platform.WHATSAPP and _message_timestamp is not None
+                else ts
+            )
+            _processed_source_keys: set[tuple[str, str]] = set()
             
             # If this is a fresh session (no history), write the full tool
             # definitions as the first entry so the transcript is self-describing
@@ -9762,8 +9801,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "timestamp": (
                         persist_user_timestamp
                         if persist_user_timestamp is not None
-                        else ts
+                        else _user_timestamp
                     ),
+                    **_user_sender_fields,
+                    **_user_source_fields,
                 }
                 if event.message_id:
                     _user_entry["message_id"] = str(event.message_id)
@@ -9773,6 +9814,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     skip_db=agent_persisted,
                 )
             else:
+                if source.platform == Platform.WHATSAPP and _source_chat_id and _source_message_id:
+                    _processed_source_keys.add((_source_chat_id, _source_message_id))
                 history_len = agent_result.get("history_offset", len(history))
                 new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []
 
@@ -9788,8 +9831,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "timestamp": (
                             persist_user_timestamp
                             if persist_user_timestamp is not None
-                            else ts
+                            else _user_timestamp
                         ),
+                        **_user_sender_fields,
+                        **_user_source_fields,
                     }
                     if event.message_id:
                         _user_entry["message_id"] = str(event.message_id)
@@ -9836,6 +9881,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
+            if (
+                not is_context_overflow_failure
+                and _user_sender_fields
+                and self._session_db
+                and session_entry
+                and session_entry.session_id
+            ):
+                try:
+                    self._session_db.set_latest_user_sender(
+                        session_entry.session_id,
+                        sender_id=_sender_id,
+                        sender_name=_sender_name,
+                    )
+                except Exception as e:
+                    logger.debug(
+                        "Failed to stamp latest user sender for session %s: %s",
+                        session_entry.session_id,
+                        e,
+                    )
+            if source.platform == Platform.WHATSAPP and _processed_source_keys:
+                for _processed_chat_id, _processed_message_id in _processed_source_keys:
+                    self._mark_whatsapp_source_message_processed(
+                        source_chat_id=_processed_chat_id,
+                        source_message_id=_processed_message_id,
+                    )
 
             # Intentional silence is a delivery decision, not a transcript
             # mutation.  The agent's [SILENT]/NO_REPLY assistant turn above is
@@ -10331,6 +10401,198 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from hermes_cli.blueprint_cmd import BlueprintCommandResult
 
             return BlueprintCommandResult(f"Cron blueprint command failed: {e}")
+
+    def _apply_whatsapp_revoke(self, source: SessionSource, raw: dict[str, Any]) -> None:
+        source_chat_id = str(raw.get("chatId") or "").strip()
+        source_message_id = str(raw.get("messageId") or "").strip()
+        if not source_chat_id or not source_message_id:
+            return
+
+        deleted = 0
+        if self._session_db:
+            try:
+                deleted = int(
+                    self._session_db.delete_message_by_source_key(
+                        source_chat_id=source_chat_id,
+                        source_message_id=source_message_id,
+                    )
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to apply WhatsApp revoke in state.db chat=%s message=%s: %s",
+                    source_chat_id,
+                    source_message_id,
+                    exc,
+                )
+
+        try:
+            self.session_store._ensure_loaded()
+            session_key = self._session_key_for_source(source)
+            entry = self.session_store._entries.get(session_key)
+            if entry:
+                history = self.session_store.load_transcript(entry.session_id)
+                filtered = [
+                    msg
+                    for msg in history
+                    if not (
+                        str(msg.get("source_chat_id") or "").strip() == source_chat_id
+                        and str(msg.get("source_message_id") or "").strip() == source_message_id
+                    )
+                ]
+                if len(filtered) != len(history):
+                    self.session_store.rewrite_transcript(entry.session_id, filtered)
+        except Exception:
+            logger.error(
+                "Failed to apply WhatsApp revoke in transcript chat=%s message=%s",
+                source_chat_id,
+                source_message_id,
+                exc_info=True,
+            )
+
+        logger.info(
+            "Applied WhatsApp revoke chat=%s message=%s deleted_rows=%d",
+            source_chat_id,
+            source_message_id,
+            deleted,
+        )
+
+    @staticmethod
+    def _is_whatsapp_revoke_event(raw: dict[str, Any]) -> bool:
+        from gateway.platforms.whatsapp import WhatsAppAdapter
+
+        return WhatsAppAdapter._bridge_delivery_mode(raw) == "revoke"
+
+    @staticmethod
+    def _is_whatsapp_persist_only_event(raw: dict[str, Any]) -> bool:
+        from gateway.platforms.whatsapp import WhatsAppAdapter
+
+        return WhatsAppAdapter._bridge_delivery_mode(raw) != "live"
+
+    def _mark_whatsapp_source_message_processed(
+        self,
+        *,
+        source_chat_id: str,
+        source_message_id: str,
+        processed_at: Any = None,
+    ) -> None:
+        session_db = getattr(self, "_session_db", None)
+        if not session_db:
+            return
+        chat_key = str(source_chat_id or "").strip()
+        message_key = str(source_message_id or "").strip()
+        if not chat_key or not message_key:
+            return
+        session_db.mark_message_source_key_processed(
+            source_chat_id=chat_key,
+            source_message_id=message_key,
+            processed_at=processed_at,
+        )
+
+    def _is_duplicate_whatsapp_source_message(self, raw: dict[str, Any]) -> bool:
+        session_db = getattr(self, "_session_db", None)
+        if not session_db:
+            return False
+        source_chat_id = str(raw.get("chatId") or "").strip()
+        source_message_id = str(raw.get("messageId") or "").strip()
+        if not source_chat_id or not source_message_id:
+            return False
+        try:
+            handled = session_db.message_source_key_is_processed(
+                source_chat_id=source_chat_id,
+                source_message_id=source_message_id,
+            )
+            if not handled:
+                handled = session_db.message_source_key_has_response(
+                    source_chat_id=source_chat_id,
+                    source_message_id=source_message_id,
+                )
+                if handled:
+                    self._mark_whatsapp_source_message_processed(
+                        source_chat_id=source_chat_id,
+                        source_message_id=source_message_id,
+                    )
+        except Exception:
+            logger.error("Failed to check WhatsApp duplicate source key", exc_info=True)
+            return False
+        if handled:
+            logger.info(
+                "Skipped already-answered WhatsApp source message chat=%s message=%s",
+                source_chat_id,
+                source_message_id,
+            )
+        return handled
+
+    def _resolve_whatsapp_history_soul(self, source: SessionSource) -> dict[str, Any]:
+        try:
+            session_key = self._session_key_for_source(source)
+            return self._resolve_soul_mode_agent_config(_load_gateway_config(), session_key)
+        except Exception:
+            logger.debug("Failed to resolve WhatsApp history soul config", exc_info=True)
+            return {}
+
+    def _persist_whatsapp_history_event(self, event: MessageEvent) -> None:
+        if not self._session_db:
+            raise RuntimeError("Cannot persist WhatsApp history without SessionDB")
+        raw = event.raw_message if isinstance(getattr(event, "raw_message", None), dict) else {}
+        source = event.source
+        source_chat_id = str(raw.get("chatId") or "").strip()
+        source_message_id = str(raw.get("messageId") or "").strip()
+        if not source_chat_id or not source_message_id:
+            raise ValueError("WhatsApp history event missing source key")
+
+        content = str(event.text or "").strip()
+        if not content and not raw.get("hasMedia"):
+            return
+
+        message_timestamp = _coerce_gateway_timestamp(raw.get("timestamp"))
+        if message_timestamp is None:
+            logger.debug(
+                "Skipping WhatsApp history with missing/invalid timestamp chat=%s message=%s",
+                source_chat_id,
+                source_message_id,
+            )
+            return
+
+        soul_cfg = self._resolve_whatsapp_history_soul(source)
+        soul_id = str(soul_cfg.get("soul_id") or "").strip() if soul_cfg.get("enabled") else ""
+        if soul_id:
+            active_since = self._session_db.get_soul_active_since(soul_id)
+            if active_since is not None and message_timestamp < active_since:
+                logger.debug(
+                    "Skipping WhatsApp history before active_since soul=%s chat=%s message=%s",
+                    soul_id,
+                    source_chat_id,
+                    source_message_id,
+                )
+                return
+
+        role_hint = str(raw.get("speakerRoleHint") or "").strip().lower()
+        role = "assistant" if role_hint == "assistant" else "user"
+        if role == "assistant":
+            speaker_name = soul_id or str(raw.get("speakerNameHint") or raw.get("senderName") or "").strip()
+            sender_name = speaker_name or None
+            sender_id = f"soul:{speaker_name}" if speaker_name else None
+        else:
+            sender_id = str(raw.get("senderId") or "").strip() or None
+            sender_name = str(raw.get("senderName") or "").strip() or None
+
+        session_entry = self.session_store.get_or_create_session(source)
+        self._session_db.append_message(
+            session_id=session_entry.session_id,
+            role=role,
+            content=content,
+            sender_id=sender_id,
+            sender_name=sender_name,
+            source_chat_id=source_chat_id,
+            source_message_id=source_message_id,
+            timestamp=message_timestamp,
+        )
+        if role == "user" and (sender_id or sender_name):
+            self._session_db.set_latest_user_sender(
+                session_entry.session_id,
+                sender_id=sender_id,
+                sender_name=sender_name,
+            )
 
     # ────────────────────────────────────────────────────────────────
     # /goal — persistent cross-turn goals (Ralph-style loop)

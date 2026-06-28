@@ -236,6 +236,48 @@ def test_whatsapp_web_source_stop_clears_pidfile(tmp_path, monkeypatch):
     assert not status_path.with_name("web_source.pid").exists()
 
 
+def test_whatsapp_web_source_exit_restarts(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    script = tmp_path / "source-daemon.js"
+    script.write_text("'use strict';\n", encoding="utf-8")
+    (tmp_path / "node_modules").mkdir()
+    status_path = tmp_path / "source-status.json"
+
+    class ExitingProcess:
+        def __init__(self, pid):
+            self.pid = pid
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+    proc1 = ExitingProcess(1)
+    proc2 = ExitingProcess(2)
+    adapter = WhatsAppAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "web_source_enabled": True,
+                "web_source_script": str(script),
+                "web_source_status": str(status_path),
+                "web_source_auth": str(tmp_path / "auth"),
+            },
+        )
+    )
+    adapter._running = True
+    adapter._http_session = object()
+    adapter._bridge_health = {"status": "connected", "mode": "bot"}
+
+    with patch("subprocess.Popen", side_effect=[proc1, proc2]) as popen:
+        assert adapter._start_web_source() is True
+        proc1.returncode = 1
+        adapter._check_web_source_exit()
+
+    assert popen.call_count == 2
+    assert adapter._web_source_process is proc2
+    assert status_path.with_name("web_source.pid").read_text(encoding="utf-8") == "2"
+
+
 def test_whatsapp_web_source_command_uses_soul_active_since(tmp_path, monkeypatch):
     hermes_home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))

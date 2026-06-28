@@ -11,7 +11,7 @@ Batch delays are read from ``config.extra`` (config.yaml), not env vars.
 import asyncio
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.whatsapp import WhatsAppAdapter
 from gateway.session import SessionSource
 
@@ -103,7 +103,7 @@ def test_batched_text_marks_every_wal_row_processed():
     completed = []
 
     async def _capture(event):
-        await adapter.on_processing_complete(event, None)
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
 
     adapter.handle_message = _capture
     adapter._gateway_wal.mark_processed = completed.append

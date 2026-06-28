@@ -1082,8 +1082,25 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     def _check_web_source_exit(self) -> None:
         if not self._web_source_enabled or not self._web_source_process:
             return
-        if self._web_source_process.poll() is not None:
+        returncode = self._web_source_process.poll()
+        if returncode is not None:
+            self._web_source_error = (
+                f"WhatsApp web-source exited unexpectedly with code {returncode}; restarting"
+            )
+            logger.warning("[%s] %s", self.name, self._web_source_error)
+            self._web_source_process = None
+            try:
+                self._web_source_pid_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if self._web_source_log_fh:
+                try:
+                    self._web_source_log_fh.close()
+                except Exception:
+                    pass
+                self._web_source_log_fh = None
             self._write_whatsapp_runtime_status(force=True)
+            self._start_web_source()
             return
         status = self._read_web_source_status()
         if (
@@ -1941,6 +1958,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             logger.warning("Failed to update WhatsApp contact store", exc_info=True)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        if outcome != ProcessingOutcome.SUCCESS:
+            return
         raw = event.raw_message if isinstance(event.raw_message, dict) else {}
         wal_seqs = raw.get("_wal_seqs") or [raw.get("wal_seq")]
         if any(wal_seq is None for wal_seq in wal_seqs):
