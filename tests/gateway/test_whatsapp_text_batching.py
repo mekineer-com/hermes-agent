@@ -9,6 +9,7 @@ Batch delays are read from ``config.extra`` (config.yaml), not env vars.
 """
 
 import asyncio
+from types import SimpleNamespace
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
@@ -30,7 +31,11 @@ def _event(text, wal_seq=None):
         user_id="user1",
         user_name="tester",
     )
-    raw_message = {"deliveryMode": "live"}
+    raw_message = {
+        "deliveryMode": "live",
+        "chatId": "chat123",
+        "messageId": f"msg-{wal_seq if wal_seq is not None else text}",
+    }
     if wal_seq is not None:
         raw_message["wal_seq"] = wal_seq
     return MessageEvent(
@@ -101,12 +106,18 @@ def test_batched_text_marks_every_wal_row_processed():
         text_batch_split_delay_seconds=0.05,
     )
     completed = []
+    processed = []
 
     async def _capture(event):
         await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
 
     adapter.handle_message = _capture
     adapter._gateway_wal.mark_processed = completed.append
+    adapter._session_store = SimpleNamespace(
+        _db=SimpleNamespace(
+            mark_message_source_key_processed=lambda **kwargs: processed.append(kwargs)
+        )
+    )
 
     async def _drive():
         adapter._enqueue_text_event(_event("one", wal_seq=10))
@@ -116,6 +127,11 @@ def test_batched_text_marks_every_wal_row_processed():
 
     asyncio.run(_drive())
     assert completed == [10, 11, 12]
+    assert processed == [
+        {"source_chat_id": "chat123", "source_message_id": "msg-10"},
+        {"source_chat_id": "chat123", "source_message_id": "msg-11"},
+        {"source_chat_id": "chat123", "source_message_id": "msg-12"},
+    ]
 
 
 def test_lone_message_dispatched_alone():

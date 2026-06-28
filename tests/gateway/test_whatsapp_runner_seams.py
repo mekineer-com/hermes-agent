@@ -40,6 +40,22 @@ async def test_whatsapp_persist_only_event_does_not_reach_agent_path():
 
 
 @pytest.mark.asyncio
+async def test_whatsapp_bridge_event_without_delivery_mode_does_not_reach_agent_path():
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._persist_whatsapp_history_event = MagicMock()
+    runner._is_duplicate_whatsapp_source_message = MagicMock()
+
+    result = await GatewayRunner._handle_message(
+        runner,
+        _event({"chatId": "c", "messageId": "m"}),
+    )
+
+    assert result is None
+    runner._persist_whatsapp_history_event.assert_called_once()
+    runner._is_duplicate_whatsapp_source_message.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_whatsapp_revoke_event_does_not_reach_agent_path():
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._apply_whatsapp_revoke = MagicMock()

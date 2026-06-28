@@ -1697,6 +1697,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     *(existing.raw_message.get("_wal_seqs") or [existing.raw_message.get("wal_seq")]),
                     event.raw_message.get("wal_seq"),
                 ]
+                existing.raw_message["_source_keys"] = [
+                    *(existing.raw_message.get("_source_keys") or [(
+                        existing.raw_message.get("chatId"),
+                        existing.raw_message.get("messageId"),
+                    )]),
+                    (event.raw_message.get("chatId"), event.raw_message.get("messageId")),
+                ]
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
@@ -1966,3 +1973,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             raise ValueError("WhatsApp WAL invariant break: missing wal_seq on processing completion")
         for wal_seq in wal_seqs:
             self._gateway_wal.mark_processed(wal_seq)
+        session_db = getattr(getattr(self, "_session_store", None), "_db", None)
+        if not session_db:
+            return
+        source_keys = raw.get("_source_keys") or [(raw.get("chatId"), raw.get("messageId"))]
+        for chat_id, message_id in source_keys:
+            chat_key = str(chat_id or "").strip()
+            message_key = str(message_id or "").strip()
+            if chat_key and message_key:
+                session_db.mark_message_source_key_processed(
+                    source_chat_id=chat_key,
+                    source_message_id=message_key,
+                )

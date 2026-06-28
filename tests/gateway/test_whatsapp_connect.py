@@ -778,20 +778,47 @@ class TestDurableBridgeAck:
     @pytest.mark.asyncio
     async def test_on_processing_complete_advances_wal_offset(self):
         adapter = _make_adapter()
-        event = SimpleNamespace(raw_message={"wal_seq": 12})
+        processed = []
+        adapter._session_store = SimpleNamespace(
+            _db=SimpleNamespace(
+                mark_message_source_key_processed=lambda **kwargs: processed.append(kwargs)
+            )
+        )
+        event = SimpleNamespace(
+            raw_message={
+                "wal_seq": 12,
+                "chatId": "12025550199@lid",
+                "messageId": "wamid.12",
+            }
+        )
 
         await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
 
         adapter._gateway_wal.mark_processed.assert_called_once_with(12)
+        assert processed == [
+            {
+                "source_chat_id": "12025550199@lid",
+                "source_message_id": "wamid.12",
+            }
+        ]
 
     @pytest.mark.asyncio
     async def test_failed_processing_does_not_advance_wal_offset(self):
         adapter = _make_adapter()
-        event = SimpleNamespace(raw_message={"wal_seq": 12})
+        db = SimpleNamespace(mark_message_source_key_processed=MagicMock())
+        adapter._session_store = SimpleNamespace(_db=db)
+        event = SimpleNamespace(
+            raw_message={
+                "wal_seq": 12,
+                "chatId": "12025550199@lid",
+                "messageId": "wamid.12",
+            }
+        )
 
         await adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
 
         adapter._gateway_wal.mark_processed.assert_not_called()
+        db.mark_message_source_key_processed.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_replay_gateway_wal_raises_on_invalid_row_payload(self):

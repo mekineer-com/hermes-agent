@@ -7171,13 +7171,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if isinstance(getattr(event, "raw_message", None), dict)
             else {}
         )
-        if source.platform == Platform.WHATSAPP and self._is_whatsapp_revoke_event(_raw_message):
+        _is_whatsapp_bridge_event = source.platform == Platform.WHATSAPP and (
+            bool(str(_raw_message.get("deliveryMode") or "").strip())
+            or str(_raw_message.get("eventType") or "").strip().lower() == "revoke"
+            or (
+                bool(str(_raw_message.get("chatId") or "").strip())
+                and bool(str(_raw_message.get("messageId") or "").strip())
+            )
+        )
+        if _is_whatsapp_bridge_event and self._is_whatsapp_revoke_event(_raw_message):
             self._apply_whatsapp_revoke(source, _raw_message)
             return None
-        if source.platform == Platform.WHATSAPP and self._is_whatsapp_persist_only_event(_raw_message):
+        if _is_whatsapp_bridge_event and self._is_whatsapp_persist_only_event(_raw_message):
             self._persist_whatsapp_history_event(event)
             return None
-        if source.platform == Platform.WHATSAPP and self._is_duplicate_whatsapp_source_message(_raw_message):
+        if _is_whatsapp_bridge_event and self._is_duplicate_whatsapp_source_message(_raw_message):
             return None
 
         if (
@@ -9755,7 +9763,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if source.platform == Platform.WHATSAPP and _message_timestamp is not None
                 else ts
             )
-            _processed_source_keys: set[tuple[str, str]] = set()
             
             # If this is a fresh session (no history), write the full tool
             # definitions as the first entry so the transcript is self-describing
@@ -9814,8 +9821,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     skip_db=agent_persisted,
                 )
             else:
-                if source.platform == Platform.WHATSAPP and _source_chat_id and _source_message_id:
-                    _processed_source_keys.add((_source_chat_id, _source_message_id))
                 history_len = agent_result.get("history_offset", len(history))
                 new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []
 
@@ -9899,12 +9904,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "Failed to stamp latest user sender for session %s: %s",
                         session_entry.session_id,
                         e,
-                    )
-            if source.platform == Platform.WHATSAPP and _processed_source_keys:
-                for _processed_chat_id, _processed_message_id in _processed_source_keys:
-                    self._mark_whatsapp_source_message_processed(
-                        source_chat_id=_processed_chat_id,
-                        source_message_id=_processed_message_id,
                     )
 
             # Intentional silence is a delivery decision, not a transcript
