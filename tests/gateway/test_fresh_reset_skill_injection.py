@@ -81,6 +81,24 @@ class TestResetSessionStampsFreshReset:
         entry = store.get_or_create_session(_make_source())
         assert entry.is_fresh_reset is False
 
+    def test_reset_session_records_parent_session_id(self, tmp_path):
+        creates = []
+
+        class _DB:
+            def end_session(self, session_id, reason):
+                pass
+
+            def create_session(self, **kwargs):
+                creates.append(kwargs)
+
+        store = _make_store(tmp_path)
+        store._db = _DB()
+        old_entry = store.get_or_create_session(_make_source())
+
+        store.reset_session(old_entry.session_key)
+
+        assert creates[-1]["parent_session_id"] == old_entry.session_id
+
 
 # ---------------------------------------------------------------------------
 # Core regression: _is_new_session stays True after updated_at bump
