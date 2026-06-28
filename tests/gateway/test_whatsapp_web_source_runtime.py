@@ -273,11 +273,12 @@ def test_whatsapp_web_source_exit_reports_degraded_without_restart(tmp_path, mon
         adapter._check_web_source_exit()
 
     assert popen.call_count == 1
-    assert adapter._web_source_process is proc1
-    assert status_path.with_name("web_source.pid").read_text(encoding="utf-8") == "1"
+    assert adapter._web_source_process is None
+    assert not status_path.with_name("web_source.pid").exists()
     whatsapp = read_runtime_status()["platforms"]["whatsapp"]
     assert whatsapp["web_source"]["state"] == "degraded"
-    assert whatsapp["web_source"]["returncode"] == 1
+    assert whatsapp["web_source"]["managed"] is False
+    assert whatsapp["web_source"]["error"] == "WhatsApp web-source exited unexpectedly with code 1"
 
 
 def test_whatsapp_web_source_command_uses_soul_active_since(tmp_path, monkeypatch):
