@@ -5084,6 +5084,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 continue
 
+            from gateway.memu_policy import should_skip_soul_mode_auto_resume
+            if should_skip_soul_mode_auto_resume(self, entry.session_key):
+                logger.info(
+                    "Skipping startup auto-resume synthetic turn for soul-mode session %s",
+                    entry.session_key,
+                )
+                continue
+
             # Claim the session slot *before* spawning the task so that an
             # inbound message arriving between task creation and the task's
             # first await (where _process_message_background sets the real
@@ -16408,6 +16416,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 and agent_history[-1].get("role") == "tool"
                 and _interruption_is_fresh
             )
+            if (_is_resume_pending or _has_fresh_tool_tail) and session_key:
+                from gateway.memu_policy import should_suppress_soul_mode_resume_note
+                if should_suppress_soul_mode_resume_note(self, session_key):
+                    logger.info(
+                        "Suppressing gateway resume/tool-tail note for soul-mode session %s",
+                        session_key,
+                    )
+                    _is_resume_pending = False
+                    _has_fresh_tool_tail = False
 
             if _is_resume_pending:
                 _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"

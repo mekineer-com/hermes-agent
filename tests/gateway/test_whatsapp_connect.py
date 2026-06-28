@@ -806,7 +806,7 @@ class TestDurableBridgeAck:
         ]
 
     @pytest.mark.asyncio
-    async def test_failed_processing_does_not_advance_wal_offset(self):
+    async def test_failed_processing_advances_wal_offset_without_source_key(self):
         adapter = _make_adapter()
         db = SimpleNamespace(mark_message_source_key_processed=MagicMock())
         adapter._session_store = SimpleNamespace(_db=db)
@@ -820,7 +820,7 @@ class TestDurableBridgeAck:
 
         await adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
 
-        adapter._gateway_wal.mark_processed.assert_not_called()
+        adapter._gateway_wal.mark_processed.assert_called_once_with(12)
         db.mark_message_source_key_processed.assert_not_called()
 
     @pytest.mark.asyncio

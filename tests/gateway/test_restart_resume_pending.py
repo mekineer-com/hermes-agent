@@ -111,6 +111,7 @@ def _simulate_note_injection(
     *,
     agent_history: list | None = None,
     window_secs: float | None = None,
+    suppress_soul_resume_note: bool = False,
 ) -> str:
     """Mirror the note-injection logic in gateway/run.py _run_agent().
 
@@ -143,6 +144,9 @@ def _simulate_note_injection(
         and agent_history[-1].get("role") == "tool"
         and interruption_is_fresh
     )
+    if (is_resume_pending or has_fresh_tool_tail) and suppress_soul_resume_note:
+        is_resume_pending = False
+        has_fresh_tool_tail = False
 
     if is_resume_pending:
         reason = getattr(resume_entry, "resume_reason", None) or "restart_timeout"
@@ -486,6 +490,23 @@ class TestResumePendingSystemNote:
         assert "gateway restart" in result
         # Old tool-tail wording absent
         assert "haven't responded to yet" not in result
+
+    def test_soul_mode_suppresses_resume_and_tool_tail_notes(self):
+        entry = self._pending_entry()
+        history = [
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "function": {"name": "x", "arguments": "{}"}},
+            ], "timestamp": time.time() - 1},
+            {"role": "tool", "tool_call_id": "c1", "content": "result",
+             "timestamp": time.time()},
+        ]
+        result = _simulate_note_injection(
+            history,
+            "ping",
+            resume_entry=entry,
+            suppress_soul_resume_note=True,
+        )
+        assert result == "ping"
 
     def test_no_resume_pending_preserves_tool_tail_note(self):
         """Regression: the old PR #9934 tool-tail behaviour is unchanged."""
@@ -905,6 +926,38 @@ async def test_startup_auto_resume_schedules_fresh_pending_sessions():
     # _handle_message_with_agent owns the system-note injection so we don't
     # double it up.
     assert event.text == ""
+
+
+@pytest.mark.asyncio
+async def test_startup_auto_resume_skips_soul_mode_sessions(monkeypatch):
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="soul-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:soul-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    adapter.handle_message = AsyncMock()
+
+    monkeypatch.setattr(
+        "gateway.memu_policy.should_skip_soul_mode_auto_resume",
+        lambda gateway, session_key: True,
+    )
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+
+    assert scheduled == 0
+    adapter.handle_message.assert_not_awaited()
+    assert pending_entry.session_key not in runner._running_agents
 
 
 @pytest.mark.asyncio

@@ -1965,14 +1965,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             logger.warning("Failed to update WhatsApp contact store", exc_info=True)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        if outcome != ProcessingOutcome.SUCCESS:
-            return
         raw = event.raw_message if isinstance(event.raw_message, dict) else {}
         wal_seqs = raw.get("_wal_seqs") or [raw.get("wal_seq")]
         if any(wal_seq is None for wal_seq in wal_seqs):
             raise ValueError("WhatsApp WAL invariant break: missing wal_seq on processing completion")
         for wal_seq in wal_seqs:
             self._gateway_wal.mark_processed(wal_seq)
+        if outcome != ProcessingOutcome.SUCCESS:
+            return
         session_db = getattr(getattr(self, "_session_store", None), "_db", None)
         if not session_db:
             return
