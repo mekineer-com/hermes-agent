@@ -454,6 +454,27 @@ class TestBridgeEventMetadata:
         assert event.source.chat_name == "12025550100-1600000000"
         assert event.raw_message["chatName"] == "12025550100-1600000000"
 
+    @pytest.mark.asyncio
+    async def test_missing_chat_name_group_keeps_jid_when_local_part_empty(self):
+        adapter = _make_adapter()
+        data = {
+            "messageId": "incoming-group-edge",
+            "chatId": "@g.us",
+            "senderId": "12025550199@s.whatsapp.net",
+            "senderName": "Test Member",
+            "chatName": "",
+            "isGroup": True,
+            "body": "hola",
+            "hasMedia": False,
+            "mediaUrls": [],
+        }
+
+        event = await adapter._build_message_event(data)
+
+        assert event is not None
+        assert event.source.chat_name == "@g.us"
+        assert event.raw_message["chatName"] == "@g.us"
+
 
 # ---------------------------------------------------------------------------
 # display_config tier classification

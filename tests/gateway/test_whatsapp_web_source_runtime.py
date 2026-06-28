@@ -236,7 +236,7 @@ def test_whatsapp_web_source_stop_clears_pidfile(tmp_path, monkeypatch):
     assert not status_path.with_name("web_source.pid").exists()
 
 
-def test_whatsapp_web_source_exit_restarts(tmp_path, monkeypatch):
+def test_whatsapp_web_source_exit_reports_degraded_without_restart(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     script = tmp_path / "source-daemon.js"
     script.write_text("'use strict';\n", encoding="utf-8")
@@ -252,7 +252,6 @@ def test_whatsapp_web_source_exit_restarts(tmp_path, monkeypatch):
             return self.returncode
 
     proc1 = ExitingProcess(1)
-    proc2 = ExitingProcess(2)
     adapter = WhatsAppAdapter(
         PlatformConfig(
             enabled=True,
@@ -268,14 +267,17 @@ def test_whatsapp_web_source_exit_restarts(tmp_path, monkeypatch):
     adapter._http_session = object()
     adapter._bridge_health = {"status": "connected", "mode": "bot"}
 
-    with patch("subprocess.Popen", side_effect=[proc1, proc2]) as popen:
+    with patch("subprocess.Popen", return_value=proc1) as popen:
         assert adapter._start_web_source() is True
         proc1.returncode = 1
         adapter._check_web_source_exit()
 
-    assert popen.call_count == 2
-    assert adapter._web_source_process is proc2
-    assert status_path.with_name("web_source.pid").read_text(encoding="utf-8") == "2"
+    assert popen.call_count == 1
+    assert adapter._web_source_process is proc1
+    assert status_path.with_name("web_source.pid").read_text(encoding="utf-8") == "1"
+    whatsapp = read_runtime_status()["platforms"]["whatsapp"]
+    assert whatsapp["web_source"]["state"] == "degraded"
+    assert whatsapp["web_source"]["returncode"] == 1
 
 
 def test_whatsapp_web_source_command_uses_soul_active_since(tmp_path, monkeypatch):

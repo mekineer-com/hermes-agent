@@ -1082,25 +1082,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     def _check_web_source_exit(self) -> None:
         if not self._web_source_enabled or not self._web_source_process:
             return
-        returncode = self._web_source_process.poll()
-        if returncode is not None:
-            self._web_source_error = (
-                f"WhatsApp web-source exited unexpectedly with code {returncode}; restarting"
-            )
-            logger.warning("[%s] %s", self.name, self._web_source_error)
-            self._web_source_process = None
-            try:
-                self._web_source_pid_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            if self._web_source_log_fh:
-                try:
-                    self._web_source_log_fh.close()
-                except Exception:
-                    pass
-                self._web_source_log_fh = None
+        if self._web_source_process.poll() is not None:
             self._write_whatsapp_runtime_status(force=True)
-            self._start_web_source()
             return
         status = self._read_web_source_status()
         if (
@@ -1736,14 +1719,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 self._pending_text_batch_tasks.pop(key, None)
 
     def _resolve_event_chat_name(self, data: Dict[str, Any], *, is_group: bool) -> str:
+        """Resolve a non-empty chat display name for source identity."""
         chat_name = str(data.get("chatName") or "").strip()
         if chat_name:
             return chat_name
+        chat_id = str(data.get("chatId") or "").strip()
         sender_name = str(data.get("senderName") or "").strip()
         if not is_group and sender_name:
             return sender_name
-        chat_id = str(data.get("chatId") or "").strip()
-        return chat_id.split("@", 1)[0] if chat_id else "unknown-chat"
+        if chat_id:
+            return chat_id.split("@", 1)[0] or chat_id
+        return "unknown-chat"
 
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""
