@@ -117,6 +117,15 @@ Search targets:
 
 ## WhatsApp Test Map
 
+For normal OpenAlma fork validation, do not run the whole upstream suite first;
+it includes optional ACP/GUI/dashboard tests that are noisy in this checkout.
+Run the focused file-list gate instead:
+
+```sh
+cd hermes-agent
+grep -Ev '^(#|$)' tests/openalma_gate.txt | xargs scripts/run_tests.sh
+```
+
 Run these after WhatsApp gateway or web-source changes:
 
 ```sh

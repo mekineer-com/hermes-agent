@@ -1,0 +1,48 @@
+# OpenAlma fork gate: run these instead of the full upstream suite when validating
+# local Hermes/OpenAlma integration changes. Keep this list focused on fork seams.
+
+# WhatsApp live/history/source-key seams
+tests/gateway/test_whatsapp_history_persist.py
+tests/gateway/test_whatsapp_config_openalma.py
+tests/gateway/test_whatsapp_common_openalma.py
+tests/gateway/test_whatsapp_connect.py
+tests/gateway/test_whatsapp_seam.py
+tests/gateway/test_whatsapp_wal.py
+tests/gateway/test_whatsapp_runner_seams.py
+tests/gateway/test_whatsapp_stale_bridge.py
+tests/gateway/test_whatsapp_text_batching.py
+tests/gateway/test_whatsapp_reply_prefix.py
+tests/gateway/test_whatsapp_group_gating.py
+tests/gateway/test_whatsapp_web_source_runtime.py
+
+# WhatsApp identity/contact preservation
+tests/gateway/test_whatsapp_contact_store.py
+tests/gateway/test_whatsapp_known_contacts.py
+tests/gateway/test_channel_directory.py
+tests/scripts/test_backfill_whatsapp_identity_jids.py
+
+# Gateway session/runtime seams
+tests/gateway/test_session.py
+tests/gateway/test_fresh_reset_skill_injection.py
+tests/gateway/test_session_race_guard.py
+tests/gateway/test_mirror.py
+tests/gateway/test_notice_delivery.py
+tests/gateway/test_soul_mode_config.py
+tests/gateway/test_status.py
+tests/gateway/test_platform_reconnect.py
+tests/gateway/test_pending_drain_race.py
+tests/gateway/test_run_cleanup_progress.py
+tests/gateway/test_run_progress_topics.py
+tests/gateway/test_agent_cache.py
+tests/gateway/test_internal_event_bypass_pairing.py
+
+# OpenAlma agent/session state seams
+tests/test_hermes_state.py
+tests/agent/test_conversation_loop_soul_mode.py
+tests/agent/test_turn_context.py
+tests/agent/test_memu_client.py
+tests/run_agent/test_soul_mode.py
+tests/run_agent/test_message_sequence_repair.py
+
+# Launcher/service seams touched by the fork
+tests/hermes_cli/test_gateway_service.py
