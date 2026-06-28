@@ -44,7 +44,14 @@ fail visibly.
 | Area | File |
 |------|------|
 | WhatsApp platform adapter | `gateway/platforms/whatsapp.py` — staleness gate in `_dispatch_built_message_event`; post-turn title generation skipped for soul-mode sessions; DM allowlist matching normalized (strips suffix variants) |
-| Baileys bridge | `scripts/whatsapp-bridge/bridge.js` |
+| Baileys bridge | `scripts/whatsapp-bridge/bridge.js` — thin orchestrator; delegates to extracted modules below |
+| Baileys bridge — sent-message store | `scripts/whatsapp-bridge/sent_message_store.js` — retry cache and recently-sent echo ID tracking |
+| Baileys bridge — shared FS helpers | `scripts/whatsapp-bridge/bridge_fs.js` — shared JSON read/write helpers |
+| Baileys bridge — socket lifecycle | `scripts/whatsapp-bridge/socket_lifecycle.js` — live socket state, reconnect scheduling, Baileys version fetch |
+| Baileys bridge — LID/phone identity | `scripts/whatsapp-bridge/lid_identity.js` — LID/phone identity state and mirrored-DM alias learning |
+| Baileys bridge — presence/unread | `scripts/whatsapp-bridge/presence_unread.js` — unread-count tracking, last-inbound tracking, post-send presence/unread restore |
+| Baileys bridge — known state | `scripts/whatsapp-bridge/known_state.js` — known chats/contacts, push-name cache, DM display-name resolution, LID/phone canonicalization |
+| Baileys bridge — message ingest | `scripts/whatsapp-bridge/message_ingest.js` — history enqueue, `messages.upsert`/`messages.update` ingest |
 | Baileys classification helpers | `scripts/whatsapp-bridge/history_ingest.js` |
 | Baileys durable queue | `scripts/whatsapp-bridge/durable_queue.js`; normalizes Baileys Long-shaped and millisecond timestamps to seconds before persisting queue.seen or replaying live upgrades |
 | WhatsApp channel policy lookup | `gateway/memu_policy.py` — policy lookup + reverse-alias merge so aliases resolve to canonical policy |
@@ -61,7 +68,7 @@ fail visibly.
 | WhatsApp contact store | `gateway/contact_store.py` — append-only evidence store; derives explicit columns (`id`, `lid_jid`, `phone_jid`, `legacy_jids`, `bare_phone`, `display_name`, `observed_names`); LID-preferred key stable when later phone evidence arrives; display-name derivation ignores numeric/JID placeholders; persists to `~/.hermes/whatsapp/contact_store.json` |
 | Bridge known-name reader | `gateway/whatsapp_known_contacts.py` — shared Python reader for bridge `known_contacts.json` / `known_chats.json`; used by `channel_directory.py` and backfill to fill blank/numeric/JID-like names from bridge-known human names |
 | Channel directory | `gateway/channel_directory.py` — fallback rows use bridge known names when session/directory names are blank or JID-like; LID-first collision during backfill merges human contact name from the phone entry |
-| SQLite session store | `hermes_state.py` — includes `processed_source_keys` table (durable dedup ledger, keyed by `source_chat_id` + `source_message_id`) |
+| SQLite session store | `hermes_state.py` — includes `processed_source_keys` table (durable dedup ledger, keyed by `source_chat_id` + `source_message_id`); OpenAlma-only DDL (`processed_source_keys`, `souls`, `idx_messages_source_key`) fenced into `_FORK_SCHEMA_SQL` to reduce upstream merge conflicts |
 | Burst-debounce control | `gateway/platforms/base.py` `merge_pending_message_event` (~1092) |
 | WhatsApp JID backfill | `scripts/backfill_whatsapp_identity_jids.py` — normalizes `sessions.json`, `memu.json`, `channel_directory.json`, and `state.db` session `user_id`s to canonical LID JIDs; skips `messages.source_chat_id` (unique-index constraint); rehearse on a copy before running live |
 
