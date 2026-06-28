@@ -1594,7 +1594,6 @@ from gateway.whatsapp_identity import (
     expand_whatsapp_aliases as _expand_whatsapp_auth_aliases,
     normalize_whatsapp_identifier as _normalize_whatsapp_identifier,
 )
-from gateway.whatsapp_seam import chat_id_from_whatsapp_conversation_id
 
 
 logger = logging.getLogger(__name__)
@@ -3343,12 +3342,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             overrides = None
         route["request_overrides"] = overrides or {}
         return route
-
-    @staticmethod
-    def _resolve_soul_mode_agent_config(user_config: dict | None, session_key: str) -> dict[str, Any]:
-        from agent.soul_mode import resolve_agent_config
-
-        return resolve_agent_config(user_config, session_key)
 
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to an adapter failure after startup.
@@ -5725,221 +5718,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # idle case where the subagent finishes with no agent turn running.
         asyncio.create_task(self._async_delegation_watcher())
 
-        if Platform.WHATSAPP in self.adapters and self._resolve_active_whatsapp_soul_config() is not None:
-            task = asyncio.create_task(self._whatsapp_memu_outbound_watcher())
-            self._background_tasks.add(task)
-            task.add_done_callback(self._background_tasks.discard)
-
         logger.info("Press Ctrl+C to stop")
         
         return True
-
-    @staticmethod
-    def _chat_id_from_whatsapp_conversation_id(conversation_id: str) -> str:
-        return chat_id_from_whatsapp_conversation_id(conversation_id)
-
-    def _resolve_active_whatsapp_soul_config(self) -> dict[str, Any] | None:
-        cfg = self._resolve_soul_mode_agent_config(
-            _load_gateway_config(),
-            "agent:main:whatsapp:dm:pending-outbounds",
-        )
-        if not cfg.get("enabled") or cfg.get("role") != "soul":
-            return None
-        if not str(cfg.get("user_id") or "").strip() or not str(cfg.get("soul_id") or "").strip():
-            return None
-        if not cfg.get("use_memu_turn", True):
-            return None
-        return cfg
-
-    @staticmethod
-    def _whatsapp_adapter_ready_for_outbounds(adapter: Any) -> bool:
-        if adapter is None or bool(getattr(adapter, "has_fatal_error", False)):
-            return False
-        if hasattr(adapter, "_running") and not bool(getattr(adapter, "_running")):
-            return False
-        if hasattr(adapter, "_http_session") and getattr(adapter, "_http_session") is None:
-            return False
-        bridge_health = getattr(adapter, "_bridge_health", None)
-        if isinstance(bridge_health, dict):
-            bridge_status = str(bridge_health.get("status") or "").strip()
-            if bridge_status and bridge_status != "connected":
-                return False
-        return True
-
-    _OUTBOUND_SENT_PATH = _hermes_home / "whatsapp" / "outbound_sent.json"
-    _OUTBOUND_SENT_CAP = 500
-
-    def _load_outbound_sent(self) -> set[str]:
-        cached = self.__dict__.get("_outbound_sent_ids")
-        if cached is not None:
-            return cached
-        try:
-            data = json.loads(self._OUTBOUND_SENT_PATH.read_text(encoding="utf-8"))
-            ids = set(data) if isinstance(data, list) else set()
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
-            ids = set()
-        self.__dict__["_outbound_sent_ids"] = ids
-        return ids
-
-    def _record_outbound_sent(self, out_id: str) -> None:
-        if not out_id:
-            return
-        try:
-            try:
-                data = json.loads(self._OUTBOUND_SENT_PATH.read_text(encoding="utf-8"))
-                existing = data if isinstance(data, list) else []
-            except (FileNotFoundError, json.JSONDecodeError, OSError):
-                existing = []
-            if out_id not in existing:
-                existing.append(out_id)
-            existing = existing[-self._OUTBOUND_SENT_CAP:]
-            self.__dict__["_outbound_sent_ids"] = set(existing)
-            path = self._OUTBOUND_SENT_PATH
-            path.parent.mkdir(parents=True, exist_ok=True)
-            fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".outbound_sent.", suffix=".tmp")
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    json.dump(existing, fh)
-                os.replace(tmp, path)
-            except BaseException:
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
-                raise
-        except Exception:
-            logger.error("Failed to record outbound_sent for %s", out_id, exc_info=True)
-
-    async def _deliver_whatsapp_memu_outbound(self, client: Any, cfg: dict[str, Any], row: dict[str, Any]) -> None:
-        out_id = str(row.get("id") or "").strip()
-        target = str(row.get("target") or "").strip().lower()
-        text = str(row.get("response_text") or "").strip()
-        media_path = str(row.get("media_path") or "").strip()
-        origin = str(row.get("origin_conversation_id") or "").strip()
-        user_id = str(cfg.get("user_id") or "").strip()
-        soul_id = str(cfg.get("soul_id") or "").strip()
-        if not out_id or (not text and not media_path):
-            return
-
-        async def _mark(status: str, *, provider_message_id: str | None = None, error: str | None = None) -> None:
-            await asyncio.to_thread(
-                client.mark_whatsapp_outbound,
-                user_id=user_id,
-                soul_id=soul_id,
-                outbound_id=out_id,
-                status=status,
-                provider_message_id=provider_message_id,
-                error=error,
-            )
-
-        if out_id in self._load_outbound_sent():
-            await _mark("sent")
-            return
-
-        if media_path and not os.access(media_path, os.R_OK):
-            await _mark("failed", error="attachment missing")
-            return
-
-        try:
-            if target == "private":
-                if media_path:
-                    from agent.whatsapp_bridge_client import read_self_dm_jid
-
-                    chat_id = await asyncio.to_thread(read_self_dm_jid)
-                    adapter = self.adapters.get(Platform.WHATSAPP)
-                    if not chat_id or adapter is None:
-                        await _mark("failed", error="self-DM delivery failed")
-                        return
-                    result = await adapter.send_document(chat_id, media_path, caption=text or None)
-                else:
-                    from agent.soul_mode import _route_whatsapp_notice_to_self_dm
-
-                    ok = await asyncio.to_thread(
-                        _route_whatsapp_notice_to_self_dm,
-                        text,
-                        origin,
-                        "free-turn PRIVATE reply",
-                    )
-                    if not ok:
-                        await _mark("failed", error="self-DM delivery failed")
-                        return
-                    result = None
-            elif target == "respond":
-                adapter = self.adapters.get(Platform.WHATSAPP)
-                chat_id = self._chat_id_from_whatsapp_conversation_id(str(row.get("target_conversation_id") or origin))
-                if adapter is None or not chat_id:
-                    await _mark("failed", error="whatsapp adapter or target chat missing")
-                    return
-                if media_path:
-                    result = await adapter.send_document(chat_id, media_path, caption=text or None)
-                else:
-                    result = await adapter.send(
-                        chat_id,
-                        text,
-                        metadata={"origin": "memu_free_turn", "outbound_id": out_id},
-                    )
-            else:
-                await _mark("failed", error=f"unsupported target {target!r}")
-                return
-
-            provider_message_id = None
-            if isinstance(result, dict):
-                provider_message_id = str(result.get("message_id") or result.get("id") or "").strip() or None
-                error = str(result.get("error") or "").strip()
-                if error:
-                    await _mark("failed", error=error)
-                    return
-            elif hasattr(result, "success"):
-                if not bool(getattr(result, "success")):
-                    await _mark("failed", error=str(getattr(result, "error", "") or "").strip() or "adapter send failed")
-                    return
-                provider_message_id = str(getattr(result, "message_id", "") or "").strip() or None
-            elif result is False:
-                await _mark("failed", error="adapter send failed")
-                return
-
-            self._record_outbound_sent(out_id)
-            await _mark("sent", provider_message_id=provider_message_id)
-        except Exception as exc:
-            logger.exception("WhatsApp memU outbound delivery failed for %s", out_id)
-            await _mark("failed", error=f"{type(exc).__name__}: {str(exc)[:220]}")
-
-    async def _drain_whatsapp_memu_outbounds(self) -> int:
-        adapter = self.adapters.get(Platform.WHATSAPP)
-        if not self._whatsapp_adapter_ready_for_outbounds(adapter):
-            return 0
-        cfg = self._resolve_active_whatsapp_soul_config()
-        if cfg is None:
-            return 0
-        from agent.memu_client import MemuHttpClient
-
-        client = MemuHttpClient(
-            base_url=str(cfg.get("memu_base_url") or "http://127.0.0.1:8099"),
-            timeout_seconds=float(cfg.get("timeout_seconds") or 90.0),
-        )
-        rows = await asyncio.to_thread(
-            client.claim_whatsapp_outbounds,
-            user_id=str(cfg.get("user_id") or ""),
-            soul_id=str(cfg.get("soul_id") or ""),
-            claimed_by="hermes-gateway",
-            limit=10,
-        )
-        count = 0
-        for row in rows:
-            if isinstance(row, dict):
-                count += 1
-                await self._deliver_whatsapp_memu_outbound(client, cfg, row)
-        return count
-
-    async def _whatsapp_memu_outbound_watcher(self, interval: float = 2.0) -> None:
-        while self._running and not self._shutdown_event.is_set():
-            try:
-                await self._drain_whatsapp_memu_outbounds()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.error("WhatsApp memU outbound watcher iteration failed", exc_info=True)
-            await asyncio.sleep(max(0.5, float(interval)))
 
     async def _handoff_watcher(self, interval: float = 2.0) -> None:
         """Background task that processes pending CLI→gateway session handoffs.
@@ -7340,11 +7121,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
 
-    async def _deliver_platform_notice(self, source, content: str) -> bool:
+    async def _deliver_platform_notice(self, source, content: str) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
         adapter = self.adapters.get(source.platform)
         if not adapter:
-            return False
+            return
 
         config = getattr(self, "config", None)
         notice_delivery = "public"
@@ -7352,8 +7133,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             notice_delivery = config.get_notice_delivery(source.platform)
 
         metadata = self._thread_metadata_for_source(source)
-        whatsapp_private_only = source.platform == Platform.WHATSAPP
-        if whatsapp_private_only or (notice_delivery == "private" and getattr(source, "user_id", None)):
+        if notice_delivery == "private" and getattr(source, "user_id", None):
             try:
                 result = await adapter.send_private_notice(
                     source.chat_id,
@@ -7362,25 +7142,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     metadata=metadata,
                 )
                 if getattr(result, "success", False):
-                    return True
+                    return
             except Exception:
-                if whatsapp_private_only:
-                    logger.debug("[whatsapp] send_private_notice failed", exc_info=True)
-                else:
-                    logger.debug(
-                        "[%s] send_private_notice failed, falling back to public",
-                        getattr(source, "platform", "?"),
-                        exc_info=True,
-                    )
-            if whatsapp_private_only:
-                logger.warning(
-                    "[whatsapp] private operational notice failed; suppressing public fallback for chat %s",
-                    source.chat_id,
+                logger.debug(
+                    "[%s] send_private_notice failed, falling back to public",
+                    getattr(source, "platform", "?"),
+                    exc_info=True,
                 )
-                return False
 
-        result = await adapter.send(source.chat_id, content, metadata=metadata)
-        return result is None or getattr(result, "success", True)
+        await adapter.send(source.chat_id, content, metadata=metadata)
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
