@@ -581,6 +581,24 @@ class TestMessageStorage:
         assert user_rows[1]["sender_id"] == "140063262396533@lid"
         assert user_rows[1]["sender_name"] == "Test Contact"
 
+    def test_stamp_latest_user_source_key_updates_only_latest_blank_user_row(self, db):
+        db.create_session(session_id="s1", source="whatsapp")
+        db.append_message("s1", role="user", content="first")
+        db.append_message("s1", role="assistant", content="ack")
+        latest_id = db.append_message("s1", role="user", content="second")
+
+        stamped_id = db.stamp_latest_user_source_key(
+            "s1",
+            source_chat_id="12025550199@s.whatsapp.net",
+            source_message_id="wamid.1",
+        )
+
+        user_rows = [msg for msg in db.get_messages("s1") if msg["role"] == "user"]
+        assert stamped_id == latest_id
+        assert user_rows[0]["source_message_id"] is None
+        assert user_rows[1]["source_chat_id"] == "12025550199@s.whatsapp.net"
+        assert user_rows[1]["source_message_id"] == "wamid.1"
+
     def test_append_message_dedupes_by_source_key(self, db):
         db.create_session(session_id="s1", source="cli")
         first_id = db.append_message(

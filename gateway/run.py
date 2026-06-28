@@ -9905,6 +9905,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         session_entry.session_id,
                         e,
                     )
+            if (
+                not is_context_overflow_failure
+                and _user_source_fields
+                and self._session_db
+                and session_entry
+                and session_entry.session_id
+            ):
+                try:
+                    self._session_db.stamp_latest_user_source_key(
+                        session_entry.session_id,
+                        source_chat_id=_source_chat_id,
+                        source_message_id=_source_message_id,
+                    )
+                except Exception as e:
+                    logger.debug(
+                        "Failed to stamp latest user source key for session %s: %s",
+                        session_entry.session_id,
+                        e,
+                    )
 
             # Intentional silence is a delivery decision, not a transcript
             # mutation.  The agent's [SILENT]/NO_REPLY assistant turn above is

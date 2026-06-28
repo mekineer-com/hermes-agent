@@ -2770,6 +2770,48 @@ class SessionDB:
 
         self._execute_write(_do)
 
+    def stamp_latest_user_source_key(
+        self,
+        session_id: str,
+        *,
+        source_chat_id: str,
+        source_message_id: str,
+    ) -> int:
+        session_key = str(session_id or "").strip()
+        chat_key = str(source_chat_id or "").strip()
+        message_key = str(source_message_id or "").strip()
+        if not session_key or not chat_key or not message_key:
+            return 0
+
+        def _do(conn):
+            existing = conn.execute(
+                "SELECT id FROM messages WHERE source_chat_id = ? AND source_message_id = ? LIMIT 1",
+                (chat_key, message_key),
+            ).fetchone()
+            if existing:
+                return int(existing[0])
+
+            row = conn.execute(
+                """
+                SELECT id, source_chat_id, source_message_id
+                  FROM messages
+                 WHERE session_id = ? AND role = 'user'
+                 ORDER BY id DESC
+                 LIMIT 1
+                """,
+                (session_key,),
+            ).fetchone()
+            if not row or row[1] or row[2]:
+                return 0
+            msg_id = int(row[0])
+            conn.execute(
+                "UPDATE messages SET source_chat_id = ?, source_message_id = ? WHERE id = ?",
+                (chat_key, message_key, msg_id),
+            )
+            return msg_id
+
+        return int(self._execute_write(_do) or 0)
+
     def delete_message_by_source_key(
         self,
         *,

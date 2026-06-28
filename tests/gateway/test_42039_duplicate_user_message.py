@@ -150,6 +150,62 @@ async def test_agent_failed_early_skip_db_when_agent_has_session_db(
     )
 
 
+@pytest.mark.asyncio
+async def test_whatsapp_live_path_stamps_source_key_after_agent_persist(
+    monkeypatch, tmp_path
+):
+    runner = _bootstrap(monkeypatch, tmp_path)
+    source = SessionSource(
+        platform=Platform.WHATSAPP,
+        chat_id="12025550199@s.whatsapp.net",
+        chat_type="dm",
+        user_id="12025550199@s.whatsapp.net",
+    )
+    runner.session_store.get_or_create_session.return_value = SessionEntry(
+        session_key="agent:main:whatsapp:dm:12025550199@s.whatsapp.net",
+        session_id="sess-wa",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.WHATSAPP,
+        chat_type="dm",
+    )
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "Hello!",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "Hello!"},
+            ],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    await runner._handle_message_with_agent(
+        MessageEvent(
+            text="hello world",
+            source=source,
+            message_id="wamid.1",
+            raw_message={
+                "chatId": "12025550199@s.whatsapp.net",
+                "messageId": "wamid.1",
+                "senderId": "12025550199@s.whatsapp.net",
+                "senderName": "Test Contact",
+            },
+        ),
+        source,
+        "agent:main:whatsapp:dm:12025550199@s.whatsapp.net",
+        1,
+    )
+
+    runner._session_db.stamp_latest_user_source_key.assert_called_once_with(
+        "sess-wa",
+        source_chat_id="12025550199@s.whatsapp.net",
+        source_message_id="wamid.1",
+    )
+
+
 # ── Test 2: agent_failed_early with no _session_db → skip_db not True ─
 
 
