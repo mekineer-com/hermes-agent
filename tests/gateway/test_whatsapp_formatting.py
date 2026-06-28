@@ -211,6 +211,21 @@ class TestSendChunking:
         payload = adapter._http_session.post.call_args.kwargs["json"]
         assert payload["chatId"] == "chat1"
         assert result.raw_response == {"message_ids": ["msg1"]}
+        assert result.continuation_message_ids == ()
+        assert adapter._http_session.post.call_args.kwargs["timeout"].total == 75
+
+    @pytest.mark.asyncio
+    async def test_send_preserves_bridge_message_ids(self):
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "last", "messageIds": ["first", "last"]})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        result = await adapter.send("chat1", "short message")
+
+        assert result.message_id == "last"
+        assert result.raw_response == {"message_ids": ["first", "last"]}
+        assert result.continuation_message_ids == ("first", "last")
 
     @pytest.mark.asyncio
     async def test_send_normalizes_bare_phone_chat_id(self):

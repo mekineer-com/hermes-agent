@@ -144,6 +144,25 @@ test('durable queue compacts on ack threshold', () => {
   }
 });
 
+test('durable queue does not serve malformed rows without seq', () => {
+  const queueDir = mkQueueDir();
+  try {
+    const queue = new DurableQueue({ queueDir, compactionEveryAcks: 1000 });
+    queue.unacked.push({ body: 'bad' });
+    const good = queue.enqueue({
+      messageId: 'm1',
+      chatId: '12025550199@s.whatsapp.net',
+      senderId: '12025550199@s.whatsapp.net',
+      body: 'good',
+      timestamp: 1,
+    });
+
+    assert.deepEqual(queue.readUnacked(10).map((item) => item.seq), [good.seq]);
+  } finally {
+    rmSync(queueDir, { recursive: true, force: true });
+  }
+});
+
 test('durable queue bootstraps seen ids from queue rows when seen file is missing', () => {
   const queueDir = mkQueueDir();
   try {

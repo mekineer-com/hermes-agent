@@ -730,6 +730,33 @@ class TestDurableBridgeAck:
         wal.mark_processed.assert_called_once_with(41)
 
     @pytest.mark.asyncio
+    async def test_poll_messages_skips_row_without_seq(self):
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._check_managed_bridge_exit = AsyncMock(return_value=None)
+        adapter._build_message_event = AsyncMock()
+        adapter._gateway_wal = MagicMock()
+        adapter._gateway_wal.append.return_value = None
+
+        first_resp = MagicMock(status=200)
+        first_resp.json = AsyncMock(return_value=[{"chatId": "a@lid", "body": "bad"}])
+        second_resp = MagicMock(status=200)
+        second_resp.json = AsyncMock(return_value=[])
+        mock_session = MagicMock()
+        mock_session.get = MagicMock(side_effect=[_AsyncCM(first_resp), _AsyncCM(second_resp)])
+        mock_session.post = MagicMock(return_value=_AsyncCM(MagicMock(status=200)))
+        adapter._http_session = mock_session
+
+        async def _sleep_once(*_args, **_kwargs):
+            adapter._running = False
+
+        with patch("gateway.platforms.whatsapp.asyncio.sleep", new=AsyncMock(side_effect=_sleep_once)):
+            await adapter._poll_messages()
+
+        adapter._build_message_event.assert_not_called()
+        mock_session.post.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_replay_gateway_wal_dispatches_pending_rows(self):
         adapter = _make_adapter()
         adapter.handle_message = AsyncMock()

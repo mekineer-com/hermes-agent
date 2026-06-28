@@ -1289,13 +1289,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 async with self._http_session.post(
                     f"http://127.0.0.1:{self._bridge_port}/send",
                     json=payload,
-                    timeout=aiohttp.ClientTimeout(total=30)
+                    timeout=aiohttp.ClientTimeout(total=75)
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         last_message_id = data.get("messageId")
-                        if last_message_id:
-                            message_ids.append(last_message_id)
+                        for message_id in data.get("messageIds") or [last_message_id]:
+                            if message_id:
+                                message_ids.append(str(message_id))
                     else:
                         error = await resp.text()
                         return SendResult(success=False, error=error)
@@ -1308,6 +1309,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 success=True,
                 message_id=last_message_id,
                 raw_response={"message_ids": message_ids},
+                continuation_message_ids=tuple(message_ids) if len(message_ids) > 1 else (),
             )
         except (asyncio.TimeoutError, TimeoutError):
             return SendResult(success=False, error="send timed out")
@@ -1560,6 +1562,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             wal_row = wal.append(msg_data)
                             self._update_contact_store_from_event(msg_data)
                             if wal_row is None:
+                                if msg_data.get("seq") is None:
+                                    continue
                                 await self._ack_bridge_message(msg_data.get("seq"))
                                 continue
                             await self._ack_bridge_message(msg_data.get("seq"))
@@ -1606,7 +1610,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def _dispatch_built_message_event(self, event: MessageEvent) -> None:
         raw = event.raw_message if isinstance(event.raw_message, dict) else {}
         delivery_mode = self._bridge_delivery_mode(raw)
-        if str(raw.get("deliveryMode") or "").strip().lower() not in {"live", "persist_only", "revoke"}:
+        if str(raw.get("deliveryMode") or "").strip().lower() not in {"live", "persist_only", "revoke"} and delivery_mode != "revoke":
             logger.warning(
                 "[whatsapp] Bridge event missing/invalid deliveryMode; treating as non-live chat_id=%r message_id=%r mode=%r",
                 raw.get("chatId"),
@@ -1671,6 +1675,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         else:
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            if isinstance(existing.raw_message, dict) and isinstance(event.raw_message, dict):
+                existing.raw_message["_wal_seqs"] = [
+                    *(existing.raw_message.get("_wal_seqs") or [existing.raw_message.get("wal_seq")]),
+                    event.raw_message.get("wal_seq"),
+                ]
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
@@ -1933,7 +1942,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         raw = event.raw_message if isinstance(event.raw_message, dict) else {}
-        wal_seq = raw.get("wal_seq")
-        if wal_seq is None:
+        wal_seqs = raw.get("_wal_seqs") or [raw.get("wal_seq")]
+        if any(wal_seq is None for wal_seq in wal_seqs):
             raise ValueError("WhatsApp WAL invariant break: missing wal_seq on processing completion")
-        self._gateway_wal.mark_processed(wal_seq)
+        for wal_seq in wal_seqs:
+            self._gateway_wal.mark_processed(wal_seq)

@@ -336,6 +336,7 @@ export class DurableQueue {
 
   readUnacked(limit) {
     const n = parsePositiveInt(limit, this.defaultLimit);
+    this.unacked = this.unacked.filter((row) => Number.isInteger(Number(row?.seq)) && Number(row.seq) >= 1);
     return this.unacked.slice(0, n);
   }
 

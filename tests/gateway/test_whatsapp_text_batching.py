@@ -22,7 +22,7 @@ def _make_adapter(**extra):
     return WhatsAppAdapter(PlatformConfig(enabled=True, extra=base))
 
 
-def _event(text):
+def _event(text, wal_seq=None):
     src = SessionSource(
         platform=Platform.WHATSAPP,
         chat_id="chat123",
@@ -30,7 +30,15 @@ def _event(text):
         user_id="user1",
         user_name="tester",
     )
-    return MessageEvent(text=text, message_type=MessageType.TEXT, source=src)
+    raw_message = {"deliveryMode": "live"}
+    if wal_seq is not None:
+        raw_message["wal_seq"] = wal_seq
+    return MessageEvent(
+        text=text,
+        message_type=MessageType.TEXT,
+        source=src,
+        raw_message=raw_message,
+    )
 
 
 def test_batch_delays_default_from_config():
@@ -85,6 +93,29 @@ def test_rapid_texts_collapse_into_single_dispatch():
 
     asyncio.run(_drive())
     assert dispatched == ["one\ntwo\nthree"]
+
+
+def test_batched_text_marks_every_wal_row_processed():
+    adapter = _make_adapter(
+        text_batch_delay_seconds=0.05,
+        text_batch_split_delay_seconds=0.05,
+    )
+    completed = []
+
+    async def _capture(event):
+        await adapter.on_processing_complete(event, None)
+
+    adapter.handle_message = _capture
+    adapter._gateway_wal.mark_processed = completed.append
+
+    async def _drive():
+        adapter._enqueue_text_event(_event("one", wal_seq=10))
+        adapter._enqueue_text_event(_event("two", wal_seq=11))
+        adapter._enqueue_text_event(_event("three", wal_seq=12))
+        await asyncio.sleep(0.2)
+
+    asyncio.run(_drive())
+    assert completed == [10, 11, 12]
 
 
 def test_lone_message_dispatched_alone():
