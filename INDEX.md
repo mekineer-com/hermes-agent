@@ -96,6 +96,25 @@ Search targets:
 - `_handle_response_delivery`
   - stamps delivered assistant WhatsApp message id onto the matching assistant row
 
+## Agent Runtime Seam Map
+
+Release `run_agent.py` delegates large pieces into `agent/`; do not port old
+fork hunks back into `run_agent.py` when the live code now owns the seam in an
+extracted module.
+
+Search targets:
+
+- `run_agent.py`
+  - `AIAgent.__init__` forwards `soul_mode_cfg`.
+  - `_flush_messages_to_session_db()` persists sender/source metadata and soul assistant identity.
+  - `configure_soul_mode()` delegates to `agent.soul_mode`.
+- `agent/agent_init.py`
+  - initializes `_soul_config` from `soul_mode_cfg`.
+- `agent/turn_context.py`
+  - adds gateway sender/source/timestamp metadata to the current user row before early persistence.
+- `agent/conversation_loop.py`
+  - delegates active soul turns to `agent.soul_mode.handle_turn()` before the normal model runtime.
+
 ## WhatsApp Test Map
 
 Run these after WhatsApp gateway or web-source changes:
