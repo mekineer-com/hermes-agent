@@ -65,6 +65,9 @@ def _make_adapter(bridge_script: str = "/tmp/test-bridge.js",
     adapter._auto_tts_disabled_chats = set()
     adapter._message_queue = asyncio.Queue()
     adapter._http_session = None
+    adapter._start_web_source = MagicMock(return_value=True)
+    adapter._write_whatsapp_runtime_status = MagicMock()
+    adapter._replay_gateway_wal = AsyncMock()
     return adapter
 
 
