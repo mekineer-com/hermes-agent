@@ -64,6 +64,7 @@ from .whatsapp_identity import (
     canonical_whatsapp_identifier,
     normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
 )
+from .whatsapp_seam import canonical_whatsapp_jid
 from utils import atomic_replace
 
 
@@ -682,7 +683,7 @@ def build_session_key(
     if source.chat_type == "dm":
         dm_chat_id = source.chat_id
         if source.platform == Platform.WHATSAPP:
-            dm_chat_id = canonical_whatsapp_identifier(source.chat_id)
+            dm_chat_id = canonical_whatsapp_jid(source.chat_id)
 
         if dm_chat_id:
             if source.thread_id:
@@ -697,7 +698,7 @@ def build_session_key(
         dm_participant_id = source.user_id_alt or source.user_id
         if dm_participant_id and source.platform == Platform.WHATSAPP:
             dm_participant_id = (
-                canonical_whatsapp_identifier(str(dm_participant_id))
+                canonical_whatsapp_jid(str(dm_participant_id))
                 or dm_participant_id
             )
         if dm_participant_id:
@@ -713,7 +714,7 @@ def build_session_key(
         # Same JID/LID-flip bug as the DM case: without canonicalisation, a
         # single group member gets two isolated per-user sessions when the
         # bridge reshuffles alias forms.
-        participant_id = canonical_whatsapp_identifier(str(participant_id)) or participant_id
+        participant_id = canonical_whatsapp_jid(str(participant_id)) or participant_id
     key_parts = [ns, platform, source.chat_type]
 
     if source.chat_id:
@@ -1026,6 +1027,7 @@ class SessionStore:
                 "session_id": session_id,
                 "source": source.platform.value,
                 "user_id": source.user_id,
+                "parent_session_id": db_end_session_id,
             }
 
         # SQLite operations outside the lock
@@ -1040,6 +1042,44 @@ class SessionStore:
                 self._db.create_session(**db_create_kwargs)
             except Exception as e:
                 print(f"[gateway] Warning: Failed to create SQLite session: {e}")
+
+        return entry
+
+    def get_or_create_history_session(self, source: SessionSource) -> SessionEntry:
+        """Resolve a session for persisted history without touching activity state."""
+        session_key = self._generate_session_key(source)
+        now = _now()
+        db_create_kwargs = None
+
+        with self._lock:
+            self._ensure_loaded_locked()
+            if session_key in self._entries:
+                return self._entries[session_key]
+
+            session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+            entry = SessionEntry(
+                session_key=session_key,
+                session_id=session_id,
+                created_at=now,
+                updated_at=now,
+                origin=source,
+                display_name=source.chat_name,
+                platform=source.platform,
+                chat_type=source.chat_type,
+            )
+            self._entries[session_key] = entry
+            self._save()
+            db_create_kwargs = {
+                "session_id": session_id,
+                "source": source.platform.value,
+                "user_id": source.user_id,
+            }
+
+        if self._db and db_create_kwargs:
+            try:
+                self._db.create_session(**db_create_kwargs)
+            except Exception as e:
+                print(f"[gateway] Warning: Failed to create SQLite history session: {e}")
 
         return entry
 
@@ -1363,6 +1403,10 @@ class SessionStore:
                     session_id=session_id,
                     role=message.get("role", "unknown"),
                     content=message.get("content"),
+                    sender_id=message.get("sender_id"),
+                    sender_name=message.get("sender_name"),
+                    source_chat_id=message.get("source_chat_id"),
+                    source_message_id=message.get("source_message_id"),
                     tool_name=message.get("tool_name"),
                     tool_calls=message.get("tool_calls"),
                     tool_call_id=message.get("tool_call_id"),

@@ -3,7 +3,7 @@ import json
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
-from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
+from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig, SessionResetPolicy
 from gateway.platforms.base import MessageEvent
 from gateway.session import (
     SessionSource,
@@ -572,6 +572,90 @@ class TestLoadTranscriptDBOnly:
         assert result[1]["content"] == "db-a"
 
 
+class TestSessionStoreOpenAlmaSeams:
+    def test_reset_session_records_parent_session_id(self, tmp_path):
+        creates = []
+        ended = []
+
+        class _DB:
+            def create_session(self, **kwargs):
+                creates.append(kwargs)
+
+            def end_session(self, session_id, reason):
+                ended.append((session_id, reason))
+
+        config = GatewayConfig(default_reset_policy=SessionResetPolicy(mode="idle", idle_minutes=1))
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = _DB()
+        store._loaded = True
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="chat-1",
+            chat_type="dm",
+            user_id="user-1",
+        )
+        first = store.get_or_create_session(source)
+        first.updated_at = first.updated_at.replace(year=2000)
+        second = store.get_or_create_session(source)
+
+        assert second.session_id != first.session_id
+        assert ended == [(first.session_id, "session_reset")]
+        assert creates[-1]["parent_session_id"] == first.session_id
+
+    def test_history_session_create_does_not_refresh_existing_activity(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = None
+        store._loaded = True
+
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="12025550100@s.whatsapp.net",
+            chat_type="dm",
+            user_id="12025550100@s.whatsapp.net",
+        )
+        entry = store.get_or_create_history_session(source)
+        original_updated_at = entry.updated_at
+
+        again = store.get_or_create_history_session(source)
+
+        assert again is entry
+        assert again.updated_at == original_updated_at
+
+    def test_append_to_transcript_preserves_whatsapp_source_metadata(self, tmp_path):
+        calls = []
+
+        class _DB:
+            def append_message(self, **kwargs):
+                calls.append(kwargs)
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = _DB()
+        store._loaded = True
+
+        store.append_to_transcript(
+            "session-1",
+            {
+                "role": "user",
+                "content": "hello",
+                "sender_id": "999999999999999@lid",
+                "sender_name": "Tester",
+                "source_chat_id": "999999999999999@lid",
+                "source_message_id": "wamid.1",
+            },
+        )
+
+        assert calls[0]["sender_id"] == "999999999999999@lid"
+        assert calls[0]["sender_name"] == "Tester"
+        assert calls[0]["source_chat_id"] == "999999999999999@lid"
+        assert calls[0]["source_message_id"] == "wamid.1"
+
+
 class TestSessionStoreSwitchSession:
     """Regression coverage for gateway /resume session switching semantics."""
 
@@ -656,14 +740,14 @@ class TestWhatsAppSessionKeyConsistency:
             user_name="Phone User",
         )
         key = build_session_key(source)
-        assert key == "agent:main:whatsapp:dm:15551234567"
+        assert key == "agent:main:whatsapp:dm:15551234567@s.whatsapp.net"
 
     def test_whatsapp_dm_aliases_share_one_session_key(self, tmp_path, monkeypatch):
         tmp_home = tmp_path / "hermes-home"
         mapping_dir = tmp_home / "whatsapp" / "session"
         mapping_dir.mkdir(parents=True, exist_ok=True)
-        (mapping_dir / "lid-mapping-999999999999999.json").write_text(
-            json.dumps("15551234567@s.whatsapp.net"),
+        (mapping_dir / "lid-mapping-15551234567.json").write_text(
+            json.dumps("999999999999999"),
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_home))
@@ -681,8 +765,8 @@ class TestWhatsAppSessionKeyConsistency:
             user_name="Phone User",
         )
 
-        assert build_session_key(lid_source) == "agent:main:whatsapp:dm:15551234567"
-        assert build_session_key(phone_source) == "agent:main:whatsapp:dm:15551234567"
+        assert build_session_key(lid_source) == "agent:main:whatsapp:dm:999999999999999@lid"
+        assert build_session_key(phone_source) == "agent:main:whatsapp:dm:999999999999999@lid"
 
     def test_whatsapp_group_participant_aliases_share_session_key(self, tmp_path, monkeypatch):
         """With group_sessions_per_user, the same human flipping between
@@ -691,8 +775,8 @@ class TestWhatsAppSessionKeyConsistency:
         tmp_home = tmp_path / "hermes-home"
         mapping_dir = tmp_home / "whatsapp" / "session"
         mapping_dir.mkdir(parents=True, exist_ok=True)
-        (mapping_dir / "lid-mapping-999999999999999.json").write_text(
-            json.dumps("15551234567@s.whatsapp.net"),
+        (mapping_dir / "lid-mapping-15551234567.json").write_text(
+            json.dumps("999999999999999"),
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_home))
@@ -712,7 +796,7 @@ class TestWhatsAppSessionKeyConsistency:
             user_name="Group Member",
         )
 
-        expected = "agent:main:whatsapp:group:120363000000000000@g.us:15551234567"
+        expected = "agent:main:whatsapp:group:120363000000000000@g.us:999999999999999@lid"
         assert build_session_key(lid_source, group_sessions_per_user=True) == expected
         assert build_session_key(phone_source, group_sessions_per_user=True) == expected
 

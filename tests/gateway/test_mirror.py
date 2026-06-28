@@ -177,6 +177,9 @@ class TestMirrorToSession:
         assert msg["role"] == "assistant"
         assert msg["mirror"] is True
         assert msg["mirror_source"] == "cli"
+        jsonl_msg = json.loads((sessions_dir / "sess_abc.jsonl").read_text(encoding="utf-8"))
+        assert jsonl_msg["content"] == "Hello!"
+        assert jsonl_msg["mirror"] is True
 
     def test_successful_mirror_uses_thread_id(self, tmp_path):
         sessions_dir, index_file = _setup_sessions(tmp_path, {
@@ -253,9 +256,14 @@ class TestAppendToSqlite:
         mock_db = MagicMock()
 
         with patch("hermes_state.SessionDB", return_value=mock_db):
-            _append_to_sqlite("sess_1", {"role": "assistant", "content": "hello"})
+            _append_to_sqlite("sess_1", {"role": "assistant", "content": "hello", "timestamp": "now"})
 
-        mock_db.append_message.assert_called_once()
+        mock_db.append_message.assert_called_once_with(
+            session_id="sess_1",
+            role="assistant",
+            content="hello",
+            timestamp="now",
+        )
         mock_db.close.assert_called_once()
 
     def test_connection_closed_even_on_error(self, tmp_path):
