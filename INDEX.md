@@ -20,6 +20,8 @@ Prefer:
 Reason: moving large blocks out of upstream-shared files makes future upstream
 pulls harder to merge and audit.
 
+Also: Do not work on or cleanup Hermes code: Preserve upstream-diff cleanliness unless the code breaks OpenAlma.
+
 ## WhatsApp Architecture Map
 
 Two WhatsApp paths are intentionally active:
