@@ -10324,7 +10324,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # agent already reached its early turn-start persistence, the latest
             # transcript user row will match and we skip the duplicate.
             try:
-                if 'message_text' in locals() and message_text is not None and session_entry is not None:
+                if (
+                    source.platform != Platform.WHATSAPP
+                    and 'message_text' in locals()
+                    and message_text is not None
+                    and session_entry is not None
+                ):
                     _already_persisted = False
                     try:
                         _recent_transcript = self.session_store.load_transcript(session_entry.session_id)
@@ -10405,12 +10410,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 elif status_code == 400:
                     status_hint = " The request was rejected by the API."
-            return (
+            error_response = (
                 f"Sorry, I encountered an error ({error_type}).\n"
                 f"{error_detail}\n"
                 f"{status_hint}"
                 "Try again or use /reset to start a fresh session."
             )
+            if source.platform == Platform.WHATSAPP:
+                self._persist_whatsapp_exception_turn(
+                    session_entry=session_entry,
+                    source=source,
+                    raw_message=(
+                        event.raw_message
+                        if isinstance(getattr(event, "raw_message", None), dict)
+                        else {}
+                    ),
+                    message_text=persist_user_message or message_text,
+                    error_response=error_response,
+                )
+            return error_response
         finally:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
@@ -11004,7 +11022,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             sender_id = str(raw.get("senderId") or "").strip() or None
             sender_name = str(raw.get("senderName") or "").strip() or None
 
-        session_entry = self.session_store.get_or_create_session(source)
+        session_entry = self.session_store.get_or_create_history_session(source)
         self._session_db.append_message(
             session_id=session_entry.session_id,
             role=role,

@@ -210,6 +210,34 @@ async def test_whatsapp_live_turn_marks_processed_from_event_source_key(tmp_path
     )
 
 
+@pytest.mark.asyncio
+async def test_whatsapp_agent_exception_persists_visible_error_pair(tmp_path, monkeypatch):
+    runner, db = _runner(tmp_path, monkeypatch, active_since=1780160400)
+    event = _event(text="live turn", role_hint="user", timestamp=1780233002)
+    event.raw_message["deliveryMode"] = "live"
+    event.internal = False
+    session_key = build_session_key(event.source)
+    runner._session_run_generation = {session_key: 1}
+    runner._running_agents = {}
+    runner._running_agents_ts = {}
+    runner._pending_messages = {}
+    runner.adapters = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock())
+    runner._prepare_inbound_message_text = AsyncMock(return_value="live turn")
+    runner._run_agent = AsyncMock(side_effect=RuntimeError("boom"))
+
+    response = await runner._handle_message_with_agent(event, event.source, session_key, 1)
+
+    session_id = next(iter(runner.session_store._entries.values())).session_id
+    messages = db.get_messages(session_id)
+    assert "RuntimeError" in response
+    assert [m["role"] for m in messages] == ["user", "assistant"]
+    assert messages[0]["content"] == "live turn"
+    assert messages[0]["source_chat_id"] == "12025550177@s.whatsapp.net"
+    assert messages[0]["source_message_id"] == "m1"
+    assert "RuntimeError" in messages[1]["content"]
+
+
 def test_whatsapp_exception_turn_persists_visible_error_pair(tmp_path, monkeypatch):
     runner, db = _runner(tmp_path, monkeypatch, active_since=1780160400)
     event = _event(text="Testing yet another way to connect to WhatsApp")
