@@ -9,6 +9,8 @@ providers (violating role alternation), which retriggered the empty-retry
 recovery every turn.
 """
 
+from types import SimpleNamespace
+
 from run_agent import AIAgent
 
 
@@ -298,3 +300,40 @@ def test_flush_guard_clamps_overshooting_cursor():
 
     # min(5, 2) = 2 → nothing skipped below start_idx, cursor settles at 2
     assert agent._last_flushed_db_idx == 2
+
+
+def test_flush_preserves_gateway_metadata_and_soul_assistant_identity():
+    class _DB:
+        def __init__(self):
+            self.rows = []
+
+        def append_message(self, **kw):
+            self.rows.append(kw)
+
+    agent = _bare_agent()
+    agent._session_db = _DB()
+    agent._session_db_created = True
+    agent.session_id = "s1"
+    agent._persist_user_message_override = None
+    agent._last_flushed_db_idx = 0
+    agent._soul_config = SimpleNamespace(soul_id="soul-1")
+    messages = [
+        {
+            "role": "user",
+            "content": "hello",
+            "sender_id": "999999999999999@lid",
+            "sender_name": "Tester",
+            "source_chat_id": "999999999999999@lid",
+            "source_message_id": "wamid.1",
+        },
+        {"role": "assistant", "content": "hi"},
+    ]
+
+    AIAgent._flush_messages_to_session_db(agent, messages, conversation_history=[])
+
+    assert agent._session_db.rows[0]["sender_id"] == "999999999999999@lid"
+    assert agent._session_db.rows[0]["sender_name"] == "Tester"
+    assert agent._session_db.rows[0]["source_chat_id"] == "999999999999999@lid"
+    assert agent._session_db.rows[0]["source_message_id"] == "wamid.1"
+    assert agent._session_db.rows[1]["sender_id"] == "soul:soul-1"
+    assert agent._session_db.rows[1]["sender_name"] == "soul-1"

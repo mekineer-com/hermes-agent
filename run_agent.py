@@ -399,6 +399,7 @@ class AIAgent:
         chat_type: str = None,
         thread_id: str = None,
         gateway_session_key: str = None,
+        soul_mode_cfg: dict = None,
         skip_context_files: bool = False,
         load_soul_identity: bool = False,
         skip_memory: bool = False,
@@ -474,6 +475,7 @@ class AIAgent:
             chat_type=chat_type,
             thread_id=thread_id,
             gateway_session_key=gateway_session_key,
+            soul_mode_cfg=soul_mode_cfg,
             skip_context_files=skip_context_files,
             load_soul_identity=load_soul_identity,
             skip_memory=skip_memory,
@@ -1617,6 +1619,11 @@ class AIAgent:
                     continue
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
+                sender_id = msg.get("sender_id")
+                sender_name = msg.get("sender_name")
+                source_chat_id = msg.get("source_chat_id")
+                source_message_id = msg.get("source_message_id")
+                timestamp = msg.get("timestamp")
                 # Persist multimodal tool results as their text summary only —
                 # base64 images would bloat the session DB and aren't useful
                 # for cross-session replay.
@@ -1639,10 +1646,41 @@ class AIAgent:
                     ]
                 elif isinstance(msg.get("tool_calls"), list):
                     tool_calls_data = msg["tool_calls"]
+                if role == "user":
+                    if not sender_id:
+                        sender_id = (
+                            getattr(self, "_gateway_message_sender_id", None)
+                            or getattr(self, "_user_id", None)
+                        )
+                    if not sender_name:
+                        sender_name = (
+                            getattr(self, "_gateway_message_sender_name", None)
+                            or getattr(self, "_user_name", None)
+                        )
+                elif role == "assistant":
+                    soul_name = str(
+                        getattr(getattr(self, "_soul_config", None), "soul_id", "") or ""
+                    ).strip()
+                    if soul_name:
+                        if not sender_name:
+                            sender_name = soul_name
+                        if not sender_id:
+                            sender_id = f"soul:{soul_name}"
+                    if (
+                        (content is None or (isinstance(content, str) and not content.strip()))
+                        and not tool_calls_data
+                        and not msg.get("tool_call_id")
+                        and not msg.get("tool_name")
+                    ):
+                        continue
                 self._session_db.append_message(
                     session_id=self.session_id,
                     role=role,
                     content=content,
+                    sender_id=sender_id,
+                    sender_name=sender_name,
+                    source_chat_id=source_chat_id,
+                    source_message_id=source_message_id,
                     tool_name=msg.get("tool_name"),
                     tool_calls=tool_calls_data,
                     tool_call_id=msg.get("tool_call_id"),
@@ -1652,7 +1690,7 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
-                    timestamp=msg.get("timestamp"),
+                    timestamp=timestamp,
                 )
                 flushed_ids.add(msg_id)
             self._last_flushed_db_idx = len(messages)
@@ -3500,6 +3538,11 @@ class AIAgent:
             f"thread={self._thread_identity()} provider={provider} "
             f"base_url={base_url} model={model}"
         )
+
+    def configure_soul_mode(self, **kwargs) -> None:
+        """Reconfigure soul-mode settings. Delegates to agent.soul_mode."""
+        from agent import soul_mode as _soul_mode
+        self._soul_config = _soul_mode.configure(**kwargs)
 
     def _openai_client_lock(self) -> threading.RLock:
         lock = getattr(self, "_client_lock", None)

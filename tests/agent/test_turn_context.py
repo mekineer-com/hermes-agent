@@ -174,6 +174,28 @@ def test_persist_user_message_becomes_original():
     assert ctx.messages[-1]["content"] == "api-prefixed"
 
 
+def test_whatsapp_turn_context_preserves_gateway_source_metadata():
+    agent = _FakeAgent()
+    agent.platform = "whatsapp"
+    agent._gateway_message_sender_id = "999999999999999@lid"
+    agent._gateway_message_sender_name = "Tester"
+    agent._gateway_source_chat_id = "999999999999999@lid"
+    agent._gateway_source_message_id = "wamid.1"
+    agent._gateway_message_timestamp = 123.45
+
+    ctx = _build(agent)
+
+    assert ctx.messages[-1] == {
+        "role": "user",
+        "content": "hello",
+        "sender_id": "999999999999999@lid",
+        "sender_name": "Tester",
+        "source_chat_id": "999999999999999@lid",
+        "source_message_id": "wamid.1",
+        "timestamp": 123.45,
+    }
+
+
 def test_memory_nudge_fires_at_interval():
     agent = _FakeAgent()
     agent._memory_nudge_interval = 1
@@ -258,4 +280,3 @@ def test_between_turns_refresh_no_churn_when_unchanged():
         _build(agent)
 
     assert agent.tools is same  # not replaced → no churn
-

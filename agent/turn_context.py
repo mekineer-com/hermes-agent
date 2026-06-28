@@ -238,6 +238,29 @@ def build_turn_context(
 
     # Add user message.
     user_msg = {"role": "user", "content": user_message}
+    platform = str(getattr(agent, "platform", "") or "").strip().lower()
+    gateway_sender_id = str(getattr(agent, "_gateway_message_sender_id", "") or "").strip()
+    gateway_sender_name = str(getattr(agent, "_gateway_message_sender_name", "") or "").strip()
+    if platform == "whatsapp":
+        if gateway_sender_id:
+            user_msg["sender_id"] = gateway_sender_id
+        if gateway_sender_name:
+            user_msg["sender_name"] = gateway_sender_name
+        source_message_id = str(getattr(agent, "_gateway_source_message_id", "") or "").strip()
+        source_chat_id = str(getattr(agent, "_gateway_source_chat_id", "") or "").strip()
+        if source_message_id and source_chat_id:
+            user_msg["source_message_id"] = source_message_id
+            user_msg["source_chat_id"] = source_chat_id
+        gateway_timestamp = getattr(agent, "_gateway_message_timestamp", None)
+        if gateway_timestamp is not None:
+            user_msg["timestamp"] = gateway_timestamp
+    else:
+        sender_id = str(getattr(agent, "_user_id", "") or "").strip()
+        sender_name = str(getattr(agent, "_user_name", "") or "").strip()
+        if sender_id:
+            user_msg["sender_id"] = sender_id
+        if sender_name:
+            user_msg["sender_name"] = sender_name
     messages.append(user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx

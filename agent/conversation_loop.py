@@ -56,6 +56,7 @@ from agent.model_metadata import (
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.retry_utils import jittered_backoff
+from agent import soul_mode as _soul_mode
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from hermes_constants import PARTIAL_STREAM_STUB_ID
@@ -545,6 +546,18 @@ def run_conversation(
     truncated_response_parts: List[str] = []
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
+
+    if getattr(agent, "_soul_config", None) and agent._soul_config.is_active():
+        return _soul_mode.handle_turn(
+            agent,
+            agent._soul_config,
+            user_message=user_message,
+            conversation_history=conversation_history,
+            messages=messages,
+            task_id=effective_task_id,
+            original_user_message=original_user_message,
+            summarize_for_log=_summarize_user_message_for_log,
+        )
 
     # Optional opt-in runtime: if api_mode == codex_app_server, hand the
     # turn to the codex app-server subprocess (terminal/file ops/patching
