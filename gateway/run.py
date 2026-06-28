@@ -9907,6 +9907,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
             if (
                 not is_context_overflow_failure
+                and not agent_failed_early
                 and _user_source_fields
                 and self._session_db
                 and session_entry

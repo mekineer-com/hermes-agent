@@ -206,6 +206,54 @@ async def test_whatsapp_live_path_stamps_source_key_after_agent_persist(
     )
 
 
+@pytest.mark.asyncio
+async def test_whatsapp_agent_failed_early_does_not_stamp_source_key(
+    monkeypatch, tmp_path
+):
+    runner = _bootstrap(monkeypatch, tmp_path)
+    source = SessionSource(
+        platform=Platform.WHATSAPP,
+        chat_id="12025550199@s.whatsapp.net",
+        chat_type="dm",
+        user_id="12025550199@s.whatsapp.net",
+    )
+    runner.session_store.get_or_create_session.return_value = SessionEntry(
+        session_key="agent:main:whatsapp:dm:12025550199@s.whatsapp.net",
+        session_id="sess-wa",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.WHATSAPP,
+        chat_type="dm",
+    )
+    runner._run_agent = AsyncMock(
+        return_value={
+            "failed": True,
+            "final_response": None,
+            "error": "429 Too Many Requests",
+            "messages": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    await runner._handle_message_with_agent(
+        MessageEvent(
+            text="hello world",
+            source=source,
+            message_id="wamid.1",
+            raw_message={
+                "chatId": "12025550199@s.whatsapp.net",
+                "messageId": "wamid.1",
+            },
+        ),
+        source,
+        "agent:main:whatsapp:dm:12025550199@s.whatsapp.net",
+        1,
+    )
+
+    runner._session_db.stamp_latest_user_source_key.assert_not_called()
+
+
 # ── Test 2: agent_failed_early with no _session_db → skip_db not True ─
 
 
