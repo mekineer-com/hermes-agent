@@ -27,7 +27,7 @@ def test_contact_store_merges_phone_record_when_lid_mapping_arrives(tmp_path, mo
     root = tmp_path / "whatsapp"
     session_dir = root / "session"
     session_dir.mkdir(parents=True)
-    store = WhatsAppContactStore(store_path=root / "contact_store.json", session_dir=session_dir)
+    store = WhatsAppContactStore(store_path=root / "contact_store.json")
 
     store.update_from_event(
         {
@@ -57,7 +57,7 @@ def test_contact_store_merges_reverse_lid_mapping(tmp_path, monkeypatch):
     root = tmp_path / "whatsapp"
     session_dir = root / "session"
     session_dir.mkdir(parents=True)
-    store = WhatsAppContactStore(store_path=root / "contact_store.json", session_dir=session_dir)
+    store = WhatsAppContactStore(store_path=root / "contact_store.json")
 
     store.update_from_event({"chatId": "15551234567@s.whatsapp.net"})
     (session_dir / "lid-mapping-999999999999999_reverse.json").write_text(json.dumps("15551234567"), encoding="utf-8")
@@ -74,7 +74,7 @@ def test_contact_store_persists_event_updates(tmp_path, monkeypatch):
     session_dir = root / "session"
     session_dir.mkdir(parents=True)
     store_path = root / "contact_store.json"
-    store = WhatsAppContactStore(store_path=store_path, session_dir=session_dir)
+    store = WhatsAppContactStore(store_path=store_path)
 
     store.update_from_event({"chatId": "15551234567@s.whatsapp.net", "chatName": "Phone Contact"})
 
@@ -92,7 +92,7 @@ def test_contact_store_display_name_ignores_numeric_placeholder(tmp_path, monkey
     session_dir = root / "session"
     session_dir.mkdir(parents=True)
     store_path = root / "contact_store.json"
-    store = WhatsAppContactStore(store_path=store_path, session_dir=session_dir)
+    store = WhatsAppContactStore(store_path=store_path)
 
     store.update_from_event({"chatId": "999999999999999@lid", "chatName": "999999999999999"})
     store.update_from_event({"chatId": "999999999999999@lid", "chatName": "Test Contact"})
@@ -127,7 +127,7 @@ def test_contact_store_refreshes_old_records_on_load(tmp_path, monkeypatch):
         }),
         encoding="utf-8",
     )
-    store = WhatsAppContactStore(store_path=store_path, session_dir=session_dir)
+    store = WhatsAppContactStore(store_path=store_path)
 
     store.update_from_event({"chatId": "999999999999999@lid", "chatName": "Test Contact"})
 
@@ -164,7 +164,7 @@ def test_contact_store_phone_event_does_not_downgrade_lid_preferred_record(tmp_p
         }),
         encoding="utf-8",
     )
-    store = WhatsAppContactStore(store_path=store_path, session_dir=session_dir)
+    store = WhatsAppContactStore(store_path=store_path)
 
     store.update_from_event({"chatId": "15551234567@s.whatsapp.net", "chatName": "Test Contact"})
 
@@ -197,7 +197,7 @@ def test_contact_store_saves_refreshed_columns_on_load(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    WhatsAppContactStore(store_path=store_path, session_dir=session_dir)._load()
+    WhatsAppContactStore(store_path=store_path)._load()
 
     data = json.loads(store_path.read_text(encoding="utf-8"))
     record = data["contacts"]["999999999999999@lid"]

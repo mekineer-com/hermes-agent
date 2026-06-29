@@ -529,7 +529,6 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         )
         self._contact_store = WhatsAppContactStore(
             store_path=whatsapp_home / "contact_store.json",
-            session_dir=whatsapp_home / "session",
         )
         # Set to True by disconnect() before we SIGTERM our child bridge so
         # _check_managed_bridge_exit() can distinguish an intentional

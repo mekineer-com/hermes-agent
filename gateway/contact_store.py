@@ -27,9 +27,8 @@ _ID_FIELDS = (
 
 
 class WhatsAppContactStore:
-    def __init__(self, *, store_path: Path, session_dir: Path):
+    def __init__(self, *, store_path: Path):
         self.store_path = store_path
-        self.session_dir = session_dir
         self._data: dict[str, Any] | None = None
 
     def update_from_event(self, event: dict[str, Any], *, source: str = "gateway_wal") -> None:
