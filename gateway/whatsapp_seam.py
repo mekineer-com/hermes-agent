@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 _LID_MAPPING_RE = re.compile(r"^lid-mapping-(.+?)(?:_reverse)?\.json$")
 _PHONE_DOMAINS = {"s.whatsapp.net", "c.us"}
 _SIGNATURE_TTL_SECONDS = 1.0
-_signature_cache: dict[str, tuple[float, tuple[int, int]]] = {}
+_signature_cache: dict[str, tuple[float, int, tuple[int, int]]] = {}
 
 
 def chat_id_from_whatsapp_conversation_id(conversation_id: str) -> str:
@@ -140,11 +140,12 @@ def _load_alias_graph(session_dir: Path) -> dict[str, set[str]]:
 def _lid_mapping_signature(session_dir: Path) -> tuple[int, int]:
     cache_key = str(session_dir)
     now = time.monotonic()
+    dir_mtime = _mtime_ns(session_dir)
     cached = _signature_cache.get(cache_key)
-    if cached and now - cached[0] < _SIGNATURE_TTL_SECONDS:
-        return cached[1]
+    if cached and cached[1] == dir_mtime and now - cached[0] < _SIGNATURE_TTL_SECONDS:
+        return cached[2]
     signature = _scan_lid_mapping_signature(session_dir)
-    _signature_cache[cache_key] = (now, signature)
+    _signature_cache[cache_key] = (now, dir_mtime, signature)
     return signature
 
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,7 +16,6 @@ from .whatsapp_seam import canonical_whatsapp_jid, whatsapp_jid_aliases
 
 logger = logging.getLogger(__name__)
 
-_LID_MAPPING_RE = re.compile(r"^lid-mapping-(.+?)(?:_reverse)?\.json$")
 _ID_FIELDS = (
     "chatId",
     "senderId",
@@ -51,28 +49,6 @@ class WhatsAppContactStore:
         if changed:
             self._save()
 
-    def ingest_lid_mappings(self) -> None:
-        if not self.session_dir.exists():
-            return
-        changed = False
-        for path in self.session_dir.glob("lid-mapping-*.json"):
-            match = _LID_MAPPING_RE.match(path.name)
-            if not match:
-                continue
-            try:
-                mapped = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                logger.debug("contact_store: failed to read %s: %s", path, exc)
-                continue
-            pair = self._mapping_pair(match.group(1), mapped, reverse=path.name.endswith("_reverse.json"))
-            if pair is None:
-                continue
-            phone_jid, lid_jid = pair
-            if self._record_mapping(phone_jid, lid_jid, source="lid_mapping_file"):
-                changed = True
-        if changed:
-            self._save()
-
     def _record_id(
         self,
         value: Any,
@@ -95,29 +71,6 @@ class WhatsAppContactStore:
                 "display": display,
             },
         )
-
-    def _record_mapping(self, phone_jid: str, lid_jid: str, *, source: str) -> bool:
-        changed = False
-        if self._upsert_evidence(
-            lid_jid,
-            {
-                "source": source,
-                "merge_reason": "lid_phone_mapping",
-                "lid_jid": lid_jid,
-                "phone_jid": phone_jid,
-            },
-        ):
-            changed = True
-        record = self._record_for_jid(lid_jid)
-        aliases = set(record.setdefault("aliases", []))
-        if phone_jid not in aliases:
-            aliases.add(phone_jid)
-            record["aliases"] = sorted(aliases)
-            changed = True
-        self._move_record_to_preferred(record)
-        if _refresh_contact_columns(record):
-            changed = True
-        return changed
 
     def _upsert_evidence(self, jid: str, evidence: dict[str, Any]) -> bool:
         data = self._load()
@@ -213,25 +166,6 @@ class WhatsAppContactStore:
             return {"sender_name": str(event.get("senderName") or "").strip()}
         return {}
 
-    def _mapping_pair(self, raw_key: str, mapped: Any, *, reverse: bool) -> tuple[str, str] | None:
-        """Return ``(phone_jid, lid_jid)`` for one bridge mapping file.
-
-        Current bridge files are typed by filename, not by the JSON value:
-        forward files are keyed by phone and contain a bare LID; reverse files
-        are keyed by LID and contain a bare phone.
-        """
-        key = str(raw_key or "").strip()
-        mapped_str = str(mapped or "").strip()
-        if not key or not mapped_str:
-            return None
-        if reverse:
-            return (to_whatsapp_jid(mapped_str), f"{key}@lid")
-        if mapped_str.endswith("@lid") or "@" not in mapped_str:
-            return (to_whatsapp_jid(key), _ensure_lid_jid(mapped_str))
-        if mapped_str.endswith("@s.whatsapp.net") or mapped_str.endswith("@c.us"):
-            return (to_whatsapp_jid(mapped_str), _ensure_lid_jid(key))
-        return None
-
     def _load(self) -> dict[str, Any]:
         if self._data is not None:
             return self._data
@@ -262,12 +196,6 @@ def _normalize_contact_jid(value: Any) -> str:
     if not raw or raw == "status@broadcast":
         return ""
     return to_whatsapp_jid(raw)
-
-
-def _ensure_lid_jid(value: str) -> str:
-    raw = str(value or "").strip()
-    local = raw.split("@", 1)[0].split(":", 1)[0]
-    return f"{local}@lid" if local else ""
 
 
 def _same_evidence(left: dict[str, Any], right: dict[str, Any]) -> bool:
