@@ -16,8 +16,9 @@ The builder still mutates ``agent`` heavily (counters, thread id, cached prompt,
 session DB) exactly as the inline code did — those side effects are the point. The
 ``TurnContext`` it returns carries only the *locals* the loop reads back.
 
-Behavior is identical to the original inline prologue; this is a pure
-move-and-name refactor with no semantic change.
+Normal agent behavior is identical to the original inline prologue. Active
+soul-mode turns keep the shared turn bookkeeping, then skip Hermes prompt
+assembly because memU builds the soul prompt.
 """
 
 from __future__ import annotations
@@ -59,6 +60,19 @@ class TurnContext:
     plugin_user_context: str = ""
     # External-memory prefetch result, reused across loop iterations.
     ext_prefetch_cache: str = ""
+
+
+def _prepare_turn_interrupt_state(agent, ra) -> None:
+    # Keep this shared so the soul fast path cannot drift from the normal path.
+    agent._turn_failed_file_mutations = {}
+    agent._execution_thread_id = threading.current_thread().ident
+    ra()._set_interrupt(False, agent._execution_thread_id)
+    if agent._interrupt_requested:
+        ra()._set_interrupt(True, agent._execution_thread_id)
+        agent._interrupt_thread_signal_pending = False
+    else:
+        agent._interrupt_message = None
+        agent._interrupt_thread_signal_pending = False
 
 
 def build_turn_context(
@@ -265,6 +279,28 @@ def build_turn_context(
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
 
+    if getattr(agent, "_soul_config", None) and agent._soul_config.is_active():
+        try:
+            agent._persist_session(messages, conversation_history)
+        except Exception:
+            logger.warning(
+                "Early turn-start session persistence failed for session=%s",
+                agent.session_id or "none",
+                exc_info=True,
+            )
+        _prepare_turn_interrupt_state(agent, ra)
+        return TurnContext(
+            user_message=user_message,
+            original_user_message=original_user_message,
+            messages=messages,
+            conversation_history=conversation_history,
+            active_system_prompt=None,
+            effective_task_id=effective_task_id,
+            turn_id=turn_id,
+            current_turn_user_idx=current_turn_user_idx,
+            should_review_memory=should_review_memory,
+        )
+
     if not agent.quiet_mode:
         _print_preview = summarize_user_message_for_log(user_message)
         agent._safe_print(
@@ -383,21 +419,7 @@ def build_turn_context(
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
 
-    # Per-turn file-mutation verifier state.
-    agent._turn_failed_file_mutations = {}
-
-    # Record the execution thread so interrupt()/clear_interrupt() can scope
-    # the tool-level interrupt signal to THIS agent's thread only.
-    agent._execution_thread_id = threading.current_thread().ident
-
-    # Clear stale per-thread interrupt state, preserving a pending interrupt.
-    ra()._set_interrupt(False, agent._execution_thread_id)
-    if agent._interrupt_requested:
-        ra()._set_interrupt(True, agent._execution_thread_id)
-        agent._interrupt_thread_signal_pending = False
-    else:
-        agent._interrupt_message = None
-        agent._interrupt_thread_signal_pending = False
+    _prepare_turn_interrupt_state(agent, ra)
 
     # Notify memory providers of the new turn (BEFORE prefetch_all).
     if agent._memory_manager:

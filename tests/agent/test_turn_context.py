@@ -196,6 +196,42 @@ def test_whatsapp_turn_context_preserves_gateway_source_metadata():
     }
 
 
+def test_soul_turn_skips_hermes_prompt_build_but_keeps_turn_state():
+    agent = _FakeAgent()
+    agent.platform = "whatsapp"
+    agent._cached_system_prompt = None
+    agent._soul_config = types.SimpleNamespace(is_active=lambda: True)
+    agent._gateway_message_sender_id = "999999999999999@lid"
+    agent._gateway_message_sender_name = "Tester"
+    agent._gateway_source_chat_id = "999999999999999@lid"
+    agent._gateway_source_message_id = "wamid.1"
+    agent._gateway_message_timestamp = 123.45
+
+    def fail_prompt_build(*_a, **_k):
+        raise AssertionError("soul turns must not build Hermes prompt context")
+
+    ctx = _build(agent, restore_or_build_system_prompt=fail_prompt_build)
+
+    assert ctx.messages[-1] == {
+        "role": "user",
+        "content": "hello",
+        "sender_id": "999999999999999@lid",
+        "sender_name": "Tester",
+        "source_chat_id": "999999999999999@lid",
+        "source_message_id": "wamid.1",
+        "timestamp": 123.45,
+    }
+    assert ctx.active_system_prompt is None
+    assert ctx.plugin_user_context == ""
+    assert ctx.ext_prefetch_cache == ""
+    assert ctx.effective_task_id
+    assert ctx.turn_id
+    assert ctx.current_turn_user_idx == 0
+    assert agent._persist_calls == 1
+    assert agent._turn_failed_file_mutations == {}
+    assert agent._execution_thread_id is not None
+
+
 def test_memory_nudge_fires_at_interval():
     agent = _FakeAgent()
     agent._memory_nudge_interval = 1
