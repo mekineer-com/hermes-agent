@@ -1049,7 +1049,11 @@ class TestPollLoopDispatch:
         second_resp.json = AsyncMock(return_value=[])
         adapter._http_session = MagicMock()
         adapter._http_session.get = MagicMock(side_effect=[_AsyncCM(first_resp), _AsyncCM(second_resp)])
-        adapter._http_session.post = MagicMock(return_value=_AsyncCM(MagicMock(status=200)))
+        calls = []
+        adapter._http_session.post = MagicMock(
+            side_effect=lambda *args, **kwargs: calls.append("ack") or _AsyncCM(MagicMock(status=200))
+        )
+        adapter._contact_store.update_from_event.side_effect = lambda *args, **kwargs: calls.append("contact")
 
         async def _sleep_once(*_args, **_kwargs):
             adapter._running = False
@@ -1058,6 +1062,7 @@ class TestPollLoopDispatch:
             await adapter._poll_messages()
 
         adapter._contact_store.update_from_event.assert_called_with(msg, source="gateway_wal")
+        assert calls[:2] == ["ack", "contact"]
         replay = _make_adapter()
         replay_msg = {"seq": 32, "chatId": "chat123", "messageId": "m32", "senderName": "Replay Contact", "body": "replay"}
         replay._gateway_wal.pending.return_value = [{"wal_seq": 4, "bridge_seq": 32, "event": replay_msg}]

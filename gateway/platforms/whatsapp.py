@@ -1574,13 +1574,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             break
                         for msg_data in messages:
                             wal_row = wal.append(msg_data)
-                            self._update_contact_store_from_event(msg_data)
                             if wal_row is None:
                                 if msg_data.get("seq") is None:
                                     continue
                                 await self._ack_bridge_message(msg_data.get("seq"))
+                                self._update_contact_store_from_event(msg_data)
                                 continue
                             await self._ack_bridge_message(msg_data.get("seq"))
+                            self._update_contact_store_from_event(msg_data)
                             event = await self._build_message_event(msg_data)
                             if event:
                                 event.raw_message = dict(event.raw_message)

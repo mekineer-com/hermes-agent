@@ -13,7 +13,7 @@ from typing import Any
 
 from .whatsapp_identity import to_whatsapp_jid
 from .whatsapp_known_contacts import is_placeholder_whatsapp_name
-from .whatsapp_seam import canonical_whatsapp_jid
+from .whatsapp_seam import canonical_whatsapp_jid, whatsapp_jid_aliases
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,6 @@ class WhatsAppContactStore:
     def update_from_event(self, event: dict[str, Any], *, source: str = "gateway_wal") -> None:
         if not isinstance(event, dict):
             return
-        self.ingest_lid_mappings()
 
         changed = False
         for field in _ID_FIELDS:
@@ -127,7 +126,7 @@ class WhatsAppContactStore:
         changed = False
 
         aliases = set(record.setdefault("aliases", []))
-        for alias in {jid, canonical_whatsapp_jid(jid)}:
+        for alias in whatsapp_jid_aliases(jid) or {jid, canonical_whatsapp_jid(jid)}:
             if alias and alias not in aliases:
                 aliases.add(alias)
                 changed = True

@@ -17,6 +17,7 @@ import json
 import logging
 import re
 from collections import defaultdict, deque
+from functools import lru_cache
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
@@ -38,14 +39,19 @@ def chat_id_from_whatsapp_conversation_id(conversation_id: str) -> str:
 
 
 def canonical_whatsapp_jid(identifier: str) -> str:
+    aliases = whatsapp_jid_aliases(identifier)
+    if not aliases:
+        return ""
+    return _preferred_jid(aliases, fallback=_normalize_jid(identifier))
+
+
+def whatsapp_jid_aliases(identifier: str) -> set[str]:
     jid = _normalize_jid(identifier)
     if not jid:
-        return ""
+        return set()
     if jid.endswith("@g.us") or jid == "status@broadcast":
-        return jid
-
-    aliases = _expand_jid_aliases(jid)
-    return _preferred_jid(aliases, fallback=jid)
+        return {jid}
+    return _expand_jid_aliases(jid)
 
 
 def _normalize_jid(value: str) -> str:
@@ -123,6 +129,21 @@ def _add_bidirectional_edge(graph: dict[str, set[str]], left: str, right: str) -
 
 
 def _load_alias_graph(session_dir: Path) -> dict[str, set[str]]:
+    dir_mtime = _mtime_ns(session_dir)
+    creds_mtime = _mtime_ns(session_dir / "creds.json")
+    return _load_alias_graph_cached(str(session_dir), dir_mtime, creds_mtime)
+
+
+def _mtime_ns(path: Path) -> int:
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return 0
+
+
+@lru_cache(maxsize=4)
+def _load_alias_graph_cached(session_dir_str: str, _dir_mtime: int, _creds_mtime: int) -> dict[str, set[str]]:
+    session_dir = Path(session_dir_str)
     graph: dict[str, set[str]] = defaultdict(set)
     if not session_dir.exists():
         return graph

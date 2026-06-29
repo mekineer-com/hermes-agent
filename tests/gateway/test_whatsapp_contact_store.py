@@ -87,6 +87,28 @@ def test_contact_store_persists_event_updates(tmp_path, monkeypatch):
     assert record["display_name"] == "Phone Contact"
 
 
+def test_contact_store_event_update_does_not_scan_lid_mapping_files(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    root = tmp_path / "whatsapp"
+    session_dir = root / "session"
+    session_dir.mkdir(parents=True)
+    (session_dir / "lid-mapping-15551234567.json").write_text(json.dumps("999999999999999"), encoding="utf-8")
+    store = WhatsAppContactStore(store_path=root / "contact_store.json", session_dir=session_dir)
+
+    def fail_scan() -> None:
+        raise AssertionError("live contact updates must not scan the mapping directory")
+
+    monkeypatch.setattr(store, "ingest_lid_mappings", fail_scan)
+
+    store.update_from_event({"chatId": "999999999999999@lid", "chatName": "Phone Contact"})
+
+    data = json.loads((root / "contact_store.json").read_text(encoding="utf-8"))
+    record = data["contacts"]["999999999999999@lid"]
+    assert record["display_name"] == "Phone Contact"
+    assert record["lid_jid"] == "999999999999999@lid"
+    assert record["phone_jid"] == "15551234567@s.whatsapp.net"
+
+
 def test_contact_store_display_name_ignores_numeric_placeholder(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     root = tmp_path / "whatsapp"
