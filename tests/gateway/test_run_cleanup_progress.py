@@ -430,6 +430,52 @@ async def test_whatsapp_raw_metadata_reaches_agent_without_nameerror(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_soul_turn_skips_stream_consumer_wait(monkeypatch, tmp_path):
+    adapter = CleanupCaptureAdapter(platform=Platform.WHATSAPP)
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, ProgressAgent, cleanup_on=False)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner.config.streaming = SimpleNamespace(
+        enabled=True,
+        transport="edit",
+        edit_interval=0.01,
+        buffer_threshold=1,
+        cursor="",
+        fresh_final_after_seconds=0.0,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_resolve_soul_mode_agent_config",
+        lambda _cfg, _session_key: {
+            "enabled": True,
+            "role": "soul",
+            "soul_id": "siri",
+            "user_id": "user",
+        },
+    )
+
+    class ExplodingStreamConsumer:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("soul turns should not create a stream consumer")
+
+    fake_stream_module = types.ModuleType("gateway.stream_consumer")
+    fake_stream_module.GatewayStreamConsumer = ExplodingStreamConsumer
+    fake_stream_module.StreamConsumerConfig = SimpleNamespace
+    monkeypatch.setitem(sys.modules, "gateway.stream_consumer", fake_stream_module)
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=SessionSource(platform=Platform.WHATSAPP, chat_id="15551234567@s.whatsapp.net"),
+        session_id="sess-1",
+        session_key="agent:main:whatsapp:dm:15551234567@s.whatsapp.net",
+    )
+
+    assert result["final_response"] == "done"
+
+
+@pytest.mark.asyncio
 async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     """When a bg-review-style callback is already registered, the cleanup
     callback chains with it — both fire, neither clobbers the other."""

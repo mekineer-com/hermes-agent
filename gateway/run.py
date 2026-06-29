@@ -15071,6 +15071,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             require_platform_override_for={Platform.MATTERMOST},
         )
         needs_progress_queue = tool_progress_enabled or _thinking_enabled
+        soul_mode_cfg = self._resolve_soul_mode_agent_config(user_config, session_key or "")
+        _is_soul_turn = self._soul_mode_config_is_active(soul_mode_cfg)
 
 
         # Queue for progress messages (thread-safe)
@@ -15862,7 +15864,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _want_stream_deltas = _streaming_enabled
             _want_interim_messages = interim_assistant_messages_enabled
             _want_interim_consumer = _want_interim_messages
-            if _want_stream_deltas or _want_interim_consumer:
+            if not _is_soul_turn and (_want_stream_deltas or _want_interim_consumer):
                 try:
                     from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
                     _adapter = self.adapters.get(source.platform)
@@ -15944,7 +15946,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
-            soul_mode_cfg = self._resolve_soul_mode_agent_config(user_config, session_key or "")
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -16787,7 +16788,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return
                 await asyncio.sleep(0.05)
 
-        stream_task = asyncio.create_task(_start_stream_consumer())
+        if not _is_soul_turn:
+            stream_task = asyncio.create_task(_start_stream_consumer())
         
         # Track this agent as running for this session (for interrupt support)
         # We do this in a callback after the agent is created
