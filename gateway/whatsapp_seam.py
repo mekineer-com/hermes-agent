@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from collections import defaultdict, deque
 from functools import lru_cache
 from pathlib import Path
@@ -28,6 +29,8 @@ logger = logging.getLogger(__name__)
 
 _LID_MAPPING_RE = re.compile(r"^lid-mapping-(.+?)(?:_reverse)?\.json$")
 _PHONE_DOMAINS = {"s.whatsapp.net", "c.us"}
+_SIGNATURE_TTL_SECONDS = 1.0
+_signature_cache: dict[str, tuple[float, tuple[int, int]]] = {}
 
 
 def chat_id_from_whatsapp_conversation_id(conversation_id: str) -> str:
@@ -129,9 +132,37 @@ def _add_bidirectional_edge(graph: dict[str, set[str]], left: str, right: str) -
 
 
 def _load_alias_graph(session_dir: Path) -> dict[str, set[str]]:
-    dir_mtime = _mtime_ns(session_dir)
+    mapping_signature = _lid_mapping_signature(session_dir)
     creds_mtime = _mtime_ns(session_dir / "creds.json")
-    return _load_alias_graph_cached(str(session_dir), dir_mtime, creds_mtime)
+    return _load_alias_graph_cached(str(session_dir), mapping_signature, creds_mtime)
+
+
+def _lid_mapping_signature(session_dir: Path) -> tuple[int, int]:
+    cache_key = str(session_dir)
+    now = time.monotonic()
+    cached = _signature_cache.get(cache_key)
+    if cached and now - cached[0] < _SIGNATURE_TTL_SECONDS:
+        return cached[1]
+    signature = _scan_lid_mapping_signature(session_dir)
+    _signature_cache[cache_key] = (now, signature)
+    return signature
+
+
+def _scan_lid_mapping_signature(session_dir: Path) -> tuple[int, int]:
+    count = 0
+    newest_mtime = 0
+    try:
+        paths = session_dir.glob("lid-mapping-*.json")
+    except OSError:
+        return (0, 0)
+    for path in paths:
+        try:
+            mtime = path.stat().st_mtime_ns
+        except OSError:
+            continue
+        count += 1
+        newest_mtime = max(newest_mtime, mtime)
+    return count, newest_mtime
 
 
 def _mtime_ns(path: Path) -> int:
@@ -142,7 +173,11 @@ def _mtime_ns(path: Path) -> int:
 
 
 @lru_cache(maxsize=4)
-def _load_alias_graph_cached(session_dir_str: str, _dir_mtime: int, _creds_mtime: int) -> dict[str, set[str]]:
+def _load_alias_graph_cached(
+    session_dir_str: str,
+    _mapping_signature: tuple[int, int],
+    _creds_mtime: int,
+) -> dict[str, set[str]]:
     session_dir = Path(session_dir_str)
     graph: dict[str, set[str]] = defaultdict(set)
     if not session_dir.exists():
