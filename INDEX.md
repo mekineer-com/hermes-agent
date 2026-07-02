@@ -89,7 +89,7 @@ Search targets:
   - identifies history/persist-only events that should not wake Siri
 - `_is_duplicate_whatsapp_source_message`
   - checks `processed_source_keys` table first (keyed by `source_chat_id` + `source_message_id`); falls back to legacy `SessionDB.message_source_key_has_response()` and promotes hits into the new table
-  - live rows should be skipped only after the source message has an assistant response
+  - any row already persisted in `state.db.messages` is treated as handled, even if no assistant reply was produced (listen-only / no-response case)
 - `_dispatch_built_message_event`
   - staleness gate: `live` rows older than `whatsapp.max_message_age_seconds` (config, default 300s, 0=off) are dropped, logged, and WAL-marked; `persist_only`/`revoke` still flow normally
 - post-agent transcript persistence in `_handle_message`
