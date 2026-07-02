@@ -661,6 +661,10 @@ class TestMessageStorage:
             source_chat_id="12025550199@s.whatsapp.net",
             source_message_id="m1",
         )
+        assert db.message_source_key_exists(
+            source_chat_id="12025550199@s.whatsapp.net",
+            source_message_id="m1",
+        )
 
         db.append_message("s1", role="assistant", content="hi")
         assert db.message_source_key_has_response(
@@ -682,6 +686,10 @@ class TestMessageStorage:
             source_message_id="m1",
         ) == 1
         assert not db.message_source_key_is_processed(
+            source_chat_id="12025550199@s.whatsapp.net",
+            source_message_id="m1",
+        )
+        assert not db.message_source_key_exists(
             source_chat_id="12025550199@s.whatsapp.net",
             source_message_id="m1",
         )

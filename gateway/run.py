@@ -10871,6 +10871,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     source_chat_id=source_chat_id,
                     source_message_id=source_message_id,
                 )
+                if not handled and hasattr(session_db, "message_source_key_exists"):
+                    handled = session_db.message_source_key_exists(
+                        source_chat_id=source_chat_id,
+                        source_message_id=source_message_id,
+                    )
                 if handled:
                     self._mark_whatsapp_source_message_processed(
                         source_chat_id=source_chat_id,
@@ -10881,7 +10886,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
         if handled:
             logger.info(
-                "Skipped already-answered WhatsApp source message chat=%s message=%s",
+                "Skipped already-handled WhatsApp source message chat=%s message=%s",
                 source_chat_id,
                 source_message_id,
             )
