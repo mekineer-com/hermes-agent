@@ -1,3 +1,5 @@
+> **⚠️ This fork is retired.** OpenAlma now uses [mekineer-com/hermes-channels](https://github.com/mekineer-com/hermes-channels) for WhatsApp. This repo is kept as a reference only.
+
 <p align="center">
   <img src="assets/banner.png" alt="Hermes Agent" width="100%">
 </p>
